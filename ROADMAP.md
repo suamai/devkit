@@ -482,7 +482,7 @@ Given up knowingly: batched revalidation of stale findings (the HEAD gate makes 
 instead of detecting it), root-cause grouping into steps (the fixer sees all findings in one prompt),
 and `source_findings` traceability from step to finding.
 
-## 10. Give `.claude/rules/` a bootstrap and a ratchet
+## 10. Give `.claude/rules/` a bootstrap and a ratchet — ✅ done
 
 **Now:** `/dev-setup` step 5 merely offers to draft rules. Nothing improves them afterwards, and the
 troubleshooting table's answer to "agents keep missing the same repo quirk" is "write it into
@@ -499,6 +499,37 @@ or `CLAUDE.md`, which the developer approves as a diff.
 "Deliberately not doing"), reattached to the store the architecture actually endorses — the repo
 itself, versioned and reviewable, with the developer as the curator. It is what turns #6 from "rules
 exist" into "rules get good".
+
+**Done.** (a) is `/dev-setup` step 5, (b) is `/dev-implement` step 10; the manual gained a
+"Teaching the repo" section, which is the first place a user is told any of this exists. All prose —
+no code, and no test, for the same reason as #4: what changed is a judgment a model makes at runtime.
+
+Four things the plan didn't say, each of which decides whether the feature is useful or corrosive:
+
+- **The bootstrap is a refactor, not authorship.** The roadmap's own observation — an "invariants"
+  section in `CLAUDE.md` is a rules file that hasn't been split by path — turned out to be the whole
+  design. Sources are ranked by authority (`CLAUDE.md`, `CONTRIBUTING.md`, style guide, then config
+  that states a convention outright), and a rule that cannot be traced to a sentence a human wrote or
+  a config a human committed does not get proposed. Inferring house style from the code is how a
+  pipeline starts enforcing an accident and then defends it.
+- **It pays off without the pipeline at all**, which is the argument that makes it worth a
+  developer's time: item 6 established that `CLAUDE.md` loads into *every* session while a
+  `paths:`-scoped rule loads only when Claude touches matching files. Splitting is a context-cost win
+  for someone who never runs `/dev-plan`. `/dev-setup` now leads with that, and offers to delete the
+  migrated lines — leaving both copies is how they drift into contradicting each other.
+- **The ratchet fires on evidence, not on schedule.** Offering "shall I propose some rules?" at the
+  end of every implement trains the developer to say no, and then it never fires when it matters. It
+  is gated on confirmed checkpoint findings, unresolved `finalCheck.issues`, or a note recording a
+  convention the implementer had to discover. A clean run has nothing to ratchet.
+- **A bug is not a convention** — the constraint the whole thing lives or dies on. Review findings
+  are mostly defects; turning each into a rule builds a rulebook of paranoia that later agents skim
+  past, which is worse than no rules because it costs context and buys compliance theatre. The test
+  written into the skill: would this have applied to a *different* task in the same area? Plus: cite
+  the evidence path, prefer editing an existing rule over adding one, and a rule an agent cannot tell
+  whether it complied with is not a rule.
+
+The agent proposes, never writes. That is not caution about file safety — it is the reason this
+store was chosen over an agent-writable one, so the approval step *is* the feature.
 
 ## 11. An "understand" mode, and a debug shape
 
@@ -550,8 +581,9 @@ cost, no remaining benefit.
 learn nothing from previous cycles now, by design: durable knowledge belongs in the repo
 (`CLAUDE.md`, `docs/`, `.claude/rules/`) where it is reviewable and versioned. An uncurated memory
 rots and degrades every future agent's discovery. What *was* worth keeping is the producer — a retro
-agent distilling ≤3 lessons per cycle — which is now item 10(b), writing into the repo instead of
-into a store. `docs/architecture.md` ("Extending") keeps the full note.
+agent distilling ≤3 lessons per cycle — and it now exists as `/dev-implement` step 10, writing into
+the repo instead of into a store, and only through a human who can say no. The storage was never the
+interesting part; the curator is. `docs/architecture.md` ("Extending") keeps the full note.
 
 **Parallel implementation flows.** Designed, not built: one git worktree per flow, `wf-implement`
 running against the worktree path, merge and review at the end. Only worth attempting once

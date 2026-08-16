@@ -130,6 +130,36 @@ You orchestrate the implementation phase of a planned dev task. The heavy liftin
    If the run stopped early, do **not** phase-commit and report as done — say what stopped it and
    offer the continuation below.
 
+10. **Ratchet the repo's rules — only when the run produced evidence.** Nothing carries between
+    cycles by design; the repo itself is the only durable store, so this is the one moment where
+    what an agent learned can be written somewhere the next one will read it.
+
+    **Offer this only when there is a signal**, never as a routine end-of-run question: confirmed
+    findings in `checkpointReviews[].review.confirmed`, unresolved `finalCheck.issues`, or an
+    implementer's `notes/` recording a convention it had to discover. A clean run has nothing to
+    ratchet, and asking anyway trains the developer to say no.
+
+    When it fires, one agent reads the workspace's `notes/`, the confirmed findings and the existing
+    `.claude/rules/*.md`, and returns **at most three** proposed edits. Hard constraints, because
+    each one is a failure mode this would otherwise walk into:
+
+    - **A bug is not a convention.** Review findings are mostly defects, and turning each into a rule
+      builds a rulebook of paranoia that later agents skim past. The test: would this have applied to
+      a *different* task in the same area? If it only describes what went wrong once, it belongs in
+      the commit message, not in a rule.
+    - **Cite the evidence.** Every proposal names the note or finding behind it, with a path. A
+      proposal that reads like general best practice came from the model's priors, not this repo.
+    - **Prefer editing an existing rule to adding one.** Fifteen rule files that each match
+      everything are worse than three that match precisely — a rule nobody can scope is a rule nobody
+      reads.
+    - **A rule must be followable.** "Be careful with migrations" is not a rule; "a migration and the
+      code that requires it land in the same commit" is. If an agent could not tell whether it had
+      complied, it is not a rule.
+
+    The agent **proposes**; you show the developer a diff per file and write only what they approve.
+    Rules are versioned, PR-reviewable repo content with a human curator — that is the whole reason
+    this store was chosen over an agent-writable one.
+
 ## Continuing a run that stopped
 
 Stopping early is a designed outcome here, not a crash: a blocking question, an unclean checkpoint, a

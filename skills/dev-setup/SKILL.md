@@ -63,10 +63,34 @@ Work through these, reporting each as ok / fixed / skipped-with-reason.
 
    Verify the manifest here — run the script and show what it found. A rule whose globs come back
    empty is unscoped (fine, and reaches every agent); a rule whose globs look wrong is a `paths:`
-   typo, and it will silently reach nobody. If `.claude/rules/` does not exist, say what the repo
-   would gain and offer to draft rules from what is already written down (CLAUDE.md conventions,
-   invariants, a style guide) — but let the developer approve the content. Never invent conventions
-   the repo has not stated.
+   typo, and it will silently reach nobody. Spot-check each non-empty entry against real paths
+   (`git ls-files <glob> | head`): a glob matching zero files is the same failure as a typo, and it
+   fails silently either way.
+
+   **If `.claude/rules/` does not exist, bootstrap it — as a refactor, not as authorship.** Most
+   repos already hold the raw material; a "never do X" or "invariants" section in `CLAUDE.md` is a
+   rules file that has not been split by path yet. Read what is already written down and propose
+   3-6 candidate files:
+
+   - **Sources, in order of authority:** `CLAUDE.md` and `.claude/CLAUDE.md` (especially any
+     always/never/invariant section), `CONTRIBUTING.md`, a style guide under `docs/`, and
+     machine-readable config that states a convention outright (`.editorconfig`, lint/formatter
+     config, `tsconfig` strictness). Then the directory shape, to know which globs are real.
+   - **Never invent a convention the repo has not stated.** If a rule cannot be traced to a
+     sentence someone wrote or a config someone committed, it does not go in. Guessing house style
+     from the code is how a pipeline starts enforcing an accident.
+   - **One approval per file, showing the source.** Present each candidate as its full content plus
+     the lines it came from, and let the developer accept, edit or drop it individually. A batch
+     "looks good" over six files is not approval, it is a rubber stamp.
+   - **Every rule needs a `paths:` that matches something.** Check each glob against `git ls-files`
+     before proposing it. A rule scoped to a path that does not exist is invisible, and nothing will
+     ever tell you.
+
+   Say what this buys even for someone who never runs the pipeline: `CLAUDE.md` is loaded into
+   **every** session, while a `paths:`-scoped rule loads only when Claude works with matching files.
+   Moving path-specific guidance out of `CLAUDE.md` makes every unrelated session cheaper. Offer to
+   delete the migrated lines from `CLAUDE.md` — leaving both is how the two drift into contradicting
+   each other — but only with the developer's explicit go-ahead, one hunk at a time.
 
 6. **Smoke test.** Run each of the three workflows with `args: {"dryRun": true}` — zero agents
    spawned, zero cost. All three must return `{ok: true}`:

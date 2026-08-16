@@ -156,6 +156,46 @@ When the findings need an approach decision, span several subsystems, or must be
 order, they are ordinary work: `/dev-plan "fix the findings in <report>"` gets exploration, a plan
 you approve, and waves — the same pipeline as everything else.
 
+## Teaching the repo (`.claude/rules/`)
+
+This is the one thing that makes a generic pipeline specific to *your* repo, and the only channel
+that survives between cycles — agents share no memory across runs, so anything worth keeping has to
+end up in the repo itself.
+
+`.claude/rules/*.md` is a **native Claude Code** convention, not a devkit one: those files load
+automatically alongside `CLAUDE.md`, and a `paths:` frontmatter key scopes one so it loads *only*
+when Claude works with matching files.
+
+```markdown
+---
+description: how this repo talks to the database
+paths:
+  - "src/db/**/*.ts"
+  - "packages/*/schema/*.ts"
+---
+- Every query goes through the repository layer; no raw SQL in handlers.
+- A migration and the code that requires it land in the same commit.
+```
+
+Two ways they get written:
+
+**Bootstrap — `/dev-setup`.** If you have no rules yet, it proposes 3-6 files built from what you
+have *already written down*: the always/never sections of `CLAUDE.md`, `CONTRIBUTING.md`, a style
+guide, lint config. It will not invent a convention from reading your code, and it asks about each
+file separately with the source lines shown. This pays off even if you never run the pipeline:
+`CLAUDE.md` is loaded into every session, while a scoped rule is loaded only when relevant — moving
+path-specific guidance out of `CLAUDE.md` makes every unrelated session cheaper.
+
+**Ratchet — after an implement that found real problems.** Claude offers at most three proposed
+edits, each citing the implementer note or confirmed review finding behind it, and you approve them
+as a diff. It is deliberately narrow: a bug is not a convention, and a rulebook grown from every
+individual defect is one later agents skim past. You can also just ask, any time: *"turn what we
+just learned into a rule."*
+
+What you get for it: matching rules reach scouts and implementers before they write code, and become
+an extra `repo-conventions` reviewer. What you never get: a rule Claude wrote and installed on its
+own. You are the curator; the rules are versioned, diffable repo content, and that is the point.
+
 ## What you are expected to do (and not do)
 
 - **Do** answer open questions with real opinions — they're asked because agents couldn't decide.
@@ -229,7 +269,7 @@ fixer plus one re-review.
 | Working tree is dirty | Commit/stash/discard intentionally; `/dev-pr` will draft but not publish bytes absent from `HEAD` |
 | Flow stuck at `implementing` | `/dev-status` — if no task is running, mark it abandoned |
 | Two teammates, same repo | Fine — `.dev/` is per-clone. Two implements in *one* clone: blocked, on purpose |
-| Agents keep missing the same repo quirk | Nothing carries over between cycles — write it into `CLAUDE.md`, or into a `.claude/rules/*.md` file with a `paths:` frontmatter so it reaches every agent touching those files (the pipeline hands matching rules to scouts, implementers and reviewers) |
+| Agents keep missing the same repo quirk | Nothing carries over between cycles. After an implement that found real problems, Claude offers to propose up to three edits to `.claude/rules/*.md` — accept them and every future agent touching those files reads it. You can also ask directly: "turn what we just learned into a rule" |
 
 ## Extending safely
 

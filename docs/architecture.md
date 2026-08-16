@@ -64,6 +64,13 @@ knowledge belongs in the repo itself (`CLAUDE.md`, `docs/`, `.claude/rules/*.md`
 PR-reviewable and travels with git. Adding a pull-side memory channel is a possible extension
 (see "Extending"), not something the pipeline currently depends on.
 
+There *is* a write path, and it deliberately ends at a human. `/dev-implement` step 10 offers — only
+when a run produced confirmed findings or a note recording a rediscovered convention — at most three
+proposed edits to `.claude/rules/*.md`, each citing its evidence, which the developer approves as a
+diff. That is the same producer an earlier design had feeding an agent-writable knowledge base,
+reattached to the store this architecture actually endorses. The difference is not storage: it is
+that a rule now has to survive review by someone who can say no.
+
 ## The pipeline
 
 ```
@@ -151,6 +158,12 @@ That places rules next to the other two memory shapes rather than replacing them
 | root `CLAUDE.md` | always | facts every session needs |
 | nested `CLAUDE.md` | when working **under that directory** | module-local instructions, in a monorepo |
 | `.claude/rules/*.md` + `paths:` | when working with **matching files** | cross-cutting concerns whose files don't share a directory — the data layer, error surfaces, migrations |
+
+`/dev-setup` bootstraps them as a **refactor of existing memory, not authorship**: the raw material
+is usually already in `CLAUDE.md`'s always/never section, `CONTRIBUTING.md` or lint config, and a
+rule that cannot be traced to something a human wrote does not get proposed. Splitting that material
+out is a win independent of this pipeline — `CLAUDE.md` costs every session, a `paths:`-scoped rule
+costs only the sessions it applies to.
 
 What devkit adds is **reach**, not format. Native loading is a main-session mechanism: a background
 workflow subagent inherits none of it, which is why every agent used to rediscover conventions the
