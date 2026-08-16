@@ -70,6 +70,7 @@ promoted explicitly by saying “treat this as large”.
 | `/dev-review [scope]` | Review the supplied paths, or infer changed files. Confirmed findings are fixed by default and explicitly re-reviewed. |
 | `/dev-review [scope] --no-apply` | One report-only find/verify pass. No fixes are written. Unlike `/dev-pr --review`, it does not persist a SHA-bound PR-gate artifact. |
 | `/dev-implement <slug>` | Execute `.dev/<slug>/plan.md`. |
+| `/dev-implement <slug> --continue` | Resume a run that stopped early, after you resolved what stopped it. Implemented steps are not redone; any that were never reviewed are folded into the next checkpoint. |
 | `/dev-implement <workspace-or-plan.md>` | Execute an explicit normal or nested remediation workspace. This is the form used for `.dev/<slug>/remediations/<sha>`. |
 | `/dev-status clean <slug>` | Preview, confirm, then delete a task workspace (its state file goes with it). |
 | `/dev-status clean pr/<branch>` | Preview, confirm, then delete one standalone PR workspace. Bare `pr` never deletes all PR workspaces. |
@@ -195,6 +196,7 @@ when warranted, one batched validator.
 | `/dev-*` not in autocomplete | Restart Claude Code (skills/workflows register at session start) |
 | "Workflow not found" | Same restart; meanwhile skills fall back to `scriptPath` automatically |
 | Implement crashed midway | `lastRunId` is in `.dev/<slug>/state.json` — ask Claude to resume; completed steps replay from cache |
+| Implement *stopped* midway (blocking question, unclean checkpoint, failed step, budget) | Not a crash — that is the design. Resolve what stopped it, then `/dev-implement <slug> --continue` |
 | Implementer wrote code/notes but has no result | Inspect rejected `StructuredOutput` calls; classify `result_serialization_failed`, not `implementation_failed` |
 | "Where did that review finding go?" | Refuted findings remain in the workflow result and `journal.jsonl` for audit |
 | PR review says it is stale | Its `reviewed_head` differs from `HEAD`; run `/dev-pr --review` again |

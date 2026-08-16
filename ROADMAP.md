@@ -137,7 +137,7 @@ per-workspace files. It was removed the same day: `.dev/` is scratch, so the mig
 `rm -rf .dev/<slug>`. That mistake is what produced the first standing rule above — the net change
 here is subtraction only.
 
-## 3. Make resuming an implement a first-class path
+## 3. Make resuming an implement a first-class path — ✅ done
 
 **Now:** `wf-implement.js` stops early *by design* in four situations — a blocking question
 (`:524-531`), a checkpoint that did not go clean (`:614-631`), a failed step, the budget floor
@@ -154,6 +154,24 @@ different thing and deserves its own affordance.
 
 **Why:** the workflow is built to stop and hand back. Right now handing back costs the developer
 more than the work it saved. Depends on #2 for the "which steps completed" half.
+
+**Done:** `wf-implement` takes a `completed` arg and returns a `continuation` block ready to be
+passed straight back; `/dev-implement <slug> --continue` reads `<workspace>/last-run.json` for the
+previous args, so a continuation survives a new session or a compaction.
+
+Two things fell out of building it that the plan above had wrong:
+
+- **The caller must pass the FULL steps array, not the pending ones.** `toWaves()` rejects a
+  `depends_on` naming an id it cannot see, so handing it only the remaining steps throws
+  immediately. The graph surgery — dropping completed ids from `depends_on` — belongs in the script,
+  where it is five lines and testable, not in prose telling a skill to edit a dependency graph.
+  `tests/continuation.test.js` covers it, including the negative case that proves why.
+- **"Implemented" and "reviewed" are different states.** A run that stops early usually leaves
+  `unreviewedWaves`: code in the tree that no checkpoint judged. Treating those as simply "done"
+  would silently ship unreviewed work — the one thing a continuation must not do. So each
+  `completed` entry carries `reviewed`, and entries with `reviewed !== true` are re-seeded into the
+  next checkpoint's scope as reports with no agent behind them. This is also why the skill is told
+  never to hand-edit that field.
 
 ## 4. Invert the triage bias, and make `small` leave an artifact
 

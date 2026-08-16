@@ -1,7 +1,7 @@
 ---
 name: dev-implement
 description: Execute an approved feature or PR-remediation plan from /dev-plan — adaptive context scouting, verified implementation, a cheap contract gate per dependency wave, and consolidated review at cost-driven checkpoints.
-argument-hint: <slug, workspace, or plan.md> [extra notes]
+argument-hint: <slug, workspace, or plan.md> [--continue] [extra notes]
 ---
 
 You orchestrate the implementation phase of a planned dev task. The heavy lifting happens in the `wf-implement` workflow (which can recursively split oversized steps, gates each dependency wave with one cheap contract check, and calls `wf-review-loop` at accumulated review checkpoints); your job is preflight, interrupts, phase commits, and the final report.
@@ -14,7 +14,8 @@ You orchestrate the implementation phase of a planned dev task. The heavy liftin
    Read `<workspace>/plan.md` and parse the ```json steps block from the "Machine-readable steps"
    section. If missing or malformed, reconstruct it from the Steps sections and write it back.
    Detect remediation plans by their source-review/reviewed-HEAD metadata and retain the parent
-   task slug for state and commit naming.
+   task slug for state and commit naming. With `--continue`, read `<workspace>/last-run.json` too
+   and follow "Continuing a run that stopped" below instead of starting over.
 
 2. **Concurrency lock.** Glob `.dev/*/state.json` and read them: any workspace at `implementing` is
    the repo-wide lock — a remediation runs under its parent task's state file, so there is one lock,
@@ -68,11 +69,13 @@ You orchestrate the implementation phase of a planned dev task. The heavy liftin
    with `scriptPath` pointing at `${CLAUDE_PLUGIN_ROOT}/workflows/wf-implement.js`. Record the returned run id as
    `lastRunId` in the workspace's `state.json` — it enables resume.
 
-6. **On completion, read the result:**
+6. **On completion, persist and read the result.** First write `<workspace>/last-run.json`
+   (`{ runId, stoppedEarly, stopReason, args, continuation }`) — without it a continuation in a later
+   session has no steps array and no completion map. Then:
    - `needs_user_input` with `blocking: true` → the run **stopped there on purpose**: an implementer
      guessed at something that changes its step's approach, and dependent waves were not built on the
      guess. Ask these first (AskUserQuestion, include the recorded `assumption` as context). If the
-     answer matches the assumption, resume the remaining waves; if it does not, the step needs rework
+     answer matches the assumption, continue the run (see below); if it does not, the step needs rework
      before anything downstream runs. Non-blocking questions are informational — resolve them inline.
    - `unverifiedSteps` non-empty → those steps have no substantiated executable check. Their
      behavior rests on the checkpoint reviews and the suite. Verify them yourself now — that is step 7
@@ -88,12 +91,14 @@ You orchestrate the implementation phase of a planned dev task. The heavy liftin
      - Repeated `StructuredOutput`/schema validation errors **and** a completed notes file/code diff → `result_serialization_failed`. The implementation itself is not failed; do not re-run it. Reconstruct the compact report inline from notes + diff and report the serialization failure separately.
      - No structured-output errors and no completed notes/code evidence → `implementation_failed`; re-run the step or implement inline.
      - Conflicting evidence → `agent_failed_unknown`; surface it instead of guessing.
-   - Other failed steps (`failed: true`, e.g. `stage: "verify"`) → check the workflow journal and re-run only what failed. A crashed run can resume with `Workflow({scriptPath, resumeFromRunId: <lastRunId>, args: <same>})`; completed agents replay from cache.
-   - Steps `skipped_for_budget` → report them; re-run with a fresh budget when the developer asks.
+   - Other failed steps (`failed: true`, e.g. `stage: "verify"`) → check the workflow journal, fix the cause, then continue (see below); only the failed step and what follows it re-runs.
+   - Steps `skipped_for_budget` → report them; continue with a fresh budget when the developer asks.
    - Split steps (`split: true`) → normal (size escape valve); mention it so future plans size better.
    - `unreviewedWaves` non-empty → those waves were implemented but never reached a checkpoint (the run
-     stopped early). Their code is unreviewed: after resolving what stopped the run, review them with
-     `wf-review-loop` scoped to their files, or let the resumed run reach the next checkpoint.
+     stopped early), so their code is in the tree unjudged. Continuing handles this by itself: they come
+     back as `continuation.completed` entries with `reviewed: false` and are folded into the next
+     checkpoint. Only if the developer abandons the flow do you review them separately with
+     `wf-review-loop` scoped to their files.
    - `contractGates[].breaks` → gates that fired. High/critical ones already forced a checkpoint;
      low/medium ones were informational and the checkpoint review should have covered them — if one
      survived into `finalCheck.issues`, mention it, it means the gate is more accurate than the review.
@@ -119,7 +124,38 @@ You orchestrate the implementation phase of a planned dev task. The heavy liftin
    own", with the honest/unevidenced split from step 6 — and
    if `stoppedEarly`, lead with `stopReason` rather than burying it under the per-step detail.
    After remediation, always require a fresh `/dev-pr --review`: the old report remains evidence but
-   cannot clear a different `HEAD`.
+   cannot clear a different `HEAD`. If the run stopped early, do **not** phase-commit and report as
+   done — say what stopped it and offer the continuation below.
+
+## Continuing a run that stopped
+
+Stopping early is a designed outcome here, not a crash: a blocking question, an unclean checkpoint, a
+failed step or the budget floor all end the run with `stoppedEarly: true` and a `stopReason`. The
+work that landed is real and in the tree, so continuing resumes from it — it never re-runs it.
+
+Invoked as `/dev-implement <slug> --continue` (or just "continue the implement"): read
+`<workspace>/last-run.json` for the previous `args` and `continuation`.
+
+1. **Resolve what stopped it first.** A blocking question gets an answer; an unclean checkpoint gets
+   its findings addressed; a failed step gets its cause fixed. Continuing without that stops again in
+   the same place, having paid for the run.
+2. **Re-invoke with the same `steps` plus `completed`:**
+   ```
+   Workflow({ name: "devkit:wf-implement", args: {
+     workspace, steps, baseline, rules, reviewLoopPath,
+     completed: <previous result's continuation.completed, verbatim>,
+     notes: <previous notes + the developer's answers>
+   } })
+   ```
+   Pass the plan's **full** steps array. The workflow strips completed ids out of `depends_on`
+   itself; passing only the pending steps fails, because the dependency check rejects ids it cannot
+   see. `baseline` stays the original one — reviewers must still judge the whole change.
+3. **Never hand-edit `completed`.** Its `reviewed` flags decide what gets folded into the next review
+   checkpoint. Flipping one to `true` to save a round ships unjudged code, which is the specific
+   failure this field exists to prevent.
+4. **`resumeFromRunId` is a different tool.** It replays cached agents after a *crash*. A planned
+   stop usually changes `notes` (that is where the answer goes), which changes every implementer
+   prompt and invalidates the cache anyway — so `completed` is the path here, not resume.
 
 ## Notes
 

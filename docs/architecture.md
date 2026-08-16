@@ -44,6 +44,7 @@ pointer (never "read the whole workspace"):
   pr/<branch>/         ← standalone PR artifacts when no task workspace matches; never flow state
   <slug>/
     state.json         ← this flow's stage/baseline/lastRunId; written by the skill owning the phase
+    last-run.json      ← the implement run's args + completion map, so a stop can be continued
     spec.md            ← /dev-spec (dialogue in the main loop)
     plan.md            ← wf-explore-plan's synthesizer; then curated by the /dev-plan skill
     findings/<angle>.md← exploration scouts (full reports; compact summaries returned to the script)
@@ -92,6 +93,7 @@ PR-reviewable and travels with git. Adding a pull-side memory channel is a possi
           wf-review-loop      → one consolidated review over the wave's changed files
         Check (opus)  → the SEAMS between steps; runs the suite
    └─ interrupt: needs_user_input → dev; skill verifies end-to-end and reports
+   └─ a run that stopped early continues via `completed` (same steps; done ids stop being deps)
 
 /dev-review [files]      — standalone entry to the same wf-review-loop
    └─ wf-review-loop.js
@@ -222,6 +224,13 @@ Don't improvise same-tree concurrency.
 - **Implementer has code/notes but no result**: inspect its transcript for rejected
   `StructuredOutput` calls. Classify that as `result_serialization_failed`, distinct from
   `implementation_failed`; do not re-run completed implementation work just to recover a report.
+- **Stopped run vs crashed run.** `implement` stopping early (blocking question, unclean
+  checkpoint, failed step, budget floor) is the design, not a fault: it returns
+  `stoppedEarly` + `stopReason` + a `continuation` block. Resolve the cause and re-invoke with
+  the same `steps` plus `continuation.completed` — done ids stop counting as dependencies and
+  any never-reviewed work is folded into the next checkpoint. Do not reach for `resumeFromRunId`
+  here: a planned stop usually changes `notes`, which changes every implementer prompt and
+  invalidates the agent cache anyway.
 - **Crashed/killed run**: `Workflow({scriptPath, resumeFromRunId: <lastRunId>, args: <same>})` —
   completed agents replay from cache; only edited/new calls run live. `lastRunId` is in the
   workspace's `state.json`.

@@ -10,9 +10,17 @@ export const meta = {
   ],
 }
 
-// args: { workspace, steps, baseline?, planPath?, notes?, review?=true, reviewRounds?=2,
+// args: { workspace, steps, completed?, baseline?, planPath?, notes?, review?=true, reviewRounds?=2,
 //         reviewLoopPath?, scoutMode?='adaptive', maxParallelSteps?=5,
 //         gate?=true, checkpointFileThreshold?=20, checkpointMaxWaves?=3, rules?, dryRun? }
+//   completed: what an earlier run of this same plan already implemented — the `continuation.completed`
+//          array it returned, or bare ids. Stopping early is a designed outcome here (a blocking
+//          question, an unclean checkpoint, a failed step, the budget floor), so continuing is a
+//          normal path, not error recovery. Pass the SAME `steps` plus this: the caller never edits
+//          the dependency graph, because passing only the pending steps would trip toWaves()'s
+//          unknown-dependency check. Entries with reviewed !== true are folded into this run's next
+//          review checkpoint — code that landed but was never judged is the one thing a continuation
+//          must not inherit silently.
 //   rules: [{ path, globs }] — the repo's path-scoped rule files (.claude/rules/*.md frontmatter).
 //          Scripts have no filesystem access, so the caller reads them; agents get only the ones
 //          matching the files they touch. Omit and agents are told to look for them themselves.
@@ -39,6 +47,19 @@ if (!['always', 'adaptive', 'never'].includes(scoutMode)) throw new Error(`inval
 const gateEnabled = args.gate !== false && args.review !== false
 const checkpointFileThreshold = Math.max(1, args.checkpointFileThreshold || 20)
 const checkpointMaxWaves = Math.max(1, args.checkpointMaxWaves || 3)
+
+const completed = (Array.isArray(args.completed) ? args.completed : [])
+  .map((c) => (typeof c === 'string' ? { id: c } : c))
+  .filter((c) => c && c.id)
+const completedIds = new Set(completed.map((c) => c.id))
+
+// A completed step's id is a satisfied dependency, so it is stripped from what remains rather than
+// left dangling. Pure, and the only graph surgery a continuation needs.
+function pendingSteps(steps, doneIds) {
+  return steps
+    .filter((s) => !doneIds.has(s.id))
+    .map((s) => ({ ...s, depends_on: (s.depends_on || []).filter((d) => !doneIds.has(d)) }))
+}
 
 const STEP_SHAPE = {
   type: 'object', required: ['id', 'title', 'goal', 'files', 'depends_on', 'details'],
@@ -424,7 +445,33 @@ async function runStep(s, batch, depth, ctx) {
 }
 
 phase('Scout')
-const reports = []
+const stepsById = new Map(args.steps.map((s) => [s.id, s]))
+const unknownCompleted = completed.filter((c) => !stepsById.has(c.id)).map((c) => c.id)
+if (unknownCompleted.length) throw new Error(`args.completed names steps absent from args.steps: ${unknownCompleted.join(', ')}`)
+
+// Work an earlier run implemented but no checkpoint ever reviewed. It is in the tree and nothing
+// has judged it, so it rides along into this run's next checkpoint as a report with no agent behind
+// it. Everything downstream (review scope, context paths, final check) treats it like any other.
+const inheritedReports = completed
+  .filter((c) => c.reviewed !== true)
+  .map((c) => ({
+    step: c.id,
+    title: (stepsById.get(c.id) || {}).title || c.id,
+    inherited: true,
+    brief_path: c.brief_path,
+    notes_paths: c.notes_paths || (c.notes_path ? [c.notes_path] : []),
+    unverified: c.unverified === true,
+    unverified_reason: c.unverified === true ? (c.unverified_reason || 'inherited unverified from an earlier run') : null,
+    impl: {
+      summary: 'implemented by an earlier run of this plan; carried into this run for review',
+      changed_files: c.changed_files || (stepsById.get(c.id) || {}).files || [],
+      notes_path: (c.notes_paths || [])[0] || c.notes_path,
+      concerns: c.concerns || [],
+      deviations: [],
+    },
+  }))
+
+const reports = [...inheritedReports]
 const checkpointReviews = []
 const gateResults = []
 const priorRefuted = []
@@ -473,7 +520,7 @@ async function reviewCheckpoint(pending, checkpointNumber) {
     return { clean: false, skipped_for_budget: true }
   }
   const changed = changedFilesOf(pending.steps, pending.reports)
-  const contexts = [...new Set([planPath, ...leaves.flatMap((r) => [r.brief_path, r.impl.notes_path]).filter(Boolean)])]
+  const contexts = [...new Set([planPath, ...leaves.flatMap((r) => [r.brief_path, ...(r.notes_paths || [r.impl.notes_path])]).filter(Boolean)])]
   const reviewLoopRef = args.reviewLoopPath ? { scriptPath: args.reviewLoopPath } : 'devkit:wf-review-loop'
   const waveLabel = pending.waves.length > 1 ? `waves ${pending.waves[0]}-${pending.waves[pending.waves.length - 1]}` : `wave ${pending.waves[0]}`
   // The implementers' own doubt is the cheapest review lead available: it points at code the author
@@ -502,13 +549,22 @@ async function reviewCheckpoint(pending, checkpointNumber) {
   })
 }
 
-const allWaves = toWaves(args.steps)
-log(`${args.steps.length} steps in ${allWaves.length} dependency wave(s)`)
+const todoSteps = pendingSteps(args.steps, completedIds)
+if (!todoSteps.length) throw new Error('every step in args.steps is listed in args.completed — nothing left to implement')
+if (completed.length) log(`continuing: ${completed.length} step(s) already implemented, ${todoSteps.length} to go`)
+
+const allWaves = toWaves(todoSteps)
+log(`${todoSteps.length} steps in ${allWaves.length} dependency wave(s)`)
 let waveNumber = 0
 let checkpointNumber = 0
 let stoppedEarly = false
 let stopReason = null
 let pending = { waves: [], steps: [], reports: [] }
+if (inheritedReports.length) {
+  pending.steps.push(...inheritedReports.map((r) => stepsById.get(r.step)).filter(Boolean))
+  pending.reports.push(...inheritedReports)
+  log(`${inheritedReports.length} step(s) from the earlier run were never reviewed — folded into the next checkpoint`)
+}
 
 for (const wave of allWaves) {
   waveNumber++
@@ -697,6 +753,28 @@ const unverifiedSteps = leafReports
   .map((r) => ({ step: r.step, reason: r.unverified_reason || null, changed_files: r.impl.changed_files || [] }))
 const openConcerns = leafReports.flatMap((r) => ((r.impl && r.impl.concerns) || []).map((c) => ({ step: r.step, concern: c })))
 
+// What a follow-up run needs in order to skip this one's work. Built here rather than left to the
+// caller: the caller is a prose skill, and deriving this means walking split substeps back to the
+// parent id the plan actually declares, then matching against which checkpoints covered what.
+// Reported at PLAN-step granularity, because those are the ids `args.steps` contains.
+const reviewedStepIds = new Set(checkpointReviews.filter((c) => c.review).flatMap((c) => c.steps))
+function continuationEntry(r) {
+  const leaves = flat([r])
+  if (!leaves.length || leaves.some((x) => !x.impl || x.failed || x.skipped_for_budget)) return null
+  const firstUnverified = leaves.find((x) => x.unverified)
+  return {
+    id: r.step,
+    changed_files: [...new Set(leaves.flatMap((x) => (x.impl.changed_files) || []))],
+    notes_paths: [...new Set(leaves.flatMap((x) => x.notes_paths || [x.impl.notes_path]).filter(Boolean))],
+    brief_path: r.brief_path,
+    unverified: Boolean(firstUnverified),
+    unverified_reason: firstUnverified ? firstUnverified.unverified_reason || undefined : undefined,
+    reviewed: reviewedStepIds.has(r.step),
+  }
+}
+const completedEntries = reports.map(continuationEntry).filter(Boolean)
+const completedEntryIds = new Set(completedEntries.map((c) => c.id))
+
 return {
   workspace,
   planPath,
@@ -711,4 +789,9 @@ return {
   stoppedEarly,
   stopReason,
   needs_user_input: needsInput,
+  // Pass `completed` straight back with the SAME `steps` to continue; fold any answers into `notes`.
+  continuation: {
+    completed: completedEntries,
+    pending: args.steps.filter((s) => !completedEntryIds.has(s.id)).map((s) => s.id),
+  },
 }
