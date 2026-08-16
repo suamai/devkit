@@ -209,7 +209,7 @@ now rejects a `Tier: small` plan instead of reconstructing a steps array to fan 
 out across agents. No test: this item is entirely prose, and the behavior it changes is a judgment
 call made by a model at runtime — item 7's evals are where it becomes checkable.
 
-## 5. Model tier and effort as parameters, not constants
+## 5. Model tier and effort as parameters, not constants — ✅ done
 
 **Now:** every tier is hardcoded — `model: 'opus'` on the implementer (`workflows/wf-implement.js:387`)
 and the consistency check (`:660`), on the plan synthesizer (`workflows/wf-explore-plan.js:250`);
@@ -228,6 +228,42 @@ model is a parameter those labels are cosmetic. Either drop them or accept they 
 
 **Why:** a side project and a production repo do not deserve the same budget, and right now the only
 way to spend less is to disable stages wholesale.
+
+**Done:** all four workflows resolve `profile` / `models` / `efforts` through one `policy()` block at
+startup; no `model:` literal survives outside a role default. `tests/policy.test.js` covers it (18
+cases). Five things the plan had wrong or hadn't reached:
+
+- **Keyed by role, not by phase.** Phase names are per-workflow, and `wf-implement` calls
+  `wf-review-loop` — with per-phase keys, a policy could not survive the nesting, and a cheap
+  implement whose review checkpoints run at full price is not a cheap run. So roles are one
+  pipeline-wide vocabulary and the args pass through the `workflow()` call unchanged.
+- **Which forced a rule about unknown keys.** Passing `{ review: 'haiku' }` to `wf-implement` means
+  a role it doesn't own, so unknown-to-*this*-workflow must be ignored. But silently ignoring
+  everything means `{ implement: 'haiku' }` — a plausible typo for `impl` — quietly runs at full
+  price. Validating against the *pipeline-wide* list gets both: foreign roles pass through, invented
+  ones throw before an agent spawns.
+- **Declined to make the contract gate haiku.** The plan named it as haiku-shaped, and it is even
+  labelled "one cheap agent per wave", but its failure modes are not symmetric: a gate that wrongly
+  reports breaks costs one review, while a gate that wrongly reports *clean* is worse than no gate,
+  because the pipeline then trusts it. Cheap is one arg away; it is not the default. The only default
+  that did change is `decompose` at `effort: 'low'` — task text in, angle names out, no code read —
+  because inheriting a session running at high effort meant paying high effort for near-templating.
+- **Escalation had to become relative.** "opus only for critical defects" is a hardcoded tier, so
+  under a cheap profile the critical path would have been the *only* thing still at full price, and
+  under a max profile it would have meant nothing at all. A critical finding now buys one rung above
+  the run's own fix tier.
+- **The `meta.phases` `model:` labels are gone, not accepted as lies.** The Watch was right that a
+  pure-literal label cannot track a parameter. Deleting them loses nothing, because the replacement
+  is better than a static label ever was: `policy()` logs the resolved tiers when a run is tuned
+  (silent otherwise), and `dryRun` now returns the whole resolved policy — so a cost setting is
+  checkable for free, before it can spend anything.
+
+Self-contained scripts cannot import a shared helper, so `policy()` is copied into all four files.
+The test asserts the four copies are byte-identical, which is the only thing that makes the
+duplication safe. Repo-level defaults landed without the config file the plan implied: `/dev-setup`
+adds a `Cost profile:` line to `CLAUDE.md`, which is already in every session's context and is
+committed with the repo — no format, no precedence rules, no parser, and unlike anything under
+`.dev/` it reaches whoever clones the repo.
 
 ## 6. Make the `.claude/rules/` contract explicit
 

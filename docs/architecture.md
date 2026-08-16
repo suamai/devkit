@@ -102,7 +102,7 @@ PR-reviewable and travels with git. Adding a pull-side memory channel is a possi
           Review (sonnet ×2: runtime/contracts + intent/verification)
           → one verifier semantically clusters and checks all findings in a batch
           → critical clusters alone get one second opinion
-          → Fix confirmed (sonnet; opus for critical) → explicit post-fix re-review
+          → Fix confirmed (fix tier; critical escalates one rung) → explicit post-fix re-review
 
 /dev-pr [base] [--review] [--draft] [--body-only]
    ├─ deterministic git map: merge-base, commits, diff, upstream, dirty-tree gate
@@ -116,11 +116,14 @@ Confirmed PR findings follow a separate remediation cycle:
   reviews/<sha>.md
     → /dev-plan --review <report>
       ├─ simple/local: inline deterministic plan
-      └─ wf-plan-remediation.js: optional batched validation + one sonnet synthesis
+      └─ wf-plan-remediation.js: optional batched validation + one synthesis agent
     → remediations/<sha>/plan.md
     → /dev-implement <remediation-workspace> (baseline = reviewed HEAD)
     → /dev-pr --review again (only current HEAD can clear the PR gate)
 ```
+
+The model tiers above are **defaults**, not constants — see "Cost policy" below for how a run,
+or a repo, shifts them.
 
 ## Design rules
 
@@ -139,6 +142,48 @@ Confirmed PR findings follow a separate remediation cycle:
 - All workflows accept `{ dryRun: true }` (zero-cost smoke test) and normalize `args` from JSON
   string. Named resolution requires a session restart after creating a workflow file; `scriptPath`
   works immediately.
+
+## Cost policy — roles, not phases
+
+Model tier and reasoning effort are arguments, not constants. Every workflow resolves them once at
+startup through the same `policy()` block and spreads the result into each `agent()` call:
+
+```
+profile: "cheap" | "default" | "max"   shift every role one rung on [haiku, sonnet, opus]
+models:  { impl: "sonnet", … }         override one role; beats the profile
+efforts: { decompose: "low", … }       same, over [low, medium, high, xhigh, max]
+```
+
+Four decisions are worth knowing about, because each one is a place this could have gone wrong:
+
+- **Roles, not phase names.** `impl`, `review`, `gate`, `synth`… are a vocabulary shared across the
+  whole pipeline, so one object survives `workflow()` nesting: `wf-implement` forwards its cost args
+  to `wf-review-loop` unchanged. A cheap implement whose review checkpoints run at full price is not
+  a cheap run. The cost of a shared vocabulary is that a role a given workflow doesn't own has to be
+  *ignored* rather than rejected — so unknown names are checked against the pipeline-wide list, and
+  a typo (`implement` for `impl`) throws before any agent spawns instead of silently paying full price.
+- **Defaults are exactly what shipped.** Omitting all three reproduces the previous hardcoded split.
+  The one deliberate exception is `decompose`, which now defaults to `effort: 'low'`: it turns a task
+  description into 3-5 angle names without reading code, and inheriting a session running at high
+  effort meant paying high effort for near-templating. Everything else inherits the session's effort,
+  as before.
+- **The contract gate stayed on sonnet.** It is the obvious haiku candidate — it is even labelled
+  "one cheap agent per wave" — but it reads a diff and judges whether a consumed surface is coherent,
+  and its failure mode is asymmetric: a gate that wrongly reports *breaks* costs one review, while a
+  gate that wrongly reports *clean* is worse than no gate, because the pipeline then trusts it. Cheap
+  is available via `profile`/`models`; it is not the default.
+- **Escalation is relative.** A critical review finding buys the fixer one rung above the run's fix
+  tier, not a hardcoded opus — otherwise "critical gets a better model" quietly means nothing under
+  a cheap profile, which is exactly when it matters most.
+
+`policy()` is copied verbatim into all four scripts: they are self-contained by construction and
+cannot import a shared helper. `tests/policy.test.js` asserts the four copies are byte-identical, so
+the duplication cannot drift into four different cost models. `dryRun` returns the resolved policy,
+which makes a cost setting checkable for free before it can spend anything.
+
+A repo pins its default through the `Cost profile:` line `/dev-setup` writes into `CLAUDE.md` —
+already in every session's context, committed with the repo, and needing no config format,
+precedence rules or parser.
 
 ## Distribution
 
@@ -167,7 +212,8 @@ Onboarding notes worth stating once:
 - New or renamed workflow files register on **session start** — restart after installing or
   updating the plugin. `scriptPath` works immediately.
 - The pipeline spawns many sonnet/opus agents; token cost scales with the triage tier (see that
-  table). A "+300k"-style budget directive caps a run hard.
+  table). A "+300k"-style budget directive caps a run hard, and `profile: "cheap"` shifts every
+  agent down a model tier.
 - Treat the plugin's prompts as code: change them via PR against the plugin repo, informed by the
   calibration checklist below. A change ships to every project at once — that is the point, and
   also the risk.

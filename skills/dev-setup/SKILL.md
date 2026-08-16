@@ -31,7 +31,13 @@ Work through these, reporting each as ok / fixed / skipped-with-reason.
    /dev-plan → /dev-implement → /dev-review → /dev-pr; /dev-status monitors flows.
    PR reviews can feed `/dev-plan --review` remediation plans. Trivial/small changes don't need
    it (the /dev-plan triage decides).
+   Cost profile: default.
    ```
+   Ask which cost profile this repo wants (`cheap` | `default` | `max` — the manual's Cost control
+   explains the ladder); a side project and a production repo do not deserve the same budget.
+   CLAUDE.md is already in context in every session, so that line *is* the mechanism — the skills
+   read it and pass it as `profile`. No config file, no precedence rules, and unlike anything under
+   `.dev/` it is committed, so it applies to whoever clones the repo.
 
 4. **Permissions.** In the project's `.claude/settings.json`, ensure `permissions.allow` includes
    `"Workflow"` (create the file and keys as needed, merging with what exists — never dropping
@@ -55,6 +61,8 @@ Work through these, reporting each as ok / fixed / skipped-with-reason.
    ```
    Fall back to `scriptPath: "${CLAUDE_PLUGIN_ROOT}/workflows/<name>.js"` if the names have not
    registered yet. A parse failure here is a plugin problem, not a repo problem — show the error.
+   Each also returns its resolved `policy` (model/effort per role), so adding the repo's chosen
+   `profile` to these calls checks the setting for free, before it can cost anything.
 
 7. **Commit.** Offer to commit whatever step 2-5 changed (`chore: configure devkit pipeline`,
    standard co-author trailer). Skip if the developer declines.

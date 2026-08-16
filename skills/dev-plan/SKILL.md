@@ -27,7 +27,7 @@ evidence into an implementation plan; it does not repeat full feature exploratio
      validate: true, deep
    } })
    ```
-   Use `${CLAUDE_PLUGIN_ROOT}/workflows/wf-plan-remediation.js` as `scriptPath` if the name does not resolve. `--deep` requests deeper integration inspection; it still uses one batched validator and
+   Use `${CLAUDE_PLUGIN_ROOT}/workflows/wf-plan-remediation.js` as `scriptPath` if the name does not resolve. Cost args (`profile`/`models`/`efforts`) apply here too — see Cost below. `--deep` requests deeper integration inspection; it still uses one batched validator and
    one synthesizer, never the 3-5-scout `wf-explore-plan` fan-out. If batched revalidation returns
    `no_action: true`, report that all findings became refuted/stale and do not fabricate a plan.
 4. **Plan contract.** Group findings by root cause and tightly coupled ownership — never one step per
@@ -121,7 +121,7 @@ signal and escalate.
    ```
    Workflow({ name: "devkit:wf-explore-plan", args: { task, scope, requirements, constraints, workspace, specPath? } })
    ```
-   Optional: `angles` to override angle decomposition when the developer already told you what to investigate; `validate: false` skips the single batched validation pass for cost-sensitive planning. If the workflow name does not resolve (the plugin has not loaded in this session yet), invoke with `scriptPath` pointing at `${CLAUDE_PLUGIN_ROOT}/workflows/wf-explore-plan.js`. Runs in background; you'll be notified. While waiting, do nothing speculative.
+   Optional: `angles` to override angle decomposition when the developer already told you what to investigate; `validate: false` skips the single batched validation pass for cost-sensitive planning; `profile`/`models`/`efforts` set the model tiers (see Cost below). If the workflow name does not resolve (the plugin has not loaded in this session yet), invoke with `scriptPath` pointing at `${CLAUDE_PLUGIN_ROOT}/workflows/wf-explore-plan.js`. Runs in background; you'll be notified. While waiting, do nothing speculative.
 
 4. **Interrupt point — open questions.** The result contains `open_questions` (decisions only the developer can make). If non-empty, surface them via AskUserQuestion (use the provided `options`). Fold answers into the plan: edit `<workspace>/plan.md` yourself — including the machine-readable JSON steps block — or, if an answer invalidates the approach, re-run the workflow with the answers appended to `constraints`.
 
@@ -140,6 +140,17 @@ signal and escalate.
    when it isn't. The workflow logs a warning for a suspiciously deep chain — relay it if present.
 
 6. **Handoff.** On approval, set `stage: "plan-ready"` in `<workspace>/state.json` and suggest `/dev-implement <slug>` (or continue yourself if asked).
+
+## Cost
+
+Every workflow takes the same three cost args, and every skill passes them through:
+`profile: "cheap" | "default" | "max"` shifts every agent one rung on the model ladder;
+`models: { <role>: "haiku|sonnet|opus" }` and `efforts: { <role>: "low|…|max" }` override one role
+and beat the profile. Roles are pipeline-wide (`decompose, scout, validate, synth, impl, gate,
+check, review, verify, fix`), so one object covers a workflow and everything it calls. An unknown
+role or value throws before any agent runs — check it with `dryRun: true`, which returns the
+resolved policy. Omitting all three reproduces the shipped tiers exactly. Default it from the
+repo's `Cost profile:` line in CLAUDE.md when one is present.
 
 ## Notes
 

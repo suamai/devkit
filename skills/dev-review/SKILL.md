@@ -18,7 +18,7 @@ You drive a standalone review loop over code changes using the `wf-review-loop` 
 
 3. **Run it.**
    ```
-   Workflow({ name: "devkit:wf-review-loop", args: { scope, intent, baseline?, contextPaths?, rules?, apply, maxRounds } })
+   Workflow({ name: "devkit:wf-review-loop", args: { scope, intent, baseline?, contextPaths?, rules?, apply, maxRounds, profile?, models?, efforts? } })
    ```
 
    `rules`: paths of `.claude/rules/*.md` files whose `paths:` frontmatter matches the changed files.

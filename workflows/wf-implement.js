@@ -3,16 +3,19 @@ export const meta = {
   description: 'Execute plan steps in dependency waves: adaptive scout → implement → cheap contract gate per wave → full review at cost-driven checkpoints, then a cross-step consistency check',
   whenToUse: 'After a plan from wf-explore-plan is approved by the developer: implement its steps, parallelizing steps with disjoint file sets',
   phases: [
-    { title: 'Scout', detail: 'briefs only for ambiguous or oversized steps', model: 'sonnet' },
-    { title: 'Implement', detail: 'per-step implementation + executed verification', model: 'opus' },
-    { title: 'Gate', detail: 'one cheap agent per wave: is the surface later steps consume coherent?', model: 'sonnet' },
-    { title: 'Check', detail: 'cross-step consistency + suite', model: 'opus' },
+    { title: 'Scout', detail: 'briefs only for ambiguous or oversized steps' },
+    { title: 'Implement', detail: 'per-step implementation + executed verification' },
+    { title: 'Gate', detail: 'one cheap agent per wave: is the surface later steps consume coherent?' },
+    { title: 'Check', detail: 'cross-step consistency + suite' },
   ],
 }
 
 // args: { workspace, steps, completed?, baseline?, planPath?, notes?, review?=true, reviewRounds?=2,
 //         reviewLoopPath?, scoutMode?='adaptive', maxParallelSteps?=5,
-//         gate?=true, checkpointFileThreshold?=20, checkpointMaxWaves?=3, rules?, dryRun? }
+//         gate?=true, checkpointFileThreshold?=20, checkpointMaxWaves?=3, rules?,
+//         profile?, models?, efforts?, dryRun? }
+//   profile/models/efforts: model tier per role (scout, impl, gate, check) — see the policy block
+//          below. Passed through to the nested review loop, so one dial covers the whole run.
 //   completed: what an earlier run of this same plan already implemented — the `continuation.completed`
 //          array it returned, or bare ids. Stopping early is a designed outcome here (a blocking
 //          question, an unclean checkpoint, a failed step, the budget floor), so continuing is a
@@ -33,7 +36,51 @@ export const meta = {
 //   COST decision and are deliberately coarser: waves accumulate until a checkpoint is worth paying
 //   for, and each wave in between gets one cheap contract gate instead of a full review loop.
 if (typeof args === 'string') { try { args = JSON.parse(args) } catch (e) { throw new Error('args arrived as a non-JSON string') } }
-if (args && args.dryRun) return { ok: true, workflow: 'wf-implement' }
+
+// ---- Model/effort policy (roles, not phases — a policy passes intact into nested workflows).
+// Defaults are the tiers this workflow shipped with; `profile` shifts every role one rung on the
+// model ladder, explicit `models`/`efforts` win over it, and an unknown role throws rather than
+// being silently ignored. Effort defaults to inheriting the session's. See docs/architecture.md.
+const MODELS = ['haiku', 'sonnet', 'opus']
+const EFFORTS = ['low', 'medium', 'high', 'xhigh', 'max']
+const ROLE_NAMES = ['decompose', 'scout', 'validate', 'synth', 'impl', 'gate', 'check', 'review', 'verify', 'fix']
+const PROFILE_SHIFT = { cheap: -1, default: 0, max: 1 }
+function policy(defaults) {
+  const a = args || {}
+  const shift = a.profile == null ? 0 : PROFILE_SHIFT[a.profile]
+  if (shift === undefined) throw new Error(`unknown profile "${a.profile}" — use ${Object.keys(PROFILE_SHIFT).join(' | ')}`)
+  const models = a.models || {}
+  const efforts = a.efforts || {}
+  for (const k of [...Object.keys(models), ...Object.keys(efforts)]) {
+    if (!ROLE_NAMES.includes(k)) throw new Error(`unknown role "${k}" — pipeline roles are ${ROLE_NAMES.join(', ')}`)
+  }
+  const pick = (ladder, base, override, what) => {
+    if (override != null) {
+      if (!ladder.includes(override)) throw new Error(`unknown ${what} "${override}" — use ${ladder.join(' | ')}`)
+      return override
+    }
+    if (base == null) return null
+    return ladder[Math.min(ladder.length - 1, Math.max(0, ladder.indexOf(base) + shift))]
+  }
+  const out = {}
+  for (const name of Object.keys(defaults)) {
+    const model = pick(MODELS, defaults[name].model, models[name], 'model')
+    const effort = pick(EFFORTS, defaults[name].effort || null, efforts[name], 'effort')
+    out[name] = effort ? { model, effort } : { model } // never hand agent() an effort of null
+  }
+  if (a.profile != null || Object.keys(models).length || Object.keys(efforts).length) {
+    log(`policy: ${Object.keys(out).map((r) => `${r}=${out[r].model}${out[r].effort ? '/' + out[r].effort : ''}`).join(' ')}`)
+  }
+  return out
+}
+const ROLE = policy({
+  scout: { model: 'sonnet' },
+  impl: { model: 'opus' }, // runs once per step — the pipeline's largest single cost driver
+  gate: { model: 'sonnet' },
+  check: { model: 'opus' },
+})
+
+if (args && args.dryRun) return { ok: true, workflow: 'wf-implement', policy: ROLE }
 if (!args || !args.workspace) throw new Error('args.workspace is required: absolute path to the task workspace')
 if (!args.steps || !args.steps.length) throw new Error('args.steps is required: the machine-readable steps from the plan')
 
@@ -384,7 +431,7 @@ async function runStep(s, batch, depth, ctx) {
     return { step: s.id, title: s.title, skipped_for_budget: true }
   }
   const brief = needsScout(s, depth)
-    ? await agent(scoutPrompt(s, depth, ctx), { label: `scout:${s.id}`, phase: 'Scout', model: 'sonnet', schema: BRIEF_SCHEMA })
+    ? await agent(scoutPrompt(s, depth, ctx), { label: `scout:${s.id}`, phase: 'Scout', ...ROLE.scout, schema: BRIEF_SCHEMA })
     : { summary: 'Use the validated plan and inspect current callers before editing.', brief_path: planPath, gotchas: [], too_big: false }
   if (!brief) return { step: s.id, title: s.title, failed: true, stage: 'scout' }
 
@@ -406,7 +453,7 @@ async function runStep(s, batch, depth, ctx) {
   }
   if (brief.too_big && depth >= MAX_SPLIT_DEPTH) log(`step ${s.id} flagged too_big at max split depth — implementing as-is`)
 
-  const impl = await agent(implPrompt(s, brief, batch, ctx), { label: `impl:${s.id}`, phase: 'Implement', model: 'opus', schema: IMPL_SCHEMA })
+  const impl = await agent(implPrompt(s, brief, batch, ctx), { label: `impl:${s.id}`, phase: 'Implement', ...ROLE.impl, schema: IMPL_SCHEMA })
   if (!impl) {
     return {
       step: s.id,
@@ -507,7 +554,7 @@ async function gateWave(waveNumber, changed, dependents) {
   if (!gateEnabled || !dependents.length || !changed.length) return null
   if (budget.total && budget.remaining() < 30000) return null
   return agent(gatePrompt(waveNumber, changed, dependents), {
-    label: `gate:wave-${waveNumber}`, phase: 'Gate', model: 'sonnet', schema: GATE_SCHEMA,
+    label: `gate:wave-${waveNumber}`, phase: 'Gate', ...ROLE.gate, schema: GATE_SCHEMA,
   })
 }
 
@@ -546,6 +593,11 @@ async function reviewCheckpoint(pending, checkpointNumber) {
     baseline: args.baseline,
     apply: true,
     maxRounds: args.reviewRounds ?? 3,
+    // The policy travels with the call: a cheap implement whose reviews run at full price is not
+    // a cheap run. Role names are pipeline-wide, so review-loop reads the same object.
+    profile: args.profile,
+    models: args.models,
+    efforts: args.efforts,
   })
 }
 
@@ -725,7 +777,7 @@ Small integration fixes (a rename, a missing import/registration, deduplicating 
 Keep the suite output out of your report — a compact observed result in suite_run is what is wanted, not logs.
 
 Return the structured report.`,
-    { label: 'consistency-check', model: 'opus', schema: CHECK_SCHEMA },
+    { label: 'consistency-check', ...ROLE.check, schema: CHECK_SCHEMA },
   )
 } else {
   finalCheck = {

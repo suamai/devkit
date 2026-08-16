@@ -63,7 +63,7 @@ You orchestrate the implementation phase of a planned dev task. The heavy liftin
    `reviewRounds: N` (default 3 — rounds after the first are one targeted agent, so this is cheaper
    than it looks), `scoutMode: "always" | "adaptive" | "never"` (default adaptive: the plan's
    `context_confidence` decides, heuristic as fallback), `maxParallelSteps` (default 5), `gate: false`,
-   `checkpointFileThreshold` (default 20), `checkpointMaxWaves` (default 3).
+   `checkpointFileThreshold` (default 20), `checkpointMaxWaves` (default 3); `profile`/`models`/`efforts` (see Cost below — `impl` runs once per step and is the pipeline's largest single cost).
 
    Waves stay sequential (that's `depends_on`), but review is **not** per wave: waves accumulate into
    a review checkpoint, and each wave in between gets one cheap contract gate. To restore per-wave
@@ -159,6 +159,20 @@ Invoked as `/dev-implement <slug> --continue` (or just "continue the implement")
 4. **`resumeFromRunId` is a different tool.** It replays cached agents after a *crash*. A planned
    stop usually changes `notes` (that is where the answer goes), which changes every implementer
    prompt and invalidates the cache anyway — so `completed` is the path here, not resume.
+
+## Cost
+
+Every workflow takes the same three cost args, and every skill passes them through:
+`profile: "cheap" | "default" | "max"` shifts every agent one rung on the model ladder;
+`models: { <role>: "haiku|sonnet|opus" }` and `efforts: { <role>: "low|…|max" }` override one role
+and beat the profile. Roles are pipeline-wide (`decompose, scout, validate, synth, impl, gate,
+check, review, verify, fix`), so one object covers a workflow and everything it calls. An unknown
+role or value throws before any agent runs — check it with `dryRun: true`, which returns the
+resolved policy. Omitting all three reproduces the shipped tiers exactly. Default it from the
+repo's `Cost profile:` line in CLAUDE.md when one is present.
+
+This skill forwards them into the nested `wf-review-loop` as well, so one dial covers
+implementation *and* its review checkpoints.
 
 ## Notes
 

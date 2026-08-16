@@ -3,14 +3,14 @@ export const meta = {
   description: 'Loop until clean: two complementary reviewers → semantic clustering + batched verification → apply confirmed fixes → explicit re-review',
   whenToUse: 'Validate implemented code changes. Reusable standalone (via /dev-review) or called from the wf-implement workflow via workflow()',
   phases: [
-    { title: 'Review', detail: 'two complementary lenses over the change; later rounds re-review only what the fixes touched', model: 'sonnet' },
-    { title: 'Verify', detail: 'cluster and verify all findings in one batch; critical findings get one second opinion', model: 'sonnet' },
-    { title: 'Fix', detail: 'apply confirmed fixes; opus only for critical defects', model: 'sonnet' },
+    { title: 'Review', detail: 'two complementary lenses over the change; later rounds re-review only what the fixes touched' },
+    { title: 'Verify', detail: 'cluster and verify all findings in one batch; critical findings get one second opinion' },
+    { title: 'Fix', detail: 'apply confirmed fixes; critical defects escalate one model tier' },
   ],
 }
 
 // args: { scope, intent?, baseline?, contextPaths?, priority?, rules?, priorRefuted?, apply?=true,
-//         maxRounds?=3, lenses?, fixModel?, dryRun? }
+//         maxRounds?=3, lenses?, fixModel?, profile?, models?, efforts?, dryRun? }
 //   scope:        what to review — files/paths/diff description. Reviewers only look here.
 //   intent:       what the change was supposed to accomplish (plan step, spec criteria).
 //   baseline:     git SHA before the change — reviewers judge the DIFF since it, not whole files.
@@ -22,7 +22,54 @@ export const meta = {
 //   priorRefuted: findings dismissed by an earlier review of the same run, with their reasoning —
 //                 so this one does not re-investigate them from scratch.
 if (typeof args === 'string') { try { args = JSON.parse(args) } catch (e) { throw new Error('args arrived as a non-JSON string') } }
-if (args && args.dryRun) return { ok: true, workflow: 'wf-review-loop' }
+
+// ---- Model/effort policy (roles, not phases — a policy passes intact into nested workflows).
+// Defaults are the tiers this workflow shipped with; `profile` shifts every role one rung on the
+// model ladder, explicit `models`/`efforts` win over it, and an unknown role throws rather than
+// being silently ignored. Effort defaults to inheriting the session's. See docs/architecture.md.
+const MODELS = ['haiku', 'sonnet', 'opus']
+const EFFORTS = ['low', 'medium', 'high', 'xhigh', 'max']
+const ROLE_NAMES = ['decompose', 'scout', 'validate', 'synth', 'impl', 'gate', 'check', 'review', 'verify', 'fix']
+const PROFILE_SHIFT = { cheap: -1, default: 0, max: 1 }
+function policy(defaults) {
+  const a = args || {}
+  const shift = a.profile == null ? 0 : PROFILE_SHIFT[a.profile]
+  if (shift === undefined) throw new Error(`unknown profile "${a.profile}" — use ${Object.keys(PROFILE_SHIFT).join(' | ')}`)
+  const models = a.models || {}
+  const efforts = a.efforts || {}
+  for (const k of [...Object.keys(models), ...Object.keys(efforts)]) {
+    if (!ROLE_NAMES.includes(k)) throw new Error(`unknown role "${k}" — pipeline roles are ${ROLE_NAMES.join(', ')}`)
+  }
+  const pick = (ladder, base, override, what) => {
+    if (override != null) {
+      if (!ladder.includes(override)) throw new Error(`unknown ${what} "${override}" — use ${ladder.join(' | ')}`)
+      return override
+    }
+    if (base == null) return null
+    return ladder[Math.min(ladder.length - 1, Math.max(0, ladder.indexOf(base) + shift))]
+  }
+  const out = {}
+  for (const name of Object.keys(defaults)) {
+    const model = pick(MODELS, defaults[name].model, models[name], 'model')
+    const effort = pick(EFFORTS, defaults[name].effort || null, efforts[name], 'effort')
+    out[name] = effort ? { model, effort } : { model } // never hand agent() an effort of null
+  }
+  if (a.profile != null || Object.keys(models).length || Object.keys(efforts).length) {
+    log(`policy: ${Object.keys(out).map((r) => `${r}=${out[r].model}${out[r].effort ? '/' + out[r].effort : ''}`).join(' ')}`)
+  }
+  return out
+}
+function escalate(model) {
+  const i = MODELS.indexOf(model)
+  return i === -1 ? model : MODELS[Math.min(MODELS.length - 1, i + 1)]
+}
+const ROLE = policy({
+  review: { model: 'sonnet' },
+  verify: { model: 'sonnet' },
+  fix: { model: 'sonnet' },
+})
+
+if (args && args.dryRun) return { ok: true, workflow: 'wf-review-loop', policy: ROLE }
 if (!args || !args.scope) throw new Error('args.scope is required: which files/changes to review')
 
 const intent = args.intent || 'Not provided — judge the code on its own terms.'
@@ -231,11 +278,11 @@ while (round < maxRounds) {
   let found
   if (round === 1) {
     found = (await parallel(LENSES.map((l) => () =>
-      agent(reviewPrompt(l, round), { label: `review:${l.key} r${round}`, phase: 'Review', model: 'sonnet', schema: FINDINGS_SCHEMA }),
+      agent(reviewPrompt(l, round), { label: `review:${l.key} r${round}`, phase: 'Review', ...ROLE.review, schema: FINDINGS_SCHEMA }),
     ))).filter(Boolean).flatMap((r) => r.findings)
   } else {
     const re = await agent(rereviewPrompt(lastRound.confirmed, lastRound.applied, lastRound.skipped, round), {
-      label: `re-review r${round}`, phase: 'Review', model: 'sonnet', schema: FINDINGS_SCHEMA,
+      label: `re-review r${round}`, phase: 'Review', ...ROLE.review, schema: FINDINGS_SCHEMA,
     })
     // An unavailable re-review is not evidence of a clean result — never let it fall through as one.
     if (!re) { log(`round ${round}: re-review agent unavailable — stopping without a clean verdict`); break }
@@ -246,14 +293,14 @@ while (round < maxRounds) {
   if (!found.length) { clean = true; break }
 
   if (budget.total && budget.remaining() < 20000) { log('budget too low for verification — stopping without clean verdict'); break }
-  const verified = await agent(verifyPrompt(found, round), { label: `verify:batch r${round}`, phase: 'Verify', model: 'sonnet', schema: VERIFIED_FINDINGS_SCHEMA })
+  const verified = await agent(verifyPrompt(found, round), { label: `verify:batch r${round}`, phase: 'Verify', ...ROLE.verify, schema: VERIFIED_FINDINGS_SCHEMA })
   if (!verified) break
   let confirmed = verified.findings.filter((f) => f.confirmed)
   allRefuted.push(...verified.findings.filter((f) => !f.confirmed))
 
   const critical = confirmed.filter((f) => f.severity === 'critical')
   if (critical.length) {
-    const second = await agent(criticalPrompt(critical), { label: `verify:critical r${round}`, phase: 'Verify', model: 'sonnet', schema: SECOND_OPINION_SCHEMA })
+    const second = await agent(criticalPrompt(critical), { label: `verify:critical r${round}`, phase: 'Verify', ...ROLE.verify, schema: SECOND_OPINION_SCHEMA })
     if (!second) break
     const byId = new Map(second.verdicts.map((v) => [v.id, v]))
     confirmed = confirmed.filter((f) => {
@@ -272,8 +319,10 @@ while (round < maxRounds) {
   if (!apply) break // report-only mode: one full find+verify pass is the deliverable
 
   if (budget.total && budget.remaining() < 20000) { log('budget too low for fixes — stopping without clean verdict'); break }
-  const fixModel = args.fixModel || (confirmed.some((f) => f.severity === 'critical') ? 'opus' : 'sonnet')
-  const fix = await agent(fixPrompt(confirmed), { label: `fix r${round}`, phase: 'Fix', model: fixModel, schema: FIX_SCHEMA })
+  // A critical defect buys one rung above this run's fix tier, not a hardcoded opus: the
+  // escalation has to keep meaning something under a cheap profile, where sonnet IS the escalation.
+  const fixModel = args.fixModel || (confirmed.some((f) => f.severity === 'critical') ? escalate(ROLE.fix.model) : ROLE.fix.model)
+  const fix = await agent(fixPrompt(confirmed), { label: `fix r${round}`, phase: 'Fix', ...ROLE.fix, model: fixModel, schema: FIX_SCHEMA })
   if (fix) {
     allApplied.push(...fix.applied)
     allSkipped.push(...fix.skipped)

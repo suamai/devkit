@@ -3,14 +3,57 @@ export const meta = {
   description: 'Turn a persisted, verified PR review into a cohesive remediation plan without repeating full repository exploration',
   whenToUse: 'Called by /dev-plan --review for nontrivial or cross-cutting confirmed findings',
   phases: [
-    { title: 'Validate', detail: 'optionally re-check current reachability and remediation dependencies in one batch', model: 'sonnet' },
-    { title: 'Synthesize', detail: 'group root causes into executable remediation steps and write plan.md', model: 'sonnet' },
+    { title: 'Validate', detail: 'optionally re-check current reachability and remediation dependencies in one batch' },
+    { title: 'Synthesize', detail: 'group root causes into executable remediation steps and write plan.md' },
   ],
 }
 
-// args: { reviewPath, workspace, planPath?, validate?=true, deep?=false, dryRun? }
+// args: { reviewPath, workspace, planPath?, validate?=true, deep?=false,
+//         profile?, models?, efforts?, dryRun? }
 if (typeof args === 'string') { try { args = JSON.parse(args) } catch (e) { throw new Error('args arrived as a non-JSON string') } }
-if (args && args.dryRun) return { ok: true, workflow: 'wf-plan-remediation' }
+
+// ---- Model/effort policy (roles, not phases — a policy passes intact into nested workflows).
+// Defaults are the tiers this workflow shipped with; `profile` shifts every role one rung on the
+// model ladder, explicit `models`/`efforts` win over it, and an unknown role throws rather than
+// being silently ignored. Effort defaults to inheriting the session's. See docs/architecture.md.
+const MODELS = ['haiku', 'sonnet', 'opus']
+const EFFORTS = ['low', 'medium', 'high', 'xhigh', 'max']
+const ROLE_NAMES = ['decompose', 'scout', 'validate', 'synth', 'impl', 'gate', 'check', 'review', 'verify', 'fix']
+const PROFILE_SHIFT = { cheap: -1, default: 0, max: 1 }
+function policy(defaults) {
+  const a = args || {}
+  const shift = a.profile == null ? 0 : PROFILE_SHIFT[a.profile]
+  if (shift === undefined) throw new Error(`unknown profile "${a.profile}" — use ${Object.keys(PROFILE_SHIFT).join(' | ')}`)
+  const models = a.models || {}
+  const efforts = a.efforts || {}
+  for (const k of [...Object.keys(models), ...Object.keys(efforts)]) {
+    if (!ROLE_NAMES.includes(k)) throw new Error(`unknown role "${k}" — pipeline roles are ${ROLE_NAMES.join(', ')}`)
+  }
+  const pick = (ladder, base, override, what) => {
+    if (override != null) {
+      if (!ladder.includes(override)) throw new Error(`unknown ${what} "${override}" — use ${ladder.join(' | ')}`)
+      return override
+    }
+    if (base == null) return null
+    return ladder[Math.min(ladder.length - 1, Math.max(0, ladder.indexOf(base) + shift))]
+  }
+  const out = {}
+  for (const name of Object.keys(defaults)) {
+    const model = pick(MODELS, defaults[name].model, models[name], 'model')
+    const effort = pick(EFFORTS, defaults[name].effort || null, efforts[name], 'effort')
+    out[name] = effort ? { model, effort } : { model } // never hand agent() an effort of null
+  }
+  if (a.profile != null || Object.keys(models).length || Object.keys(efforts).length) {
+    log(`policy: ${Object.keys(out).map((r) => `${r}=${out[r].model}${out[r].effort ? '/' + out[r].effort : ''}`).join(' ')}`)
+  }
+  return out
+}
+const ROLE = policy({
+  validate: { model: 'sonnet' },
+  synth: { model: 'sonnet' },
+})
+
+if (args && args.dryRun) return { ok: true, workflow: 'wf-plan-remediation', policy: ROLE }
 if (!args || !args.reviewPath) throw new Error('args.reviewPath is required: persisted PR review markdown')
 if (!args.workspace) throw new Error('args.workspace is required: absolute remediation workspace path')
 
@@ -72,7 +115,7 @@ const validation = args.validate === false ? null : await agent(
 Read the persisted review at "${args.reviewPath}". Use only its machine-readable CONFIRMED findings as candidates. Re-read current code and relevant callers/tests. Confirm whether each defect is still reachable, identify findings with the same root cause, dependencies between fixes, and the cheapest executable verification. ${args.deep ? 'Inspect integration boundaries deeply because the developer requested deep remediation planning.' : 'Stay proportional: do not rediscover the whole feature or report unrelated defects.'}
 
 Do not modify files. Return native structured data only; no XML or wrapper object.`,
-  { label: 'validate:remediation', phase: 'Validate', model: 'sonnet', schema: VALIDATION_SCHEMA },
+  { label: 'validate:remediation', phase: 'Validate', ...ROLE.validate, schema: VALIDATION_SCHEMA },
 )
 if (args.validate !== false && !validation) throw new Error('remediation validation failed')
 if (validation && !validation.assessments.some((a) => a.verdict === 'confirmed')) {
@@ -99,7 +142,7 @@ Use only confirmed, still-current findings. Group findings with one root cause o
 WRITE markdown to "${planPath}" with: title, source review and reviewed HEAD, approach, steps, risks/open questions, dropped/refuted-or-stale findings, and a final section named Machine-readable steps containing a fenced JSON array exactly matching the returned steps. The source review remains immutable evidence; this file records the chosen correction strategy.
 
 Return one native JSON object with these top-level properties: title, approach_summary, steps, risks, open_questions, dropped_findings, and plan_path. Pass them as actual tool-input properties. Do not put the object inside a summary string; do not use XML/tags or nest it under input/result. Keep prose detail in the plan file.`,
-  { label: 'synthesize:remediation', phase: 'Synthesize', model: 'sonnet', schema: PLAN_SCHEMA },
+  { label: 'synthesize:remediation', phase: 'Synthesize', ...ROLE.synth, schema: PLAN_SCHEMA },
 )
 if (!plan) throw new Error('remediation plan synthesis failed')
 

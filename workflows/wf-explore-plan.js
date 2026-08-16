@@ -3,19 +3,64 @@ export const meta = {
   description: 'Fan-out repo exploration by angle, one batched validation of load-bearing claims, cross-checked plan synthesis into a task workspace',
   whenToUse: 'Start of a medium/large dev task: turn a task brief or spec into a validated, step-structured plan file',
   phases: [
-    { title: 'Decompose', detail: 'derive exploration angles from the task', model: 'sonnet' },
-    { title: 'Explore', detail: 'one scout per angle; full reports land in the workspace', model: 'sonnet' },
-    { title: 'Validate', detail: 'one adversarial pass over load-bearing claims from all reports', model: 'sonnet' },
-    { title: 'Synthesize', detail: 'cross-check findings, write the plan file', model: 'opus' },
+    { title: 'Decompose', detail: 'derive exploration angles from the task' },
+    { title: 'Explore', detail: 'one scout per angle; full reports land in the workspace' },
+    { title: 'Validate', detail: 'one adversarial pass over load-bearing claims from all reports' },
+    { title: 'Synthesize', detail: 'cross-check findings, write the plan file' },
   ],
 }
 
-// args: { task, workspace, specPath?, scope?, requirements?, constraints?, angles?, validate?=true, planPath?, dryRun? }
+// args: { task, workspace, specPath?, scope?, requirements?, constraints?, angles?, validate?=true,
+//         planPath?, profile?, models?, efforts?, dryRun? }
 //   workspace: absolute path to the task workspace (e.g. <repo>/.dev/<slug>).
 //   Context discipline (RLM-style): scouts WRITE full reports to <workspace>/findings/ and RETURN
 //   compact summaries; downstream agents receive paths and read detail only when load-bearing.
 if (typeof args === 'string') { try { args = JSON.parse(args) } catch (e) { throw new Error('args arrived as a non-JSON string') } }
-if (args && args.dryRun) return { ok: true, workflow: 'wf-explore-plan' }
+
+// ---- Model/effort policy (roles, not phases — a policy passes intact into nested workflows).
+// Defaults are the tiers this workflow shipped with; `profile` shifts every role one rung on the
+// model ladder, explicit `models`/`efforts` win over it, and an unknown role throws rather than
+// being silently ignored. Effort defaults to inheriting the session's. See docs/architecture.md.
+const MODELS = ['haiku', 'sonnet', 'opus']
+const EFFORTS = ['low', 'medium', 'high', 'xhigh', 'max']
+const ROLE_NAMES = ['decompose', 'scout', 'validate', 'synth', 'impl', 'gate', 'check', 'review', 'verify', 'fix']
+const PROFILE_SHIFT = { cheap: -1, default: 0, max: 1 }
+function policy(defaults) {
+  const a = args || {}
+  const shift = a.profile == null ? 0 : PROFILE_SHIFT[a.profile]
+  if (shift === undefined) throw new Error(`unknown profile "${a.profile}" — use ${Object.keys(PROFILE_SHIFT).join(' | ')}`)
+  const models = a.models || {}
+  const efforts = a.efforts || {}
+  for (const k of [...Object.keys(models), ...Object.keys(efforts)]) {
+    if (!ROLE_NAMES.includes(k)) throw new Error(`unknown role "${k}" — pipeline roles are ${ROLE_NAMES.join(', ')}`)
+  }
+  const pick = (ladder, base, override, what) => {
+    if (override != null) {
+      if (!ladder.includes(override)) throw new Error(`unknown ${what} "${override}" — use ${ladder.join(' | ')}`)
+      return override
+    }
+    if (base == null) return null
+    return ladder[Math.min(ladder.length - 1, Math.max(0, ladder.indexOf(base) + shift))]
+  }
+  const out = {}
+  for (const name of Object.keys(defaults)) {
+    const model = pick(MODELS, defaults[name].model, models[name], 'model')
+    const effort = pick(EFFORTS, defaults[name].effort || null, efforts[name], 'effort')
+    out[name] = effort ? { model, effort } : { model } // never hand agent() an effort of null
+  }
+  if (a.profile != null || Object.keys(models).length || Object.keys(efforts).length) {
+    log(`policy: ${Object.keys(out).map((r) => `${r}=${out[r].model}${out[r].effort ? '/' + out[r].effort : ''}`).join(' ')}`)
+  }
+  return out
+}
+const ROLE = policy({
+  decompose: { model: 'sonnet', effort: 'low' }, // task text in, angle names out — reads no code
+  scout: { model: 'sonnet' },
+  validate: { model: 'sonnet' },
+  synth: { model: 'opus' },
+})
+
+if (args && args.dryRun) return { ok: true, workflow: 'wf-explore-plan', policy: ROLE }
 if (!args || !args.task) throw new Error('args.task is required: what is being built or changed')
 if (!args.workspace) throw new Error('args.workspace is required: absolute path to the task workspace (e.g. <repo>/.dev/<slug>)')
 
@@ -147,7 +192,7 @@ ${TASK_BRIEF}
 Produce 3-5 exploration angles for read-only scouts. Merge related concerns into one angle when they share entry points or evidence. Each scout works alone and cannot see the others, so angles must be self-contained and collectively cover what an implementer needs: current behavior, integrations/callers, conventions, tests, and relevant config/build/deploy touchpoints. Skip irrelevant angles and give concrete hints about where to look.
 
 Your final output is consumed by a script, not a human — return the structured data only.`,
-    { label: 'decompose', model: 'sonnet', schema: ANGLES_SCHEMA },
+    { label: 'decompose', ...ROLE.decompose, schema: ANGLES_SCHEMA },
   )
   if (!d) throw new Error('decomposition agent failed')
   angles = d.angles
@@ -191,7 +236,7 @@ Do NOT modify any files. Your final output is raw data for an orchestrator.`
 }
 
 const scoutResults = await parallel(angles.map((a) => () =>
-  agent(scoutPrompt(a), { label: `scout:${a.name}`, phase: 'Explore', model: 'sonnet', schema: SCOUT_SCHEMA })
+  agent(scoutPrompt(a), { label: `scout:${a.name}`, phase: 'Explore', ...ROLE.scout, schema: SCOUT_SCHEMA })
 ))
 const scouted = angles.map((angle, index) => ({ angle, scout: scoutResults[index] })).filter((entry) => entry.scout)
 
@@ -200,7 +245,7 @@ if (!scouted.length) throw new Error('all scouts failed — nothing to synthesiz
 phase('Validate')
 const validation = args.validate === false
   ? { verdicts: [], missed_findings: [], suggested_adjustments: [] }
-  : await agent(validatePrompt(scouted), { label: 'validate:batch', phase: 'Validate', model: 'sonnet', schema: VALIDATION_SCHEMA })
+  : await agent(validatePrompt(scouted), { label: 'validate:batch', phase: 'Validate', ...ROLE.validate, schema: VALIDATION_SCHEMA })
 if (!validation) throw new Error('batched validation failed')
 
 const validated = scouted.map(({ angle, scout }) => ({
@@ -247,7 +292,7 @@ Write the full plan to "${planPath}":
 A fenced \`\`\`json block containing exactly the steps array you return in your structured output.
 
 Return the structured data; the plan file is the human-facing artifact.`,
-  { label: 'synthesize', model: 'opus', schema: PLAN_SCHEMA },
+  { label: 'synthesize', ...ROLE.synth, schema: PLAN_SCHEMA },
 )
 
 if (!synth) throw new Error('synthesis agent failed')

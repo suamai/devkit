@@ -185,10 +185,21 @@ Cost scales with the triage tier — that's the point of triage, and the tier is
 knob: nothing else on this list saves what not escalating saves. Claude defaults low and has to name
 a signal to go up, so the cheapest correction available to you is disagreeing with that line. The
 rest, roughly in order:
-say "+300k" (or any token target) in your message to set a hard budget the loops respect;
-`reviewRounds`/`review: false`, `scoutMode`, and `maxParallelSteps` for implement; fewer `angles` or
-`validate: false` for exploration. The completion
-notification of every workflow shows its token usage — glance at it.
+
+- **Model tier.** `profile: "cheap"` shifts every agent in a run one rung down the
+  `haiku → sonnet → opus` ladder; `"max"` shifts it up. It reaches nested workflows too, so a cheap
+  implement also gets cheap review checkpoints. For one role instead of all of them:
+  `models: { impl: "sonnet" }` (roles: `decompose, scout, validate, synth, impl, gate, check, review,
+  verify, fix`), and `efforts: { … }` for reasoning effort. Say it in your message — "run this
+  cheap", "use sonnet for the implementers" — and Claude passes it through. To pin a default for the
+  whole repo, put a `Cost profile:` line in `CLAUDE.md`; `/dev-setup` offers this.
+- **Token budget.** Say "+300k" (or any target) in your message to set a hard budget the loops
+  respect. Unlike the profile this stops work rather than making it cheaper: steps past the floor
+  come back as `skipped_for_budget`.
+- **Stage knobs.** `reviewRounds`/`review: false`, `scoutMode`, `maxParallelSteps` for implement;
+  fewer `angles` or `validate: false` for exploration.
+
+The completion notification of every workflow shows its token usage — glance at it.
 
 PR drafting without `--review` uses no review agents. Remediation planning does not invoke the full
 3-5-scout exploration: simple findings use no agents; nontrivial findings use one planner and, only
