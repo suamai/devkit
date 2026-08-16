@@ -143,6 +143,40 @@ or a repo, shifts them.
   string. Named resolution requires a session restart after creating a workflow file; `scriptPath`
   works immediately.
 
+## Repo rules — a native convention the subagents could not see
+
+`.claude/rules/*.md` is **Claude Code's** convention, not devkit's. Those files load automatically
+alongside CLAUDE.md, and a `paths:` frontmatter key scopes one so it loads only when Claude works
+with matching files. (Verified against the shipped CLI: its `/init` text describes exactly this, and
+`claudeMdExcludes` lists `.claude/rules/**` among the memory it can exclude.) So the frontmatter
+contract is not ours to define — the pipeline conforms to it.
+
+That places rules next to the other two memory shapes rather than replacing them:
+
+| | Loads | Good for |
+|---|---|---|
+| root `CLAUDE.md` | always | facts every session needs |
+| nested `CLAUDE.md` | when working **under that directory** | module-local instructions, in a monorepo |
+| `.claude/rules/*.md` + `paths:` | when working with **matching files** | cross-cutting concerns whose files don't share a directory — the data layer, error surfaces, migrations |
+
+What devkit adds is **reach**, not format. Native loading is a main-session mechanism: a background
+workflow subagent inherits none of it, which is why every agent used to rediscover conventions the
+repo had already written down. So `scripts/rules-manifest.sh` extracts `[{path, globs}]` (workflow
+scripts have no filesystem access) and the workflows match it per agent, handing each one only the
+rules covering the files it touches — plus every unscoped rule, since natively those load for
+everything.
+
+Two consequences worth stating:
+
+- **The matcher is ours and can disagree with the CLI's at the edges.** A workflow script cannot
+  import Claude Code's matcher, so `globToRegExp` reimplements `*`, `**/`, `?` and `{a,b}`. It errs
+  toward offering an extra rule, which costs one read. It lives in a fenced block copied verbatim
+  into `wf-implement.js` and `wf-review-loop.js`; `tests/rules.test.js` asserts the copies stay
+  byte-identical, so the duplication is one algorithm rather than two.
+- **Matching happens in one place, for both entry points.** `wf-implement` passes the raw manifest
+  and the changed-file list down to `wf-review-loop` rather than a pre-filtered list, so `/dev-review`
+  standalone gets the same deterministic matching instead of a skill eyeballing globs in the main loop.
+
 ## Cost policy — roles, not phases
 
 Model tier and reasoning effort are arguments, not constants. Every workflow resolves them once at

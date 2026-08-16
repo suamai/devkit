@@ -258,12 +258,19 @@ function disjoint(a, b) {
   return !af.some((left) => bf.some((right) => overlaps(left, right)))
 }
 
-// ---- Path-scoped repo rules. The repo curates per-area checklists (.claude/rules/*.md with a
-// `paths:` frontmatter); they load lazily for the main session but never reached workflow subagents,
-// so every agent was rediscovering conventions the repo had already written down. The caller passes
-// [{path, globs}] (scripts have no filesystem); we match and hand each agent only its relevant rules.
+// ---- Path-scoped repo rules. `.claude/rules/*.md` is a NATIVE Claude Code convention, not a devkit
+// one: those files load automatically alongside CLAUDE.md, and a `paths:` frontmatter key scopes a
+// file so it loads only when Claude works with matching files (verified against the shipped CLI —
+// its /init text and its claudeMdExcludes docs both describe exactly this). That loading is a
+// main-session mechanism, and it never reached workflow subagents, so every agent was rediscovering
+// conventions the repo had already written down. Scripts have no filesystem access, so the caller
+// runs scripts/rules-manifest.sh and passes [{path, globs}]; we do the matching per agent.
+//
+// The matching below is ours, not the CLI's — a workflow script cannot import its matcher, so the
+// two can disagree at the edges. It errs toward offering an extra rule, which costs a read.
 const ruleDefs = (args.rules || []).filter((r) => r && r.path)
 
+// >>> shared: repo-rule matching — byte-identical across workflows (tests/rules.test.js)
 function globToRegExp(glob) {
   let out = '^'
   let i = 0
@@ -309,15 +316,23 @@ function ruleSpecificity(rule) {
 }
 
 function rulesFor(files) {
-  if (!ruleDefs.length || !files.length) return []
+  if (!ruleDefs.length) return []
   return ruleDefs
-    .filter((rule) => (rule.globs || []).some((g) => {
-      const regex = globToRegExp(normalizePath(g))
-      return files.some((f) => ruleMatchesFile(g, regex, f))
-    }))
+    .filter((rule) => {
+      const globs = (rule.globs || []).filter(Boolean)
+      // No `paths:` frontmatter means unscoped: Claude Code loads that rule alongside CLAUDE.md for
+      // every file, so a subagent — which inherits none of that — must see it for every file too.
+      if (!globs.length) return true
+      if (!files.length) return false
+      return globs.some((g) => {
+        const regex = globToRegExp(normalizePath(g))
+        return files.some((f) => ruleMatchesFile(g, regex, f))
+      })
+    })
     .sort((a, b) => ruleSpecificity(b) - ruleSpecificity(a))
     .map((rule) => rule.path)
 }
+// <<< shared: repo-rule matching
 
 function rulesNote(files, role) {
   const matched = rulesFor(files)
@@ -584,9 +599,11 @@ async function reviewCheckpoint(pending, checkpointNumber) {
     contextPaths: contexts,
     priority: priority || undefined,
     // The rules matching what changed become an extra review lens: what this repo says about this
-    // area, rather than a hardcoded guess at which domains deserve special scrutiny. Capped, because
-    // a repo-wide rule (e.g. **/*.ts) matches almost any change and would crowd out the specific ones.
-    rules: rulesFor(changed).slice(0, 4),
+    // area, rather than a hardcoded guess at which domains deserve special scrutiny. The review loop
+    // gets the raw definitions and the file list and matches them with the same code this file uses,
+    // so there is one matcher for both entry points rather than one here and prose in /dev-review.
+    rules: ruleDefs,
+    files: changed,
     // Refutations from earlier checkpoints, so a later one does not re-litigate a defect that was
     // already investigated and dismissed with reasoning.
     priorRefuted: priorRefuted.length ? priorRefuted : undefined,

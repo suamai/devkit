@@ -43,13 +43,30 @@ Work through these, reporting each as ok / fixed / skipped-with-reason.
    `"Workflow"` (create the file and keys as needed, merging with what exists — never dropping
    entries). This spares the recurring permission prompt on every pipeline run.
 
-5. **Repo rules (optional but high-value).** The pipeline reads `.claude/rules/*.md` — path-scoped
-   checklists with a `paths:` frontmatter listing the globs each one covers. They are the one
-   channel that specializes a generic pipeline to this repo: matching rules reach scouts and
-   implementers, and become an extra `repo-conventions` review lens. If `.claude/rules/` does not
-   exist, say what the repo would gain and offer to draft rules from what is already written down
-   (CLAUDE.md conventions, invariants, a style guide) — but let the developer approve the content.
-   Never invent conventions the repo has not stated.
+5. **Repo rules (optional but high-value).** `.claude/rules/*.md` is a **native** Claude Code
+   convention, not a devkit one: those files load automatically alongside CLAUDE.md, and a `paths:`
+   frontmatter key scopes a file so it loads only when Claude works with matching files. The
+   contract is therefore not ours to define:
+   ```markdown
+   ---
+   description: what this checklist covers      # optional, ignored by the pipeline
+   paths:                                       # optional; omit it and the rule is always loaded
+     - "src/db/**/*.ts"
+     - "packages/*/schema/*.ts"
+   ---
+   ```
+   What devkit adds is reach: that loading is a *main-session* mechanism, so background workflow
+   subagents inherit none of it. The skills extract the manifest with
+   `sh "${CLAUDE_PLUGIN_ROOT}/scripts/rules-manifest.sh"` and the workflows match it per agent, which
+   makes rules the one channel that specializes a generic pipeline to this repo: matching rules reach
+   scouts and implementers, and become an extra `repo-conventions` review lens.
+
+   Verify the manifest here — run the script and show what it found. A rule whose globs come back
+   empty is unscoped (fine, and reaches every agent); a rule whose globs look wrong is a `paths:`
+   typo, and it will silently reach nobody. If `.claude/rules/` does not exist, say what the repo
+   would gain and offer to draft rules from what is already written down (CLAUDE.md conventions,
+   invariants, a style guide) — but let the developer approve the content. Never invent conventions
+   the repo has not stated.
 
 6. **Smoke test.** Run each of the four workflows with `args: {"dryRun": true}` — zero agents
    spawned, zero cost. All four must return `{ok: true}`:

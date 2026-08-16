@@ -10,15 +10,18 @@ export const meta = {
 }
 
 // args: { scope, intent?, baseline?, contextPaths?, priority?, rules?, priorRefuted?, apply?=true,
-//         maxRounds?=3, lenses?, fixModel?, profile?, models?, efforts?, dryRun? }
+//         maxRounds?=3, lenses?, fixModel?, files?, profile?, models?, efforts?, dryRun? }
 //   scope:        what to review — files/paths/diff description. Reviewers only look here.
 //   intent:       what the change was supposed to accomplish (plan step, spec criteria).
 //   baseline:     git SHA before the change — reviewers judge the DIFF since it, not whole files.
 //   contextPaths: workspace files with background (step brief, implementer notes) — hints, not truth.
 //   priority:     where to look FIRST inside the scope (author-flagged doubts, unverified steps).
 //                 A head start, never a scope restriction.
-//   rules:        paths of the repo's path-scoped rule files matching the change; adds one extra
+//   rules:        [{path, globs}] from scripts/rules-manifest.sh — the repo's path-scoped rule
+//                 files. Matched here against `files`; the ones that apply add one extra
 //                 "repo-conventions" lens. Ignored when `lenses` is passed explicitly.
+//   files:        the concrete paths under review. `scope` is prose for the reviewers; this is the
+//                 machine-readable list, and rule matching needs it.
 //   priorRefuted: findings dismissed by an earlier review of the same run, with their reasoning —
 //                 so this one does not re-investigate them from scratch.
 if (typeof args === 'string') { try { args = JSON.parse(args) } catch (e) { throw new Error('args arrived as a non-JSON string') } }
@@ -91,10 +94,98 @@ const REFUTED_NOTE = (args.priorRefuted || []).length
   ? `\n## Already investigated and dismissed earlier in this run\n${JSON.stringify(args.priorRefuted, null, 2)}\n\nDo not re-derive these from scratch. Report one again ONLY if the code changed since in a way that makes the earlier reasoning wrong — and say what changed. Absent that, they are settled.\n`
   : ''
 
-// A third lens only when the repo itself says this area has specific concerns: the caller passes the
-// path-scoped rules matching the changed files. One aggregated lens, never one per rule — lens count
-// is agent count. An explicit `lenses` argument overrides everything, including this.
-const ruleLens = (args.rules || []).filter(Boolean)
+// ---- Path-scoped repo rules, matched here instead of by the caller. `.claude/rules/*.md` is a
+// native Claude Code convention (wf-implement.js carries the full note); the caller runs
+// scripts/rules-manifest.sh and passes [{path, globs}] plus the concrete `files` under review, and
+// this picks the ones that apply. Matching in ONE place is the point: /dev-review used to eyeball
+// globs in the main loop — the same job, done twice, once nondeterministically. The block below is
+// copied verbatim from wf-implement (self-contained scripts cannot share a helper) and
+// tests/rules.test.js asserts the copies stay byte-identical.
+const ruleDefs = (args.rules || []).filter((r) => r && r.path)
+
+const GLOB_TOKENS = ['*', '?', '[', ']', '{', '}']
+const normalizePath = (f) => f.trim().replace(/^\.\//, '').replace(/\/+$/, '')
+
+// A globbed path is compared by the literal directory scope it can reach: "src/db/*.ts" can only
+// touch files under "src/db", so it never conflicts with "src/api/x.ts". Treating any glob as
+// universally overlapping (the earlier rule) serialized steps that were in fact disjoint.
+function pathScope(raw) {
+  const path = normalizePath(raw)
+  const globAt = [...path].findIndex((char) => GLOB_TOKENS.includes(char))
+  if (globAt === -1) return { path, glob: false }
+  const cut = path.lastIndexOf('/', globAt)
+  return { path: cut === -1 ? '' : path.slice(0, cut), glob: true }
+}
+
+// >>> shared: repo-rule matching — byte-identical across workflows (tests/rules.test.js)
+function globToRegExp(glob) {
+  let out = '^'
+  let i = 0
+  while (i < glob.length) {
+    const c = glob[i]
+    if (c === '*') {
+      if (glob[i + 1] === '*') {
+        if (glob[i + 2] === '/') { out += '(?:.*/)?'; i += 3 } else { out += '.*'; i += 2 }
+      } else { out += '[^/]*'; i += 1 }
+    } else if (c === '?') {
+      out += '[^/]'; i += 1
+    } else if (c === '{') {
+      const close = glob.indexOf('}', i)
+      if (close === -1) { out += '\\{'; i += 1 } else {
+        out += `(?:${glob.slice(i + 1, close).split(',').map((a) => a.trim().replace(/[.+^$()|[\]\\*?]/g, '\\$&')).join('|')})`
+        i = close + 1
+      }
+    } else if ('.+^$()|[]\\'.includes(c)) {
+      out += `\\${c}`; i += 1
+    } else {
+      out += c; i += 1
+    }
+  }
+  return new RegExp(`${out}$`)
+}
+
+// A step may declare files as globs too. Exact regex match governs concrete paths; for a globbed
+// declaration we fall back to comparing directory scopes, which errs toward offering an extra rule.
+function ruleMatchesFile(ruleGlob, regex, file) {
+  const path = normalizePath(file)
+  if (regex.test(path)) return true
+  const fileScope = pathScope(path)
+  if (!fileScope.glob) return false
+  const ruleScope = pathScope(normalizePath(ruleGlob))
+  if (!ruleScope.path || !fileScope.path) return true
+  return fileScope.path === ruleScope.path || fileScope.path.startsWith(`${ruleScope.path}/`) || ruleScope.path.startsWith(`${fileScope.path}/`)
+}
+
+// Most specific first: a rule scoped to products/*/packages/domains/src/db says more about the code
+// than one covering **/*.ts, so it leads when the list has to be trimmed.
+function ruleSpecificity(rule) {
+  return Math.max(...(rule.globs || ['']).map((g) => pathScope(normalizePath(g)).path.length))
+}
+
+function rulesFor(files) {
+  if (!ruleDefs.length) return []
+  return ruleDefs
+    .filter((rule) => {
+      const globs = (rule.globs || []).filter(Boolean)
+      // No `paths:` frontmatter means unscoped: Claude Code loads that rule alongside CLAUDE.md for
+      // every file, so a subagent — which inherits none of that — must see it for every file too.
+      if (!globs.length) return true
+      if (!files.length) return false
+      return globs.some((g) => {
+        const regex = globToRegExp(normalizePath(g))
+        return files.some((f) => ruleMatchesFile(g, regex, f))
+      })
+    })
+    .sort((a, b) => ruleSpecificity(b) - ruleSpecificity(a))
+    .map((rule) => rule.path)
+}
+// <<< shared: repo-rule matching
+
+// A third lens only when the repo itself says this area has specific concerns. One aggregated lens,
+// never one per rule — lens count is agent count. Capped, because a repo-wide rule (e.g. **/*.ts)
+// matches almost any change and would crowd out the specific ones. An explicit `lenses` argument
+// overrides everything, including this.
+const ruleLens = rulesFor((args.files || []).filter(Boolean)).slice(0, 4)
 const LENSES = args.lenses || [
   { key: 'runtime-contracts', focus: 'logic and error-path bugs, broken invariants, concurrency, callers/callees, contracts, registrations, migrations and regressions' },
   { key: 'intent-verification', focus: 'intent and acceptance criteria, test coverage of behavior, missing requirements, scope creep and silent behavior changes' },

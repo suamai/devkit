@@ -18,13 +18,17 @@ You drive a standalone review loop over code changes using the `wf-review-loop` 
 
 3. **Run it.**
    ```
-   Workflow({ name: "devkit:wf-review-loop", args: { scope, intent, baseline?, contextPaths?, rules?, apply, maxRounds, profile?, models?, efforts? } })
+   Workflow({ name: "devkit:wf-review-loop", args: { scope, intent, files, baseline?, contextPaths?, rules?, apply, maxRounds, profile?, models?, efforts? } })
    ```
 
-   `rules`: paths of `.claude/rules/*.md` files whose `paths:` frontmatter matches the changed files.
-   Pass them and reviewers get a third `repo-conventions` lens grounded in this repo's own checklists
-   instead of generic judgement. Costs one extra agent per round — worth it for domain code
-   (data layer, auth, error surfaces), skip it for a change that is purely mechanical.
+   `rules`: the repo's rule manifest, from `sh "${CLAUDE_PLUGIN_ROOT}/scripts/rules-manifest.sh"`
+   (outputs `[]` when the repo has none). Pass it **unmatched**, together with `files` — the concrete
+   paths under review — and the workflow matches globs against files with the same code
+   `wf-implement` uses. Do not pre-filter it yourself: eyeballing globs in the main loop is the same
+   job done a second time, less reliably. Matching rules add a third `repo-conventions` lens grounded
+   in this repo's own checklists instead of generic judgement, at one extra agent per round — worth
+   it for domain code (data layer, auth, error surfaces), skip it (`rules: []`) for a purely
+   mechanical change.
    `maxRounds` default 3. Custom `lenses` when the developer asks for a specific focus (e.g. security-only). If the workflow name does not resolve (the plugin has not loaded in this session yet), invoke with `scriptPath` pointing at `${CLAUDE_PLUGIN_ROOT}/workflows/wf-review-loop.js`.
 
    Round 1 is the wide two-lens sweep; rounds 2+ are one targeted agent that only asks whether the

@@ -265,7 +265,7 @@ adds a `Cost profile:` line to `CLAUDE.md`, which is already in every session's 
 committed with the repo — no format, no precedence rules, no parser, and unlike anything under
 `.dev/` it reaches whoever clones the repo.
 
-## 6. Make the `.claude/rules/` contract explicit
+## 6. Make the `.claude/rules/` contract explicit — ✅ done
 
 **Now:** the pipeline reads path-scoped rules, matches them per step, and turns matching ones into a
 third review lens. Under a plugin it is the *only* way a repo specializes the pipeline, since a
@@ -284,6 +284,42 @@ session". `.claude/rules/` appears in no other plugin and is not a native Claude
 it is a devkit invention, so probably nothing loads them lazily. Either prove the claim or delete
 it. If nothing native reads these files, the `paths:` contract is yours alone to define — and it is
 worth one paragraph comparing it against nested `CLAUDE.md`, which *is* picked up natively.
+
+**Done — and the premise above is wrong, which changed the whole item.** I checked the shipped CLI
+(v2.1.233) instead of reasoning about it: `.claude/rules/*.md` **is a native Claude Code
+convention**. Its `/init` text says these files "are loaded automatically alongside CLAUDE.md and
+can be scoped to specific file paths using `paths` frontmatter", `claudeMdExcludes` lists
+`.claude/rules/**` among the memory it can exclude, and another shipped prompt states that such a
+file "loads only when Claude works with matching files". So:
+
+- **The contract was never mine to define.** The item asked me to invent one; the right move was to
+  conform to the existing one. `paths:` is the native key, and a file without it is not malformed —
+  it is *unscoped*, natively loaded for everything.
+- **Which surfaced a real bug.** `rulesFor()` required a glob match, so a rule with no `paths:`
+  matched nothing and reached no agent — the repo's most general conventions were exactly the ones
+  that never arrived. Unscoped now matches every file, mirroring native behavior.
+  `tests/rules.test.js` covers it, including a step that declares no files at all.
+- **The lazy-loading comment was right.** It claimed rules "load lazily for the main session"; that
+  is accurate, and it is also the entire justification for this machinery — native loading is a
+  main-session mechanism, so background subagents inherit none of it. Kept and sourced rather than
+  deleted. The nested-`CLAUDE.md` comparison the item asked for is now a table in
+  `docs/architecture.md`: always / under-that-directory / matching-files, three loading scopes.
+
+The rest landed as planned. `scripts/rules-manifest.sh` replaces the awk one-liner and parses only
+the `paths:` key: the old version scraped every `-` item in the frontmatter regardless of key, so a
+`tags:` list leaked in as globs — silently, since a bogus glob simply matches nothing. It handles
+block and inline lists, reports unscoped rules as empty `globs` instead of dropping them, and is one
+file the skills call rather than three copies of an unreadable one-liner. Being a file also made it
+testable, which is how the `tags:` bug got a fixture.
+
+Matching moved into `wf-review-loop` (a fenced shared block, byte-identical to `wf-implement`'s and
+asserted by the test), so `wf-implement` passes the raw manifest plus the file list downward and
+`/dev-review` stops eyeballing globs in the main loop. The `slice(0, 4)` cap moved with it, to the
+one place that now decides.
+
+Left alone deliberately: `/dev-pr --review` passes explicit `lenses`, so it never gets a
+`repo-conventions` lens. That is arguably a gap, but adding a third lens to every PR review is a cost
+decision, not a contract fix.
 
 ## 7. Eval cases, and a `dryRun` that actually runs something
 

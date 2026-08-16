@@ -221,7 +221,7 @@ when warranted, one batched validator.
 | Working tree is dirty | Commit/stash/discard intentionally; `/dev-pr` will draft but not publish bytes absent from `HEAD` |
 | Flow stuck at `implementing` | `/dev-status` — if no task is running, mark it abandoned |
 | Two teammates, same repo | Fine — `.dev/` is per-clone. Two implements in *one* clone: blocked, on purpose |
-| Agents keep missing the same repo quirk | Nothing carries over between cycles — write it into `CLAUDE.md` or a `.claude/rules/*.md` file so every future agent reads it |
+| Agents keep missing the same repo quirk | Nothing carries over between cycles — write it into `CLAUDE.md`, or into a `.claude/rules/*.md` file with a `paths:` frontmatter so it reaches every agent touching those files (the pipeline hands matching rules to scouts, implementers and reviewers) |
 
 ## Extending safely
 

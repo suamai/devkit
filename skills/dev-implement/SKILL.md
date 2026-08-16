@@ -52,12 +52,17 @@ You orchestrate the implementation phase of a planned dev task. The heavy liftin
    ```
 
    `rules`: the repo's path-scoped checklists, so subagents stop rediscovering conventions the repo
-   already documented. Workflow scripts have no filesystem access, so you read them and the workflow
-   matches each step's files against the globs. Build it with one command (skip if `.claude/rules/`
-   doesn't exist — the workflow then tells agents to look for rules themselves):
+   already documented. `.claude/rules/*.md` is a **native** Claude Code convention — those files load
+   automatically alongside CLAUDE.md, scoped by a `paths:` frontmatter key — but that loading is a
+   main-session mechanism and background subagents inherit none of it. Workflow scripts also have no
+   filesystem access, so you extract the manifest and the workflow matches each step's files against
+   the globs (it outputs `[]` when there is no `.claude/rules/`, and the workflow then tells agents to
+   look for rules themselves):
    ```bash
-   awk 'FNR==1{f=FILENAME;infm=0;n=0} /^---$/{infm++;next} infm==1 && /^[[:space:]]*-[[:space:]]/{g=$0;sub(/^[[:space:]]*-[[:space:]]*/,"",g);gsub(/^['"'"'"]|['"'"'"]$/,"",g);globs[f]=globs[f] (n++?",":"") "\"" g "\""} END{printf "[";c=0;for(k in globs){printf "%s{\"path\":\"%s\",\"globs\":[%s]}",(c++?",":""),k,globs[k]};print "]"}' .claude/rules/*.md
+   sh "${CLAUDE_PLUGIN_ROOT}/scripts/rules-manifest.sh"
    ```
+   A rule file with no `paths:` is unscoped — natively always loaded, so the workflow hands it to
+   every agent. It comes back with empty `globs`; pass it through rather than filtering it out.
    `notes`: anything the developer said since the plan was written. `reviewLoopPath`:
    `${CLAUDE_PLUGIN_ROOT}/workflows/wf-review-loop.js`. Optional: `review: false`,
    `reviewRounds: N` (default 3 — rounds after the first are one targeted agent, so this is cheaper
