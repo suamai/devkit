@@ -583,7 +583,7 @@ workflow half with 15 cases.
   than a quiet success. The skill also reports which hypotheses were **refuted and why**, because
   that is precisely the theory someone re-proposes twenty minutes later.
 
-## 12. Loosen the GitHub assumption; make prose drift detectable
+## 12. Loosen the GitHub assumption; make prose drift detectable — ✅ done
 
 **GitHub:** `/dev-pr` is really two things — branch analysis + coverage map + body draft (useful
 anywhere) and publication via `gh` (GitHub-specific). Naming that split in the skill makes graceful
@@ -596,6 +596,39 @@ restated in `wf-explore-plan.js`, `wf-plan-remediation.js`, `wf-implement.js` an
 drift. "Cite one canonical section" is a convention, and convention is precisely what drifts: make
 it a **test** instead — ten lines (a script or an eval case) that greps the canonical sentences
 across all copies and fails when one no longer matches.
+
+**Done.** `/dev-pr` now names its own split and `tests/contract-drift.test.js` (11 cases) checks the
+prose against the scripts.
+
+**GitHub.** The skill opens by stating that sections 1-4 are plain git and only section 5 needs
+`gh`, then detects a **lane** and announces it in one line before starting: GitHub + `gh`
+authenticated; GitHub without `gh` (and it distinguishes missing from unauthenticated, because those
+are different fixes); a non-GitHub remote; or no remote at all. The last lane is the one worth
+building for — solo, the "PR" is a merge you do yourself, and the review evidence plus the coverage
+map are the actual deliverable, so it reports that as a normal outcome rather than a degraded run.
+Base resolution grew a final fallback to the local default branch, and still refuses to guess `main`.
+
+**Drift — the item's proposed test was the wrong test, and the reason matters.** "Grep the canonical
+sentences" fails at exactly the moment it is needed: it passes while a file still contains the word
+`disjoint` and the sentence around it now says the opposite. A check that cannot fail meaningfully
+trains people to ignore the whole suite. So it compares **concrete values** instead — defaults,
+option sets, severity levels, the step-size guide, and workflow names as addresses — all extracted
+from the source rather than restated in the test, since a constant copied into a test drifts too.
+
+Three further things:
+
+- **The duplication was smaller than the item assumed**, and partly because of #9: deleting
+  `wf-plan-remediation.js` removed one of the five copies it named. What is left is mostly
+  workflow-prompt ↔ skill-prose, which is not redundancy — the prompt instructs an agent, the skill
+  instructs the orchestrator. They must *agree*, not be deduplicated.
+- **Two of the first three failures were the test's fault, not the repo's.** `non-default choice`
+  matched as a claimed default, and the "documents its own knobs" check missed names written as
+  `` `reviewRounds: N` ``. Both fixed by anchoring on the name plus a backtick-or-colon. Worth
+  recording: a drift test's first run is mostly a test of the test.
+- **Verified by mutation, because a test like this can silently stop testing.** Changing a default in
+  the script, adding a third `risk` value to one schema, and renaming a workflow file each produce a
+  clean failure. The rename initially produced an `ENOENT` stack trace instead, so the name check now
+  runs first and `read()` explains itself.
 
 ---
 

@@ -25,10 +25,10 @@ pipeline, read this when you want to use it.
 
 | Argument/option | Meaning | Important behavior |
 |---|---|---|
-| `[base]` | Explicit GitHub destination branch, for example `dev` or `main` | Overrides automatic detection. Omit it to use an existing PR's base, then `origin/HEAD`, then the remote default. This is a branch name, not a SHA. |
+| `[base]` | Explicit destination branch, for example `dev` or `main` | Overrides automatic detection. Omit it to use an existing PR's base, then `origin/HEAD`, then the remote default, then the local default branch. This is a branch name, not a SHA. |
 | `--review` | Run a branch-wide, report-only code review before offering publication | Saves `reviews/<HEAD>.md`. It never edits code. High/critical findings block publication; low/medium require a separate risk acknowledgement. |
 | `--draft` | Create a new GitHub PR as a draft | Affects only `gh pr create`. When editing an existing PR, it does not silently change draft/ready state. It does not mean “only draft the text”; use `--body-only` for that. |
-| `--body-only` | Stop after generating and previewing the title and `pr.md` | Never pushes or calls `gh pr create/edit`. It can be combined with `--review` to save both review evidence and a PR body without publishing. It is also the fallback when `gh` is unavailable or unauthenticated. |
+| `--body-only` | Stop after generating and previewing the title and `pr.md` | Never pushes or calls `gh pr create/edit`. It can be combined with `--review` to save both review evidence and a PR body without publishing. It is also what every non-GitHub setup does automatically — see below. |
 
 Options compose left-to-right through the same flow: inspect branch → optional review → generate
 body → publication gate. Publication always needs an explicit final confirmation, even without
@@ -53,6 +53,20 @@ Examples:
 
 If the current branch already has a PR, `/dev-pr` previews an update to that PR instead of creating
 a duplicate. The positional base is normally unnecessary in that case.
+
+**GitHub is only the last hop.** Everything `/dev-pr` does except publication — base resolution,
+branch-to-base analysis, the coverage map against your plan, the SHA-bound review, the body draft —
+is plain git. Claude checks your remote once and says which lane it is in before starting:
+
+| Your setup | What you get |
+|---|---|
+| GitHub + `gh` authenticated | The whole thing, publication included. |
+| GitHub, no `gh` (or not logged in) | Everything up to `pr.md`, plus the exact `gh` command to run yourself. It tells you which of the two it was, since they are different fixes. |
+| GitLab / Gitea / Bitbucket / anything else | Everything up to `pr.md`, to paste into your forge. It will not invent a CLI for it. |
+| No remote at all | Everything up to `pr.md`, against your local base branch. The review evidence and the change description are the deliverable, and a merge you do yourself is a perfectly good ending. |
+
+Only the last row's *publication* is missing in the lower lanes — `--review`, the gate on
+high/critical findings, and the coverage map all still work. That is the reason to run it solo.
 
 ### Planning options
 

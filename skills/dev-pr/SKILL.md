@@ -1,17 +1,37 @@
 ---
 name: dev-pr
-description: Prepare, optionally review, and publish a pull request from the current branch — branch-to-base analysis, .dev plan/spec context, persistent review evidence, PR description, and guarded gh publication.
+description: Prepare, optionally review, and publish a change from the current branch — branch-to-base analysis, .dev plan/spec context, persistent review evidence, and a change description; publication via gh when the remote is GitHub, otherwise the artifacts without it.
 argument-hint: "[base] [--review] [--draft] [--body-only]"
 ---
 
 You prepare a pull request from the current branch. Analysis and review are read-only; pushing,
 creating, or editing a PR always requires an explicit developer confirmation after the preview.
 
+**This skill is two things, and only the second needs GitHub.** Sections 1-4 — base resolution,
+branch-to-base analysis, the coverage map, the optional SHA-bound review, the body draft — are plain
+git and work in any repository, including one with no remote at all. Section 5 is publication via
+`gh`, and it is the only GitHub-specific part.
+
+So detect, then say what you detected; never assume. Read the remote once at the start
+(`git remote -v`, and `gh auth status` only if a GitHub remote exists) and pick a lane:
+
+| What you found | What to do |
+|---|---|
+| GitHub remote + `gh` authenticated | Everything, including section 5. |
+| GitHub remote, `gh` missing or unauthenticated | Sections 1-4, then stop with the `pr.md` path and the exact `gh` command they could run. Say which of the two it was — installing and authenticating are different fixes. |
+| Non-GitHub remote (GitLab, Gitea, Bitbucket, a bare URL) | Sections 1-4, resolving the base from `refs/remotes/origin/HEAD` and the local ref only. Hand over `pr.md` to paste into their forge. Do not invent a CLI for it. |
+| No remote at all | Sections 1-4 against the local base branch. The "PR" is a merge they will do themselves, so the deliverable is the review evidence and the change description — still worth producing, and say so rather than treating it as a degraded run. |
+
+Announce the lane in one line before doing the work, so nobody waits for a publication step that was
+never going to happen. `--body-only` forces the sections-1-4 lane regardless of what you detected.
+
 ## 1. Preflight and base
 
 1. Require a git repository and a non-default current branch.
-2. Resolve the base in this order: explicit argument; an existing PR's base (`gh pr view`);
-   `refs/remotes/origin/HEAD`; remote default branch from `gh repo view`. Never guess `main`.
+2. Resolve the base in this order, skipping the `gh` steps outside the GitHub lane: explicit
+   argument; an existing PR's base (`gh pr view`); `refs/remotes/origin/HEAD`; remote default branch
+   from `gh repo view`; with no remote, the local default branch. Never guess `main` — if none of
+   these resolves, ask.
    Keep two values distinct: the GitHub branch name (for example `dev`) and the local comparison
    ref (normally `origin/dev`).
 3. Offer to fetch the base branch before analysis. Record the exact merge-base and `HEAD` SHA; all
@@ -19,7 +39,8 @@ creating, or editing a PR always requires an explicit developer confirmation aft
 4. Inspect status, upstream, ahead/behind counts, commits, name-status, stat, and diff. A dirty tree
    may produce `--body-only` artifacts, but blocks push/PR publication because it is not represented
    by `HEAD`. Say exactly which changes are excluded.
-5. Detect an existing PR for the branch. Existing PR → preview an edit, never create a duplicate.
+5. In the GitHub lane, detect an existing PR for the branch: existing PR → preview an edit, never
+   create a duplicate.
 
 ## 2. Find task context
 
@@ -117,10 +138,12 @@ file. Validation lists commands actually observed in notes/current checks, never
 planned. Keep secrets, local paths, agent internals, `.dev` paths, and workflow failures out of the
 public body unless they are product-relevant limitations.
 
-Show title, body, base/head, draft status, review gate, and whether a push is needed. `--body-only`
-stops here and is also the fallback when `gh` is unavailable or unauthenticated.
+Show title, body, base/head, draft status, review gate, and whether a push is needed. Everything to
+here is plain git. `--body-only` stops at this point, and so does every lane except the GitHub one —
+in which case say what the artifact is for (`pr.md` to paste, or the `gh` command to run once
+authenticated) rather than reporting a failure. The work is the same; only the last hop is missing.
 
-## 5. Publish only after confirmation
+## 5. Publish only after confirmation — GitHub lane only
 
 Ask one explicit confirmation covering the exact external actions. If needed, push with
 `git push -u origin HEAD`, then:

@@ -122,7 +122,8 @@ that a rule now has to survive review by someone who can say no.
    ├─ selectively reads matching .dev spec/plan/notes as hints
    ├─ optional report-only wf-review-loop (apply:false) → reviews/<reviewed-head>.md
    ├─ writes pr.md and previews title/body
-   └─ explicit approval → push if needed → gh pr create/edit
+   └─ explicit approval → push if needed → gh pr create/edit   ← the ONLY GitHub-specific step;
+      every lane above it is plain git and runs with a non-GitHub remote or none at all
 
 Confirmed PR findings go back through the same review loop, seeded:
 
@@ -285,10 +286,20 @@ copies of them.
 | `tests/rules.test.js` | `paths:` frontmatter parsing, glob matching, matcher drift |
 | `tests/seeded-review.test.js` | `--from-report`: that no finder runs, and that `clean` still needs a post-fix pass |
 | `tests/explore-modes.test.js` | plan vs explain mode, and that reused findings skip scouting but not validation |
+| `tests/contract-drift.test.js` | that the prose still states the values the scripts actually use |
 
-Run them with `node tests/<name>.test.js`; each prints a PASS/FAIL line per case and exits non-zero
-on failure. Where a test cannot reach through `dryRun` it extracts the shipped block by an anchor
+Run one with `node tests/<name>.test.js` or all of them with `sh tests/run-all.sh`; each prints a
+PASS/FAIL line per case and exits non-zero on failure. Where a test cannot reach through `dryRun` it extracts the shipped block by an anchor
 and fails closed if the anchor moves — a stopgap, and the reason to prefer widening `dryRun`.
+
+`tests/contract-drift.test.js` is a different kind of check: the scripts are the source of truth for
+defaults, option sets and severity levels, and the skills restate them for a human, so a script that
+changes without its prose leaves a confident lie behind — the failure no reviewer catches, because
+nobody diffs a `SKILL.md` against a schema. It compares **concrete values only**, extracted from the
+source, never restated in the test. It deliberately does not grep for canonical sentences: a check
+that passes because a file still contains the word "disjoint" while the sentence around it now says
+the opposite is a check that teaches people to ignore the suite. Its own failure modes were verified
+by mutation — changing a default, adding an enum member, renaming a workflow file.
 
 `evals/` is the other half: `claude plugin eval` cases for judgment calls no unit test can reach
 (does triage escalate, and does it say why). See `evals/README.md` — including that the command is
