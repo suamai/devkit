@@ -12,7 +12,10 @@ You orchestrate the implementation phase of a planned dev task. The heavy liftin
    workspace or nested `<task>/remediations/<reviewed-sha>/`; a `plan.md` path resolves to its
    parent. If absent, use the most recently modified top-level workspace only when unambiguous.
    Read `<workspace>/plan.md` and parse the ```json steps block from the "Machine-readable steps"
-   section. If missing or malformed, reconstruct it from the Steps sections and write it back.
+   section. If missing or malformed, reconstruct it from the Steps sections and write it back. A
+   plan marked `Tier: small` has no steps block by design and is not an input to this skill — it was
+   triaged to be implemented inline; say so instead of manufacturing steps to fan a one-file change
+   out across agents.
    Detect remediation plans by their source-review/reviewed-HEAD metadata and retain the parent
    task slug for state and commit naming. With `--continue`, read `<workspace>/last-run.json` too
    and follow "Continuing a run that stopped" below instead of starting over.

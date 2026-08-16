@@ -173,7 +173,7 @@ Two things fell out of building it that the plan above had wrong:
   next checkpoint's scope as reports with no agent behind them. This is also why the skill is told
   never to hand-edit that field.
 
-## 4. Invert the triage bias, and make `small` leave an artifact
+## 4. Invert the triage bias, and make `small` leave an artifact — ✅ done
 
 **Now:** `dev-plan/SKILL.md` opens with a good triage table (trivial / small / medium / large) that
 is the main thing standing between a typo and thirty agents. But it's prose, and a model under
@@ -185,6 +185,29 @@ one line, in the report, naming which signal fired, chosen from a closed list. C
 it makes the escalation auditable in both directions. (b) `small` still writes a five-line
 `.dev/<slug>/plan.md`: `/dev-pr` (step 2) and `/dev-review` both depend on *intent*, and a tier that
 leaves nothing behind makes the rest of the pipeline weaker for the change most likely to reach it.
+
+**Done:** `dev-plan/SKILL.md` §0 rewritten, plus a `Small tier` section; propagated to README,
+`docs/manual.md` (four places, including Cost control) and the architecture diagram. Two things the
+plan didn't anticipate:
+
+- **"Require a positive reason" is gameable by not looking.** Any signal phrased as an absence —
+  "I can't name the files" — is satisfiable for free by never running the grep. So the closed list
+  is preceded by a **look-before-you-triage** rule, and `unknown-code` is worded as *you looked and
+  still cannot*. Without that, the escalation gate is decorative: the model writes the required
+  sentence and escalates anyway.
+- **The signals had to be facts about the work, not sizes.** The old table graded by magnitude
+  ("multi-file", "real unknowns"), which is exactly the axis a model inflates under pressure to be
+  thorough. The five signals (`unknown-code`, `contract-change`, `independent-parts`,
+  `needs-approval`, `no-spec`) each name something the full flow actually buys — parallel
+  exploration, contract gates, wave parallelism, an approval checkpoint, a spec. If none is being
+  bought, the fan-out is being paid for nothing, which is the argument the tier line now has to make.
+
+Also stated the escalation asymmetry explicitly, since it is what makes the bias rational rather
+than merely frugal: going up mid-flight costs one already-useful scout, going up wrongly at the
+start costs 3-5 scouts, a validator, a synthesizer and an approval round. And `dev-implement` step 1
+now rejects a `Tier: small` plan instead of reconstructing a steps array to fan a one-file change
+out across agents. No test: this item is entirely prose, and the behavior it changes is a judgment
+call made by a model at runtime — item 7's evals are where it becomes checkable.
 
 ## 5. Model tier and effort as parameters, not constants
 

@@ -10,7 +10,7 @@ pipeline, read this when you want to use it.
 |---|---|---|
 | `/dev-setup` | Configuring a repo for the pipeline, or checking it after a plugin update | gitignore, CLAUDE.md pointer, Workflow permission, rules, smoke test |
 | `/dev-spec <rough idea>` | Task is large or requirements are fuzzy | `.dev/<slug>/spec.md` with verifiable acceptance criteria |
-| `/dev-plan <task>` | Start of any nontrivial task | Triage; for medium+: validated plan in `.dev/<slug>/plan.md` |
+| `/dev-plan <task>` | Start of any nontrivial task | Triage; a five-line `plan.md` for small, a validated step plan for medium+ |
 | `/dev-plan --review <review.md>` | Turn confirmed PR findings into approved grouped fix steps | `.dev/<slug>/remediations/<sha>/plan.md` |
 | `/dev-implement <slug>` | Plan approved | Implemented steps, executed verifications, review loops, phase commit |
 | `/dev-review [files]` | Validate changes (standalone) | Confirmed findings, applied fixes, clean/not-clean verdict |
@@ -56,7 +56,7 @@ a duplicate. The positional base is normally unnecessary in that case.
 
 | Invocation | Meaning |
 |---|---|
-| `/dev-plan <task>` | Normal task triage. Trivial/small work stays inline; medium/large work uses repository exploration. |
+| `/dev-plan <task>` | Normal task triage. Trivial/small work stays inline (small still writes a five-line `plan.md`); medium/large use repository exploration, and require a named escalation signal. |
 | `/dev-plan --review <review.md>` | Create a grouped remediation plan from the confirmed findings in a persisted `/dev-pr --review` report. Requires the report's branch and reviewed HEAD to match the current checkout. |
 | `/dev-plan --review <review.md> --deep` | Same remediation flow, with deeper inspection of callers, tests, and integration boundaries. It still avoids the full 3–5-scout feature exploration. Use for critical, architectural, or cross-subsystem findings. |
 
@@ -85,9 +85,11 @@ the run.
 
 ### 1. Plan — `/dev-plan "add rate limiting to the public API"`
 
-Claude triages first: **trivial** tasks are just done, **small** ones get an inline mini-plan —
-only **medium/large** trigger the multi-agent exploration. You can override ("treat this as
-large"). For medium+:
+Claude triages first, and the cheap tiers are the default: **trivial** tasks are just done, **small**
+ones get an inline scout and a five-line `plan.md`. Reaching **medium/large** — the multi-agent
+exploration — requires naming which escalation signal fired, from a closed list, in the report. So
+you can audit the choice in both directions, and override it either way ("treat this as large",
+"just do it"). For medium+:
 
 - Exploration runs in the background (~3-5 scout agents + one batched validator + a synthesizer; a few
   minutes). You'll see progress; you don't need to babysit.
@@ -165,7 +167,7 @@ one Sonnet synthesizer. The old report cannot clear the new `HEAD` after fixes.
 
 | File | What it tells you |
 |---|---|
-| `spec.md` / `plan.md` | The contract: criteria, approach, steps. The JSON block in plan.md is what actually executes. |
+| `spec.md` / `plan.md` | The contract: criteria, approach, steps. The JSON block in plan.md is what actually executes — a small-tier plan is five lines and has none, because it was implemented inline. |
 | `findings/<angle>.md` | Full exploration reports — read when you doubt a plan claim |
 | `briefs/<id>.md` | What the implementer was told about the codebase |
 | `notes/<id>.md` | The implementer's decisions and *whys* — read before questioning a choice |
@@ -179,7 +181,10 @@ lists these separately; they are not registered as implementation flows.
 
 ## Cost control
 
-Cost scales with the triage tier — that's the point of triage. Knobs, roughly in order:
+Cost scales with the triage tier — that's the point of triage, and the tier is by far the largest
+knob: nothing else on this list saves what not escalating saves. Claude defaults low and has to name
+a signal to go up, so the cheapest correction available to you is disagreeing with that line. The
+rest, roughly in order:
 say "+300k" (or any token target) in your message to set a hard budget the loops respect;
 `reviewRounds`/`review: false`, `scoutMode`, and `maxParallelSteps` for implement; fewer `angles` or
 `validate: false` for exploration. The completion

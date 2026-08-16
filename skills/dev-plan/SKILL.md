@@ -46,16 +46,70 @@ Remediation mode is deliberately narrower than `wf-explore-plan`: the review alr
 adversarially verified code evidence. Its work is correction strategy, grouping, dependencies, and
 proof commands.
 
-## 0. Triage first — pick the machinery, don't default to the pipeline
+## 0. Triage first — the burden of proof is on escalation
 
-| Tier | Signals | Machinery |
+The full flow is not the safe choice. It spends 3-5 scouts, a validator, a synthesizer and an
+approval round *before* anyone knows whether the change was one edit. Escalating later is cheap by
+comparison: the small tier's inline scout becomes the plan's first input, not waste. So the low
+tiers are the default, and the machinery has to be earned.
+
+| Tier | When | Machinery |
 |---|---|---|
-| Trivial | typo, rename, config tweak, one obvious edit | No workspace, no workflows. Just do it (or say it doesn't need the pipeline). |
-| Small | single-file-ish change, approach already clear | One inline scout (Explore agent), short plan in chat, implement inline; optional 1-round `wf-review-loop` at the end. |
-| Medium | multi-file, real unknowns, needs exploration | Full flow below. |
-| Large / arch-open | new subsystem, cross-cutting, ambiguous requirements | Recommend `/dev-spec` first if no spec exists; then full flow. |
+| **Trivial** (default) | typo, rename, config tweak, one obvious edit | No workspace, no workflows. Just do it (or say it doesn't need the pipeline). |
+| **Small** (default) | you can name the files and the approach | One inline scout (Explore agent), a five-line `plan.md` (next section), implement inline; optional 1-round `wf-review-loop` at the end. |
+| Medium | a signal below fired | Full flow below. |
+| Large / arch-open | `no-spec` fired | `/dev-spec` first, then the full flow. |
 
-State your tier choice in one line; the developer can override ("treat as large").
+**Look before you triage.** One glob or grep costs less than any path out of this table, and it is
+the whole difference between "I looked and cannot name the files" and "I have not looked yet". Only
+the first is a signal.
+
+**Escalate only on a named signal**, stated by name with the fact behind it. The list is closed —
+"it seems complex", "to be thorough" and "just in case" are not on it:
+
+| Signal | Means |
+|---|---|
+| `unknown-code` | You looked and still cannot name the files that must change, or the approach turns on how existing code behaves and you would be guessing. |
+| `contract-change` | It alters a surface something else consumes: exported signature, DB schema, wire format, config key, CLI flag. |
+| `independent-parts` | Three or more pieces with no hard ordering between them — sequential inline execution is the only reason it would be slow. |
+| `needs-approval` | The developer has to sign off on the approach before code exists: expensive, risky, or hard to reverse. |
+| `no-spec` (large) | New subsystem or cross-cutting change whose requirements are still open. |
+
+State the tier in one line, and make it auditable in **both** directions — the absence of a signal is
+also a claim you are making:
+
+```
+Tier: small — no escalation signal fired.
+Tier: medium — unknown-code: retry policy lives somewhere under src/queue/ and the request doesn't
+      say which layer owns it.
+```
+
+The developer can override either way ("treat as large", "just do it"). If the small tier's scout
+comes back and a signal has fired after all, escalate then and name it — that is the bias working,
+not a triage error.
+
+## Small tier — implement inline, leave the intent behind
+
+`/dev-pr` and `/dev-review` judge a diff against *intent*, and a small change is the one most likely
+to reach a PR with nothing written down. So the small tier still writes two files before it starts:
+
+`.dev/<slug>/plan.md` — five lines, no machine-readable steps block:
+
+```markdown
+# <task title>
+
+**Tier:** small — no escalation signal fired
+**Files:** src/queue/retry.ts
+**Approach:** <what changes, and why this way rather than the obvious alternative>
+**Verify:** <the command that proves it>
+```
+
+`.dev/<slug>/state.json` — `{ task, stage: "plan-ready", updated }`, so `/dev-status` sees the flow
+at all and `/dev-pr` can find the intent. Set `stage: "implemented"` once the inline work is verified.
+
+Two writes, no workflow, no approval round — that is the entire ceremony. Don't let it grow: a
+small-tier `plan.md` that wants a steps block was a medium task, and the honest move is to name the
+signal and escalate.
 
 ## Process (medium/large)
 

@@ -74,7 +74,8 @@ PR-reviewable and travels with git. Adding a pull-side memory channel is a possi
    → spec.md with VERIFIABLE acceptance criteria that flow through everything downstream
 
 /dev-plan "task"
-   0. TRIAGE: trivial → just do it | small → inline scout + inline plan | medium/large → pipeline
+   0. TRIAGE: default trivial/small; medium+ needs a named signal (unknown-code, contract-change,
+      independent-parts, needs-approval, no-spec). small → inline scout + 5-line plan.md, inline impl
    └─ wf-explore-plan.js ─── background
         Decompose (sonnet)  → 3-5 angles, merging concerns with shared evidence
         Explore  (sonnet ×N)→ scouts write findings/<angle>.md, return compact summaries

@@ -26,7 +26,8 @@ Fan-out is the cheap part. The parts that carry their weight:
   command passed; a bare claim degrades to `unverified`, never to success.
   A review is `clean` only after an explicit post-fix pass finds nothing. Confirmed
   findings are reconciled against the fixer by identity, not by count, and the match fails closed.
-- **Proportional cost** — triage decides the machinery (trivial work never touches the pipeline);
+- **Proportional cost** — triage defaults to the cheap tiers and makes the multi-agent flow argue for
+  itself: escalation needs a named signal from a closed list, stated in the report;
   review checkpoints accumulate waves instead of paying a full loop per wave, with one cheap
   contract gate in between.
 
