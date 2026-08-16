@@ -1,7 +1,7 @@
 export const meta = {
-  name: 'implement',
+  name: 'wf-implement',
   description: 'Execute plan steps in dependency waves: adaptive scout → implement → cheap contract gate per wave → full review at cost-driven checkpoints, then a cross-step consistency check',
-  whenToUse: 'After a plan from explore-plan is approved by the developer: implement its steps, parallelizing steps with disjoint file sets',
+  whenToUse: 'After a plan from wf-explore-plan is approved by the developer: implement its steps, parallelizing steps with disjoint file sets',
   phases: [
     { title: 'Scout', detail: 'briefs only for ambiguous or oversized steps', model: 'sonnet' },
     { title: 'Implement', detail: 'per-step implementation + executed verification', model: 'opus' },
@@ -25,7 +25,7 @@ export const meta = {
 //   COST decision and are deliberately coarser: waves accumulate until a checkpoint is worth paying
 //   for, and each wave in between gets one cheap contract gate instead of a full review loop.
 if (typeof args === 'string') { try { args = JSON.parse(args) } catch (e) { throw new Error('args arrived as a non-JSON string') } }
-if (args && args.dryRun) return { ok: true, workflow: 'implement' }
+if (args && args.dryRun) return { ok: true, workflow: 'wf-implement' }
 if (!args || !args.workspace) throw new Error('args.workspace is required: absolute path to the task workspace')
 if (!args.steps || !args.steps.length) throw new Error('args.steps is required: the machine-readable steps from the plan')
 
@@ -462,7 +462,7 @@ async function reviewCheckpoint(pending, checkpointNumber) {
   }
   const changed = changedFilesOf(pending.steps, pending.reports)
   const contexts = [...new Set([planPath, ...leaves.flatMap((r) => [r.brief_path, r.impl.notes_path]).filter(Boolean)])]
-  const reviewLoopRef = args.reviewLoopPath ? { scriptPath: args.reviewLoopPath } : 'devkit:review-loop'
+  const reviewLoopRef = args.reviewLoopPath ? { scriptPath: args.reviewLoopPath } : 'devkit:wf-review-loop'
   const waveLabel = pending.waves.length > 1 ? `waves ${pending.waves[0]}-${pending.waves[pending.waves.length - 1]}` : `wave ${pending.waves[0]}`
   // The implementers' own doubt is the cheapest review lead available: it points at code the author
   // could not convince themselves about. Same for steps no executable check covered.

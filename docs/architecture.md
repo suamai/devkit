@@ -44,7 +44,7 @@ pointer (never "read the whole workspace"):
   pr/<branch>/         ← standalone PR artifacts when no task workspace matches; never flow state
   <slug>/
     spec.md            ← /dev-spec (dialogue in the main loop)
-    plan.md            ← explore-plan's synthesizer; then curated by the /dev-plan skill
+    plan.md            ← wf-explore-plan's synthesizer; then curated by the /dev-plan skill
     findings/<angle>.md← exploration scouts (full reports; compact summaries returned to the script)
     briefs/<id>.md     ← adaptive scouts only; inherited by sub-steps on recursive split
     notes/<id>.md      ← per-step implementers (decisions + whys); read by reviewers & sub-steps
@@ -73,7 +73,7 @@ PR-reviewable and travels with git. Adding a pull-side memory channel is a possi
 
 /dev-plan "task"
    0. TRIAGE: trivial → just do it | small → inline scout + inline plan | medium/large → pipeline
-   └─ explore-plan.js ─── background
+   └─ wf-explore-plan.js ─── background
         Decompose (sonnet)  → 3-5 angles, merging concerns with shared evidence
         Explore  (sonnet ×N)→ scouts write findings/<angle>.md, return compact summaries
         Validate (sonnet ×1)→ one batched check of load-bearing headline claims
@@ -82,18 +82,18 @@ PR-reviewable and travels with git. Adding a pull-side memory channel is a possi
    └─ interrupt: open_questions → dev; checkpoint: dev approves plan
 
 /dev-implement <slug>
-   └─ implement.js ─── background
+   └─ wf-implement.js ─── background
         steps → topological waves → within a wave, disjoint-file steps in parallel
         per dependency wave:
           Scout (sonnet)   → adaptive only for ambiguous/oversized steps; may split recursively
           Implement (opus) → RUNS each step's verify command, writes notes/<id>.md
           BARRIER          → all implementations finish before review/fixes mutate files
-          review-loop      → one consolidated review over the wave's changed files
+          wf-review-loop      → one consolidated review over the wave's changed files
         Check (opus)  → the SEAMS between steps; runs the suite
    └─ interrupt: needs_user_input → dev; skill verifies end-to-end and reports
 
-/dev-review [files]      — standalone entry to the same review-loop
-   └─ review-loop.js
+/dev-review [files]      — standalone entry to the same wf-review-loop
+   └─ wf-review-loop.js
         while not clean and rounds < max:
           Review (sonnet ×2: runtime/contracts + intent/verification)
           → one verifier semantically clusters and checks all findings in a batch
@@ -103,7 +103,7 @@ PR-reviewable and travels with git. Adding a pull-side memory channel is a possi
 /dev-pr [base] [--review] [--draft] [--body-only]
    ├─ deterministic git map: merge-base, commits, diff, upstream, dirty-tree gate
    ├─ selectively reads matching .dev spec/plan/notes as hints
-   ├─ optional report-only review-loop (apply:false) → reviews/<reviewed-head>.md
+   ├─ optional report-only wf-review-loop (apply:false) → reviews/<reviewed-head>.md
    ├─ writes pr.md and previews title/body
    └─ explicit approval → push if needed → gh pr create/edit
 
@@ -112,7 +112,7 @@ Confirmed PR findings follow a separate remediation cycle:
   reviews/<sha>.md
     → /dev-plan --review <report>
       ├─ simple/local: inline deterministic plan
-      └─ plan-remediation.js: optional batched validation + one sonnet synthesis
+      └─ wf-plan-remediation.js: optional batched validation + one sonnet synthesis
     → remediations/<sha>/plan.md
     → /dev-implement <remediation-workspace> (baseline = reviewed HEAD)
     → /dev-pr --review again (only current HEAD can clear the PR gate)
@@ -217,7 +217,7 @@ Don't improvise same-tree concurrency.
 - **Crashed/killed run**: `Workflow({scriptPath, resumeFromRunId: <lastRunId>, args: <same>})` —
   completed agents replay from cache; only edited/new calls run live. `lastRunId` is in state.json.
 - **Refuted review findings** never trigger fixes; they remain in the result and journal for audit.
-- Two known knobs surfaced by budget guards: review-loop stops below ~30k remaining tokens
+- Two known knobs surfaced by budget guards: wf-review-loop stops below ~30k remaining tokens
   (`clean: false`), implement skips steps below ~40k (`skipped_for_budget`). A "+500k"-style budget
   directive in the user message sets the pool.
 
@@ -238,7 +238,7 @@ Use workflow transcripts from real cycles to tune these before adding more agent
   is high; merge lenses before adding validators.
 - **Split rate**: every step triggering `too_big` means the synthesizer sizes badly; never
   triggering is fine.
-- **Round convergence**: review-loop should go clean in 1–2 rounds; consistently hitting 3 means a
+- **Round convergence**: wf-review-loop should go clean in 1–2 rounds; consistently hitting 3 means a
   weak fixer or redundant lenses.
 - **Tokens per phase** (`subagent_tokens` in each completion notification): know where the money
   goes before cutting. First knobs: skip planning validation, reduce angles, or disable scouts.
@@ -266,8 +266,8 @@ House rules — each of these exists because it bit us or the runtime requires i
 - A budget guard in every loop: `if (budget.total && budget.remaining() < 30000) break`.
 - No `Date.now()` / `Math.random()` / argless `new Date()` — the runtime throws, because they would
   break resume. Timestamps arrive via args or from an agent running `date`.
-- **`workflow()` nests one level only.** Safe children: `explore-plan`, `plan-remediation`,
-  `review-loop`. `implement` calls `review-loop` internally, so as a child it needs `review: false`.
+- **`workflow()` nests one level only.** Safe children: `wf-explore-plan`, `wf-plan-remediation`,
+  `wf-review-loop`. `wf-implement` calls `wf-review-loop` internally, so as a child it needs `review: false`.
 - Escape backticks inside template literals — an unescaped fence is the classic parse error.
 
 Smoke-test with `args: {"dryRun": true}` (zero agents, zero cost) before the real run; on a crash or
@@ -278,7 +278,7 @@ start.
 
 ## Extending
 
-- Custom review lenses: pass `lenses` to `review-loop`.
+- Custom review lenses: pass `lenses` to `wf-review-loop`.
 - Shared memory (removed, re-addable): a pull-side channel where scouts/implementers/reviewers
   discover lessons, gotchas and subsystem maps from earlier cycles. It was backed by an external
   MCP knowledge base and was stripped out with it. Re-adding it means picking a store (committed

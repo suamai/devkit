@@ -1,5 +1,5 @@
 export const meta = {
-  name: 'explore-plan',
+  name: 'wf-explore-plan',
   description: 'Fan-out repo exploration by angle, one batched validation of load-bearing claims, cross-checked plan synthesis into a task workspace',
   whenToUse: 'Start of a medium/large dev task: turn a task brief or spec into a validated, step-structured plan file',
   phases: [
@@ -15,7 +15,7 @@ export const meta = {
 //   Context discipline (RLM-style): scouts WRITE full reports to <workspace>/findings/ and RETURN
 //   compact summaries; downstream agents receive paths and read detail only when load-bearing.
 if (typeof args === 'string') { try { args = JSON.parse(args) } catch (e) { throw new Error('args arrived as a non-JSON string') } }
-if (args && args.dryRun) return { ok: true, workflow: 'explore-plan' }
+if (args && args.dryRun) return { ok: true, workflow: 'wf-explore-plan' }
 if (!args || !args.task) throw new Error('args.task is required: what is being built or changed')
 if (!args.workspace) throw new Error('args.workspace is required: absolute path to the task workspace (e.g. <repo>/.dev/<slug>)')
 
@@ -255,7 +255,7 @@ log(`plan written: ${planPath} — ${synth.steps.length} steps, ${synth.open_que
 
 // Wave shape drives implementation wall-clock: depth is sequential, width is parallel. Surface it
 // here so the developer can push back on a needlessly deep chain BEFORE approving the plan.
-// Best-effort only — a malformed graph is the implement workflow's error to raise, not ours.
+// Best-effort only — a malformed graph is the wf-implement workflow's error to raise, not ours.
 function waveShape(steps) {
   const ids = new Set(steps.map((s) => s.id))
   const placed = new Set()

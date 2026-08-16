@@ -1,7 +1,7 @@
 export const meta = {
-  name: 'review-loop',
+  name: 'wf-review-loop',
   description: 'Loop until clean: two complementary reviewers → semantic clustering + batched verification → apply confirmed fixes → explicit re-review',
-  whenToUse: 'Validate implemented code changes. Reusable standalone (via /dev-review) or called from the implement workflow via workflow()',
+  whenToUse: 'Validate implemented code changes. Reusable standalone (via /dev-review) or called from the wf-implement workflow via workflow()',
   phases: [
     { title: 'Review', detail: 'two complementary lenses over the change; later rounds re-review only what the fixes touched', model: 'sonnet' },
     { title: 'Verify', detail: 'cluster and verify all findings in one batch; critical findings get one second opinion', model: 'sonnet' },
@@ -22,7 +22,7 @@ export const meta = {
 //   priorRefuted: findings dismissed by an earlier review of the same run, with their reasoning —
 //                 so this one does not re-investigate them from scratch.
 if (typeof args === 'string') { try { args = JSON.parse(args) } catch (e) { throw new Error('args arrived as a non-JSON string') } }
-if (args && args.dryRun) return { ok: true, workflow: 'review-loop' }
+if (args && args.dryRun) return { ok: true, workflow: 'wf-review-loop' }
 if (!args || !args.scope) throw new Error('args.scope is required: which files/changes to review')
 
 const intent = args.intent || 'Not provided — judge the code on its own terms.'

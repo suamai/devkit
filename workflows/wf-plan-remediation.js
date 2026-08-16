@@ -1,5 +1,5 @@
 export const meta = {
-  name: 'plan-remediation',
+  name: 'wf-plan-remediation',
   description: 'Turn a persisted, verified PR review into a cohesive remediation plan without repeating full repository exploration',
   whenToUse: 'Called by /dev-plan --review for nontrivial or cross-cutting confirmed findings',
   phases: [
@@ -10,7 +10,7 @@ export const meta = {
 
 // args: { reviewPath, workspace, planPath?, validate?=true, deep?=false, dryRun? }
 if (typeof args === 'string') { try { args = JSON.parse(args) } catch (e) { throw new Error('args arrived as a non-JSON string') } }
-if (args && args.dryRun) return { ok: true, workflow: 'plan-remediation' }
+if (args && args.dryRun) return { ok: true, workflow: 'wf-plan-remediation' }
 if (!args || !args.reviewPath) throw new Error('args.reviewPath is required: persisted PR review markdown')
 if (!args.workspace) throw new Error('args.workspace is required: absolute remediation workspace path')
 

@@ -4,7 +4,7 @@ description: Execute an approved feature or PR-remediation plan from /dev-plan �
 argument-hint: <slug, workspace, or plan.md> [extra notes]
 ---
 
-You orchestrate the implementation phase of a planned dev task. The heavy lifting happens in the `implement` workflow (which can recursively split oversized steps, gates each dependency wave with one cheap contract check, and calls `review-loop` at accumulated review checkpoints); your job is preflight, interrupts, phase commits, and the final report.
+You orchestrate the implementation phase of a planned dev task. The heavy lifting happens in the `wf-implement` workflow (which can recursively split oversized steps, gates each dependency wave with one cheap contract check, and calls `wf-review-loop` at accumulated review checkpoints); your job is preflight, interrupts, phase commits, and the final report.
 
 ## Process
 
@@ -43,7 +43,7 @@ You orchestrate the implementation phase of a planned dev task. The heavy liftin
    remediation writes to its parent task's entry — the stage describes what is running now, and it
    returns to `implemented` in step 8. You are the only state writer. Then:
    ```
-   Workflow({ name: "devkit:implement", args: { workspace, steps, baseline, notes, reviewLoopPath, rules } })
+   Workflow({ name: "devkit:wf-implement", args: { workspace, steps, baseline, notes, reviewLoopPath, rules } })
    ```
 
    `rules`: the repo's path-scoped checklists, so subagents stop rediscovering conventions the repo
@@ -54,7 +54,7 @@ You orchestrate the implementation phase of a planned dev task. The heavy liftin
    awk 'FNR==1{f=FILENAME;infm=0;n=0} /^---$/{infm++;next} infm==1 && /^[[:space:]]*-[[:space:]]/{g=$0;sub(/^[[:space:]]*-[[:space:]]*/,"",g);gsub(/^['"'"'"]|['"'"'"]$/,"",g);globs[f]=globs[f] (n++?",":"") "\"" g "\""} END{printf "[";c=0;for(k in globs){printf "%s{\"path\":\"%s\",\"globs\":[%s]}",(c++?",":""),k,globs[k]};print "]"}' .claude/rules/*.md
    ```
    `notes`: anything the developer said since the plan was written. `reviewLoopPath`:
-   `${CLAUDE_PLUGIN_ROOT}/workflows/review-loop.js`. Optional: `review: false`,
+   `${CLAUDE_PLUGIN_ROOT}/workflows/wf-review-loop.js`. Optional: `review: false`,
    `reviewRounds: N` (default 3 — rounds after the first are one targeted agent, so this is cheaper
    than it looks), `scoutMode: "always" | "adaptive" | "never"` (default adaptive: the plan's
    `context_confidence` decides, heuristic as fallback), `maxParallelSteps` (default 5), `gate: false`,
@@ -64,7 +64,7 @@ You orchestrate the implementation phase of a planned dev task. The heavy liftin
    a review checkpoint, and each wave in between gets one cheap contract gate. To restore per-wave
    review — the developer asks for it, or the work is unusually contract-heavy — pass
    `checkpointFileThreshold: 1, checkpointMaxWaves: 1`. If the workflow name does not resolve (the plugin has not loaded in this session yet), invoke
-   with `scriptPath` pointing at `${CLAUDE_PLUGIN_ROOT}/workflows/implement.js`. Record the returned run id as
+   with `scriptPath` pointing at `${CLAUDE_PLUGIN_ROOT}/workflows/wf-implement.js`. Record the returned run id as
    `lastRunId` in state.json — it enables resume.
 
 6. **On completion, read the result:**
@@ -89,11 +89,11 @@ You orchestrate the implementation phase of a planned dev task. The heavy liftin
    - Split steps (`split: true`) → normal (size escape valve); mention it so future plans size better.
    - `unreviewedWaves` non-empty → those waves were implemented but never reached a checkpoint (the run
      stopped early). Their code is unreviewed: after resolving what stopped the run, review them with
-     `review-loop` scoped to their files, or let the resumed run reach the next checkpoint.
+     `wf-review-loop` scoped to their files, or let the resumed run reach the next checkpoint.
    - `contractGates[].breaks` → gates that fired. High/critical ones already forced a checkpoint;
      low/medium ones were informational and the checkpoint review should have covered them — if one
      survived into `finalCheck.issues`, mention it, it means the gate is more accurate than the review.
-   - `finalCheck.issues` high/critical with `fixed: false` → fix inline or run `review-loop` scoped to the affected files (pass the same `baseline`).
+   - `finalCheck.issues` high/critical with `fixed: false` → fix inline or run `wf-review-loop` scoped to the affected files (pass the same `baseline`).
 
 7. **Verify end-to-end.** Per-step `verify_run` and `suite_run` already executed checks; re-run
    anything that failed after your fixes, and exercise the changed flow if the project has a runtime

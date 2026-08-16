@@ -37,10 +37,10 @@ Without a matched task workspace, create `.dev/pr/<sanitized-branch>/` for PR ar
 
 ## 3. Optional report-only review (`--review`)
 
-Run `review-loop` with:
+Run `wf-review-loop` with:
 
 ```
-Workflow({ name: "devkit:review-loop", args: {
+Workflow({ name: "devkit:wf-review-loop", args: {
   scope, intent, baseline: mergeBase, contextPaths,
   apply: false, maxRounds: 1,
   lenses: [
@@ -50,7 +50,7 @@ Workflow({ name: "devkit:review-loop", args: {
 } })
 ```
 
-If the workflow name does not resolve, use `${CLAUDE_PLUGIN_ROOT}/workflows/review-loop.js` as `scriptPath`.
+If the workflow name does not resolve, use `${CLAUDE_PLUGIN_ROOT}/workflows/wf-review-loop.js` as `scriptPath`.
 This review never applies fixes. Save its evidence to `<workspace>/reviews/<head-short-sha>.md` with
 the exact format below. Refuted findings stay for audit but are never remediation input.
 

@@ -24,22 +24,42 @@ Everything else assumes this is done.
 `/dev-plan → /dev-implement` cycle. Then the cheap verifications that are currently scattered as
 assumptions:
 
-- **What the command is actually called.** Plugin skills are addressed as `plugin:skill` — probably
-  `/devkit:dev-plan`, not `/dev-plan`. If so, all three docs and every inter-skill handoff ("suggest
-  `/dev-implement <slug>`") are wrong, and the name is redundant twice over. Renaming
-  `skills/dev-plan/` → `skills/plan/` gives `/devkit:plan`; it costs a `git mv` plus a sed today and
-  muscle memory plus three docs later. Decide it here, not after the habit forms.
-- **`${CLAUDE_PLUGIN_ROOT}` inside a SKILL.md body.** The official `plugin-dev/plugin-structure`
-  skill documents it as valid in component files, so it probably works — but the `scriptPath`
-  fallback in five skills rests on it. One smoke test settles it.
-- **`.claude-plugin/marketplace.json`.** Missing, which makes the project-scope declaration story
-  (`extraKnownMarketplaces` + `enabledPlugins` in a *project's* `.claude/settings.json`, documented
-  in `docs/architecture.md` "Distribution") untestable. Add it, then test that a clone actually
-  prompts a teammate to install.
+**Status:** committed, `marketplace.json` added, installed via `~/.claude/skills/devkit` symlink,
+all four workflows pass `dryRun` (0 agents, 0 tokens), plugin loads. What each verification found:
+
+- **What the command is actually called.** ✅ Answered: everything is namespaced, and **skills and
+  workflows share one flat namespace** — the listing mixes `devkit:dev-implement` (skill) with the
+  workflow names. That produced a confusable pair: `devkit:dev-implement` vs `devkit:implement`, one
+  character apart, where the near miss silently hands you the raw workflow instead of the skill.
+  **Fixed:** all four workflows now carry a `wf-` prefix (`devkit:wf-implement`,
+  `wf-explore-plan`, `wf-review-loop`, `wf-plan-remediation`), which makes the control-plane /
+  data-plane split legible in the autocomplete and frees the bare names.
+- **Should the skills drop `dev-`?** Now unblocked by the `wf-` prefix, but still conditional, and
+  the argument inverts on one fact: if the CLI *requires* the namespaced form, `/devkit:plan` beats
+  `/devkit:dev-plan` and the rename is worth it; if the CLI accepts a **short form**, `/dev-plan`
+  already works and is distinctive, while `/plan`, `/review`, `/pr`, `/status` are generic enough to
+  collide the day another plugin ships one — and you would be pushed back to `/devkit:plan` having
+  paid for the rename anyway. Check the autocomplete before deciding.
+- **Workflows re-registered mid-session.** Renaming the four files made them appear as
+  `devkit:wf-*` without a restart, which contradicts "new or renamed workflow files register on
+  session start" (`docs/architecture.md` "Distribution", and the manual's troubleshooting table).
+  Observed once, for a *rename*; confirm whether a brand-new file behaves the same before rewriting
+  that guidance.
+- **Docs still say `/dev-plan`.** 119 occurrences across nine files, written before namespacing was
+  known. Fix them to whatever form the CLI actually accepts (check whether the bare short form
+  resolves when unambiguous, or only `/devkit:dev-*` does).
+- **`${CLAUDE_PLUGIN_ROOT}` inside a SKILL.md body.** Still open — the `scriptPath` fallback in five
+  skills rests on it. `/devkit:dev-setup` step 6 answers it for free.
+- **`.claude-plugin/marketplace.json`.** ✅ Added, self-hosted (`"source": "./"`). Still untested:
+  whether declaring it in a *project's* `.claude/settings.json` (`extraKnownMarketplaces` +
+  `enabledPlugins`, `docs/architecture.md` "Distribution") actually prompts a teammate on clone.
+- **What the smoke test did NOT cover.** `dryRun` returns before any logic runs, so it proved the
+  four scripts parse and their `meta` blocks load — nothing about `toWaves`, `disjoint`,
+  `globToRegExp` or the finding-identity pool. That is item 7(b), and this is the evidence for it.
 
 ## 1. Close the hole in the honesty gate
 
-**Now:** `IMPL_SCHEMA.verify_run` requires only `ran` (`implement.js:85-95`), and the classification
+**Now:** `IMPL_SCHEMA.verify_run` requires only `ran` (`wf-implement.js:85-95`), and the classification
 is:
 
 ```js
@@ -81,7 +101,7 @@ is the real prize.
 
 ## 3. Make resuming an implement a first-class path
 
-**Now:** `implement.js` stops early *by design* in four situations — a blocking question
+**Now:** `wf-implement.js` stops early *by design* in four situations — a blocking question
 (`:524-531`), a checkpoint that did not go clean (`:614-631`), a failed step, the budget floor
 (`:360`). That design is right. But the continuation is not a path: the developer has to get Claude
 to reconstruct `Workflow({scriptPath, resumeFromRunId, args: <the same>})`, and "the same args"
@@ -112,8 +132,8 @@ leaves nothing behind makes the rest of the pipeline weaker for the change most 
 
 ## 5. Model tier and effort as parameters, not constants
 
-**Now:** every tier is hardcoded — `model: 'opus'` on the implementer (`workflows/implement.js:387`)
-and the consistency check (`:660`), on the plan synthesizer (`workflows/explore-plan.js:250`);
+**Now:** every tier is hardcoded — `model: 'opus'` on the implementer (`workflows/wf-implement.js:387`)
+and the consistency check (`:660`), on the plan synthesizer (`workflows/wf-explore-plan.js:250`);
 `'sonnet'` everywhere else. `haiku` is never used, and `effort` — available per `agent()` call — is
 never passed at all. The implementer is the single biggest cost driver in the pipeline, since it
 runs once per step.
@@ -136,15 +156,15 @@ way to spend less is to disable stages wholesale.
 third review lens. Under a plugin it is the *only* way a repo specializes the pipeline, since a
 project can no longer fork a prompt. But the extraction is one long awk one-liner
 (`dev-implement/SKILL.md:54`) that scrapes any `-` item out of the first frontmatter block regardless
-of key, and matching happens in two places with two mechanisms: real glob code in `implement.js`
+of key, and matching happens in two places with two mechanisms: real glob code in `wf-implement.js`
 (`globToRegExp`/`ruleMatchesFile`) versus prose telling the main loop to figure it out for
 `/dev-review`.
 
 **Change:** define the frontmatter contract, parse `paths:` properly rather than "any list item",
 and let one mechanism do the matching for both callers (pass `rules: [{path, globs}]` to
-`review-loop` too, as `implement.js` already does internally).
+`wf-review-loop` too, as `wf-implement.js` already does internally).
 
-**Also verify:** the comment at `implement.js:194-196` claims rules "load lazily for the main
+**Also verify:** the comment at `wf-implement.js:194-196` claims rules "load lazily for the main
 session". `.claude/rules/` appears in no other plugin and is not a native Claude Code convention —
 it is a devkit invention, so probably nothing loads them lazily. Either prove the claim or delete
 it. If nothing native reads these files, the `paths:` contract is yours alone to define — and it is
@@ -154,10 +174,10 @@ worth one paragraph comparing it against nested `CLAUDE.md`, which *is* picked u
 
 **Now:** prompts are tuned by reading transcripts and arguing about them. And the pure logic in the
 workflow scripts — `toWaves`, `disjoint`/`pathScope`, `globToRegExp`/`ruleMatchesFile`, and the
-finding-identity pool at `implement.js:577-613` — has real edge cases and zero tests. A bug there
+finding-identity pool at `wf-implement.js:577-613` — has real edge cases and zero tests. A bug there
 means wrong parallelization or a checkpoint silently unblocked. They can't be imported (the scripts
 are self-contained by runtime requirement), so there is no obvious harness. Meanwhile `dryRun`
-returns `{ok: true}` before any logic runs (`implement.js:28`): it tests that the file parses.
+returns `{ok: true}` before any logic runs (`wf-implement.js:28`): it tests that the file parses.
 
 **Change:** two halves that pay for each other.
 
@@ -178,7 +198,7 @@ tuning safe once a change ships to every project at once.
 **Now:** the calibration checklist asks the developer to read `subagent_tokens` off completion
 notifications by hand. And every budget guard is `if (budget.total && ...)` — `budget.total` exists
 only when the user typed "+300k" in the message, so the 20k/30k/40k floors the docs present as
-protection (`review-loop.js:228`, `implement.js:360,459`) never fire in normal use.
+protection (`wf-review-loop.js:228`, `wf-implement.js:360,459`) never fire in normal use.
 
 **Change:** (a) bracket each phase with `budget.spent()` and `log()` the delta, so the run reports
 its own calibration data — which feeds #5 (where to cut) and #7 directly. Confirm `spent()` works
@@ -194,14 +214,14 @@ bundled:
 
 - **SHA-bound review evidence that gates publication** (`reviews/<sha>.md`, the high/critical block).
   Valuable on its own, solo included. **Keep.**
-- **A separate plan-and-implement cycle for the fixes** (`plan-remediation.js`, `/dev-plan --review`,
+- **A separate plan-and-implement cycle for the fixes** (`wf-plan-remediation.js`, `/dev-plan --review`,
   the nested `remediations/<sha>/` workspace, the HEAD-equality gates in `dev-implement` step 3, the
   remediation branch of `dev-status`). It exists so "the review found things, someone else fixes
   them later" survives a handoff between people. Solo, "the review found three things, fix them" is
-  already `review-loop` with `apply: true`.
+  already `wf-review-loop` with `apply: true`.
 
 **Change:** collapse the second into `/dev-review --from-report <path>`, feeding the report's
-`confirmed` findings straight into the fixer + re-review. That deletes `plan-remediation.js`
+`confirmed` findings straight into the fixer + re-review. That deletes `wf-plan-remediation.js`
 entirely, half of `dev-plan/SKILL.md`, the nested workspace, and three invariants (HEAD equality +
 clean tree + branch match). Escalation stays free: `/dev-plan "fix findings X, Y, Z"` is an ordinary
 task.
@@ -234,7 +254,7 @@ feature-shaped (spec → plan → implement) while debugging has a different sha
 hypothesize → narrow → fix → prove the repro is dead.
 
 **Change (understand):** not a new command and not a new script — `mode: 'explain'` on
-`explore-plan.js`, swapping the synthesizer's prompt and schema. The justification is *not* "explain
+`wf-explore-plan.js`, swapping the synthesizer's prompt and schema. The justification is *not* "explain
 this to me" (the built-in `Explore` agent does that for a fraction of the cost); it is that
 `findings/<angle>.md` are durable validated artifacts, and a later `/dev-plan` in the same workspace
 can consume them instead of re-exploring. That makes exploration a pipeline stage rather than a
@@ -245,7 +265,7 @@ agent argues from code, none executes — then one serial step that reproduces, 
 normal implement/review path. The reason the fan-out cannot execute is the pipeline's own: parallel
 agents running the repro contend for the shared working tree, which is exactly why one implement per
 clone is enforced (`docs/architecture.md`, "Flow state & concurrency"). The adversarial-verification
-pattern in `review-loop.js` transfers to the argue-or-refute half directly.
+pattern in `wf-review-loop.js` transfers to the argue-or-refute half directly.
 
 ## 12. Loosen the GitHub assumption; make prose drift detectable
 
@@ -256,7 +276,7 @@ degradation trivial: no remote, GitLab, or a solo repo where the "PR" is a merge
 
 **Drift:** workflow scripts are self-contained (no imports), so the step contract — "hard
 dependencies only", "one-agent-sized, roughly 10 files", "verification means running a check" — is
-restated in `explore-plan.js`, `plan-remediation.js`, `implement.js` and several skills. Five copies
+restated in `wf-explore-plan.js`, `wf-plan-remediation.js`, `wf-implement.js` and several skills. Five copies
 drift. "Cite one canonical section" is a convention, and convention is precisely what drifts: make
 it a **test** instead — ten lines (a script or an eval case) that greps the canonical sentences
 across all copies and fails when one no longer matches.
@@ -280,7 +300,7 @@ rots and degrades every future agent's discovery. What *was* worth keeping is th
 agent distilling ≤3 lessons per cycle — which is now item 10(b), writing into the repo instead of
 into a store. `docs/architecture.md` ("Extending") keeps the full note.
 
-**Parallel implementation flows.** Designed, not built: one git worktree per flow, `implement`
+**Parallel implementation flows.** Designed, not built: one git worktree per flow, `wf-implement`
 running against the worktree path, merge and review at the end. Only worth attempting once
 single-flow cycles run reliably — but the design note is out of date and the re-read is cheap: the
 runtime now offers `isolation: 'worktree'` per workflow agent and `EnterWorktree`/`ExitWorktree` in

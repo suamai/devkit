@@ -10,7 +10,7 @@ Spec-building is dialogue, so it happens here in the main loop — no background
 
 1. **Workspace.** Derive a short kebab-case slug from the task; the workspace is `.dev/<slug>/` (absolute path, under the repo root). Create the directory.
 
-2. **Ground yourself BEFORE asking anything.** Do a quick scan of the areas the task touches — an Explore agent or targeted greps, a few minutes' worth, not a full exploration (that is explore-plan's job). The point: generic requirement questions are useless; questions anchored in what actually exists ("there's already a `NotificationService` — does the new feature extend it or replace it?") get real answers.
+2. **Ground yourself BEFORE asking anything.** Do a quick scan of the areas the task touches — an Explore agent or targeted greps, a few minutes' worth, not a full exploration (that is wf-explore-plan's job). The point: generic requirement questions are useless; questions anchored in what actually exists ("there's already a `NotificationService` — does the new feature extend it or replace it?") get real answers.
 
 3. **Interview.** 1-2 AskUserQuestion rounds, max 3-4 questions each. Every question must be traceable to something you found in the repo or to a genuine fork in scope/behavior. Infer everything you can; ask only what you cannot.
 

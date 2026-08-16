@@ -4,7 +4,7 @@ description: Triage and plan a development task, or turn a persisted PR review i
 argument-hint: <task description> | --review <review.md> [--deep]
 ---
 
-You orchestrate the planning phase of a dev task. Fan-out work happens in the `explore-plan` workflow; your job is the parts a background workflow cannot do — triage, gathering input, interrupting the developer with questions, and iterating the plan with them.
+You orchestrate the planning phase of a dev task. Fan-out work happens in the `wf-explore-plan` workflow; your job is the parts a background workflow cannot do — triage, gathering input, interrupting the developer with questions, and iterating the plan with them.
 
 ## Review remediation mode — `/dev-plan --review <review.md>`
 
@@ -22,13 +22,13 @@ evidence into an implementation plan; it does not repeat full feature exploratio
 3. **Triage cost.** Two or fewer findings with one clear root cause, one subsystem, and concrete
    suggested fixes → inspect current code and write the remediation plan inline. Otherwise run:
    ```
-   Workflow({ name: "devkit:plan-remediation", args: {
+   Workflow({ name: "devkit:wf-plan-remediation", args: {
      reviewPath, workspace: remediationWorkspace,
      validate: true, deep
    } })
    ```
-   Use `${CLAUDE_PLUGIN_ROOT}/workflows/plan-remediation.js` as `scriptPath` if the name does not resolve. `--deep` requests deeper integration inspection; it still uses one batched validator and
-   one synthesizer, never the 3-5-scout `explore-plan` fan-out. If batched revalidation returns
+   Use `${CLAUDE_PLUGIN_ROOT}/workflows/wf-plan-remediation.js` as `scriptPath` if the name does not resolve. `--deep` requests deeper integration inspection; it still uses one batched validator and
+   one synthesizer, never the 3-5-scout `wf-explore-plan` fan-out. If batched revalidation returns
    `no_action: true`, report that all findings became refuted/stale and do not fabricate a plan.
 4. **Plan contract.** Group findings by root cause and tightly coupled ownership — never one step per
    finding mechanically. Every step has `id`, `title`, `goal`, `files`, `depends_on` (hard
@@ -41,7 +41,7 @@ evidence into an implementation plan; it does not repeat full feature exploratio
    registered in `.dev/state.json`: the workspace on disk is the record, and `/dev-status` finds it
    by looking for `remediations/<sha>/plan.md`. Leave the parent flow's stage untouched.
 
-Remediation mode is deliberately narrower than `explore-plan`: the review already contains
+Remediation mode is deliberately narrower than `wf-explore-plan`: the review already contains
 adversarially verified code evidence. Its work is correction strategy, grouping, dependencies, and
 proof commands.
 
@@ -50,7 +50,7 @@ proof commands.
 | Tier | Signals | Machinery |
 |---|---|---|
 | Trivial | typo, rename, config tweak, one obvious edit | No workspace, no workflows. Just do it (or say it doesn't need the pipeline). |
-| Small | single-file-ish change, approach already clear | One inline scout (Explore agent), short plan in chat, implement inline; optional 1-round `review-loop` at the end. |
+| Small | single-file-ish change, approach already clear | One inline scout (Explore agent), short plan in chat, implement inline; optional 1-round `wf-review-loop` at the end. |
 | Medium | multi-file, real unknowns, needs exploration | Full flow below. |
 | Large / arch-open | new subsystem, cross-cutting, ambiguous requirements | Recommend `/dev-spec` first if no spec exists; then full flow. |
 
@@ -64,9 +64,9 @@ State your tier choice in one line; the developer can override ("treat as large"
 
 3. **Run the exploration.**
    ```
-   Workflow({ name: "devkit:explore-plan", args: { task, scope, requirements, constraints, workspace, specPath? } })
+   Workflow({ name: "devkit:wf-explore-plan", args: { task, scope, requirements, constraints, workspace, specPath? } })
    ```
-   Optional: `angles` to override angle decomposition when the developer already told you what to investigate; `validate: false` skips the single batched validation pass for cost-sensitive planning. If the workflow name does not resolve (the plugin has not loaded in this session yet), invoke with `scriptPath` pointing at `${CLAUDE_PLUGIN_ROOT}/workflows/explore-plan.js`. Runs in background; you'll be notified. While waiting, do nothing speculative.
+   Optional: `angles` to override angle decomposition when the developer already told you what to investigate; `validate: false` skips the single batched validation pass for cost-sensitive planning. If the workflow name does not resolve (the plugin has not loaded in this session yet), invoke with `scriptPath` pointing at `${CLAUDE_PLUGIN_ROOT}/workflows/wf-explore-plan.js`. Runs in background; you'll be notified. While waiting, do nothing speculative.
 
 4. **Interrupt point — open questions.** The result contains `open_questions` (decisions only the developer can make). If non-empty, surface them via AskUserQuestion (use the provided `options`). Fold answers into the plan: edit `<workspace>/plan.md` yourself — including the machine-readable JSON steps block — or, if an answer invalidates the approach, re-run the workflow with the answers appended to `constraints`.
 
