@@ -1,50 +1,10 @@
 ---
 name: dev-plan
-description: Triage and plan a development task, or turn a persisted PR review into an approved remediation plan; uses proportional exploration and batched validation.
-argument-hint: <task description> | --review <review.md> [--deep]
+description: Triage and plan a development task — proportional exploration, batched validation of load-bearing claims, and a plan you approve before any code is written.
+argument-hint: <task description>
 ---
 
 You orchestrate the planning phase of a dev task. Fan-out work happens in the `wf-explore-plan` workflow; your job is the parts a background workflow cannot do — triage, gathering input, interrupting the developer with questions, and iterating the plan with them.
-
-## Review remediation mode — `/dev-plan --review <review.md>`
-
-Route here before normal task triage when `--review` is present. This converts verified review
-evidence into an implementation plan; it does not repeat full feature exploration.
-
-1. **Validate the artifact.** Read the `Machine-readable findings` JSON block. Require `version: 1`,
-   branch/base-branch/base-ref/merge-base/reviewed-head, and arrays for confirmed/refuted. Refuse clean reports or
-   reports with no confirmed findings. Require the current branch to match and current `HEAD` to
-   equal `reviewed_head`; code drift requires a fresh `/dev-pr --review`, not an override by default.
-2. **Create a remediation workspace.** If the report is
-   `<task-workspace>/reviews/<sha>.md`, use `<task-workspace>/remediations/<sha>/`; otherwise use a
-   sibling `remediations/<sha>/`. Never overwrite an existing `plan.md` without asking. The review
-   is immutable evidence; the remediation workspace owns `plan.md`, `briefs/` and `notes/`.
-3. **Triage cost.** Two or fewer findings with one clear root cause, one subsystem, and concrete
-   suggested fixes → inspect current code and write the remediation plan inline. Otherwise run:
-   ```
-   Workflow({ name: "devkit:wf-plan-remediation", args: {
-     reviewPath, workspace: remediationWorkspace,
-     validate: true, deep
-   } })
-   ```
-   Use `${CLAUDE_PLUGIN_ROOT}/workflows/wf-plan-remediation.js` as `scriptPath` if the name does not resolve. Cost args (`profile`/`models`/`efforts`) apply here too — see Cost below. `--deep` requests deeper integration inspection; it still uses one batched validator and
-   one synthesizer, never the 3-5-scout `wf-explore-plan` fan-out. If batched revalidation returns
-   `no_action: true`, report that all findings became refuted/stale and do not fabricate a plan.
-4. **Plan contract.** Group findings by root cause and tightly coupled ownership — never one step per
-   finding mechanically. Every step has `id`, `title`, `goal`, `files`, `depends_on` (hard
-   dependencies only — they become sequential implementation waves), `details`, an executable
-   `verify`, `risk` (`contract` | `local`), and `source_findings`. The markdown ends with the same machine-readable JSON
-   steps block used by normal plans and names the source review + reviewed HEAD.
-5. **Interrupt and approval.** Surface open questions, then present: groups/steps, dependencies,
-   verification, dropped stale/refuted findings, and risks. Stop for explicit approval.
-6. **Handoff.** On approval, suggest `/dev-implement <remediation-workspace>`. A remediation gets no
-   state file of its own: it runs under the parent task's `state.json` (one lock, not two), the
-   workspace on disk is the record, and `/dev-status` finds it by looking for
-   `remediations/<sha>/plan.md`. Leave the parent's stage untouched.
-
-Remediation mode is deliberately narrower than `wf-explore-plan`: the review already contains
-adversarially verified code evidence. Its work is correction strategy, grouping, dependencies, and
-proof commands.
 
 ## 0. Triage first — the burden of proof is on escalation
 

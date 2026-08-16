@@ -10,7 +10,7 @@ export const meta = {
 }
 
 // args: { scope, intent?, baseline?, contextPaths?, priority?, rules?, priorRefuted?, apply?=true,
-//         maxRounds?=3, lenses?, fixModel?, files?, profile?, models?, efforts?, dryRun? }
+//         maxRounds?=3, lenses?, fixModel?, files?, seedFindings?, profile?, models?, efforts?, dryRun? }
 //   scope:        what to review — files/paths/diff description. Reviewers only look here.
 //   intent:       what the change was supposed to accomplish (plan step, spec criteria).
 //   baseline:     git SHA before the change — reviewers judge the DIFF since it, not whole files.
@@ -24,6 +24,13 @@ export const meta = {
 //                 machine-readable list, and rule matching needs it.
 //   priorRefuted: findings dismissed by an earlier review of the same run, with their reasoning —
 //                 so this one does not re-investigate them from scratch.
+//   seedFindings: findings that are already found AND already adversarially verified — the
+//                 `confirmed` array of a persisted /dev-pr --review report. Round 1 then goes
+//                 straight to the fixer: re-finding them risks MISSING one, which would silently
+//                 drop a confirmed defect. The caller must have proved HEAD still equals the
+//                 report's reviewed_head; without that the findings describe code that no longer
+//                 exists. The post-fix re-review is unchanged, so `clean` still means a pass found
+//                 nothing.
 if (typeof args === 'string') { try { args = JSON.parse(args) } catch (e) { throw new Error('args arrived as a non-JSON string') } }
 
 // ---- Model/effort policy (roles, not phases — a policy passes intact into nested workflows).
@@ -99,6 +106,7 @@ if (args && args.dryRun) return { ok: true, workflow: 'wf-review-loop', policy: 
 if (!args || !args.scope) throw new Error('args.scope is required: which files/changes to review')
 
 const intent = args.intent || 'Not provided — judge the code on its own terms.'
+const seedFindings = (args.seedFindings || []).filter((f) => f && (f.title || f.id))
 const apply = args.apply !== false
 const maxRounds = args.maxRounds || 3
 const contextPaths = args.contextPaths || []
@@ -390,7 +398,17 @@ while (round < maxRounds) {
   round++
 
   let found
-  if (round === 1) {
+  let preVerified = false
+  if (round === 1 && seedFindings.length) {
+    // The findings arrive already found AND already adversarially verified — from a persisted
+    // /dev-pr --review report, whose caller has proved HEAD still equals the reviewed one. Finding
+    // them again is not free caution: a second finder can MISS one, which silently drops a defect
+    // that was confirmed. So round 1 goes straight to the fixer, and the explicit post-fix
+    // re-review below is unchanged — `clean` still requires a pass that found nothing.
+    log(`round 1: ${seedFindings.length} pre-verified finding(s) from the caller — skipping find and verify`)
+    found = seedFindings
+    preVerified = true
+  } else if (round === 1) {
     found = (await metered('review', () => parallel(LENSES.map((l) => () =>
       agent(reviewPrompt(l, round), { label: `review:${l.key} r${round}`, phase: 'Review', ...ROLE.review, schema: FINDINGS_SCHEMA }),
     )))).filter(Boolean).flatMap((r) => r.findings)
@@ -406,13 +424,17 @@ while (round < maxRounds) {
   log(`round ${round}: ${found.length} raw findings`)
   if (!found.length) { clean = true; break }
 
-  if (budget.total && budget.remaining() < 20000) { log('budget too low for verification — stopping without clean verdict'); break }
-  const verified = await metered('verify', () => agent(verifyPrompt(found, round), { label: `verify:batch r${round}`, phase: 'Verify', ...ROLE.verify, schema: VERIFIED_FINDINGS_SCHEMA }))
+  if (!preVerified && budget.total && budget.remaining() < 20000) { log('budget too low for verification — stopping without clean verdict'); break }
+  const verified = preVerified
+    ? { findings: found.map((f) => ({ ...f, confirmed: true })) }
+    : await metered('verify', () => agent(verifyPrompt(found, round), { label: `verify:batch r${round}`, phase: 'Verify', ...ROLE.verify, schema: VERIFIED_FINDINGS_SCHEMA }))
   if (!verified) break
   let confirmed = verified.findings.filter((f) => f.confirmed)
   allRefuted.push(...verified.findings.filter((f) => !f.confirmed))
 
-  const critical = confirmed.filter((f) => f.severity === 'critical')
+  // Seeded findings skip the critical second opinion too: they already had one when the report was
+  // written, and the caller vouched that the code has not moved since.
+  const critical = preVerified ? [] : confirmed.filter((f) => f.severity === 'critical')
   if (critical.length) {
     const second = await metered('verify', () => agent(criticalPrompt(critical), { label: `verify:critical r${round}`, phase: 'Verify', ...ROLE.verify, schema: SECOND_OPINION_SCHEMA }))
     if (!second) break

@@ -83,11 +83,11 @@ check('logs the resolved policy when tuned', tuned.logs[0], 'policy: scout=haiku
 // --- The critical-fix escalation is relative, or it stops meaning anything under a cheap profile.
 check('critical escalates one rung', [escalate('haiku'), escalate('sonnet'), escalate('opus')], ['sonnet', 'opus', 'opus'])
 
-// --- Four self-contained scripts cannot import a shared helper, so the resolver is copied. This is
-// the check that the copies have not drifted apart into four different cost models.
-const WORKFLOWS = ['wf-implement.js', 'wf-explore-plan.js', 'wf-review-loop.js', 'wf-plan-remediation.js']
+// --- Self-contained scripts cannot import a shared helper, so the resolver is copied into each.
+// This is the check that the copies have not drifted apart into different cost models.
+const WORKFLOWS = ['wf-implement.js', 'wf-explore-plan.js', 'wf-review-loop.js']
 const RESOLVERS = WORKFLOWS.map((f) => ({ f, body: extract(wf(f), 'function policy(') }))
-check('policy() is identical in all 4 workflows', RESOLVERS.filter((r) => r.body !== RESOLVERS[0].body).map((r) => r.f), [])
+check('policy() is identical in all 3 workflows', RESOLVERS.filter((r) => r.body !== RESOLVERS[0].body).map((r) => r.f), [])
 
 // Same for the per-phase cost accounting, which is fenced rather than extracted by signature
 // because it is a const plus two functions.

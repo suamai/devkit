@@ -53,7 +53,7 @@ Workflow({ name: "devkit:wf-review-loop", args: {
 
 If the workflow name does not resolve, use `${CLAUDE_PLUGIN_ROOT}/workflows/wf-review-loop.js` as `scriptPath`.
 This review never applies fixes. Save its evidence to `<workspace>/reviews/<head-short-sha>.md` with
-the exact format below. Refuted findings stay for audit but are never remediation input.
+the exact format below. Refuted findings stay for audit but never become fix input.
 
 ````markdown
 # PR review: <branch> → <base>
@@ -89,11 +89,14 @@ Preserve each canonical finding's `id`, `severity`, `title`, `merged_titles`, `f
 `description`, `reasoning`, and `suggested_fix`. Outcome is `blocked` when any confirmed finding is
 high/critical, `needs-attention` for low/medium only, otherwise `clean`.
 
-- High/critical: block PR publication and offer `/dev-plan --review <report-path>`.
+- High/critical: block PR publication and offer `/dev-review --from-report <report-path>`, which
+  feeds the confirmed findings straight to the fixer without re-finding them. If the findings need
+  an approach decision or span several subsystems, offer `/dev-plan "fix the findings in <report>"`
+  as ordinary work instead.
 - Low/medium: require one explicit risk acknowledgement in addition to publication confirmation.
 - Clean: continue to the PR preview.
 
-Only a review whose `reviewed_head` equals current `HEAD` can gate publication. After remediation,
+Only a review whose `reviewed_head` equals current `HEAD` can gate publication. After the fixes land,
 run `/dev-pr --review` again over the whole branch.
 
 ## 4. Draft the PR

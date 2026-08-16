@@ -13,7 +13,7 @@ find the manual, and the repo's own path-scoped rules.
 Work through these, reporting each as ok / fixed / skipped-with-reason.
 
 1. **Plugin loaded.** Confirm the workflows resolve by name (`devkit:wf-explore-plan`,
-   `devkit:wf-implement`, `devkit:wf-review-loop`, `devkit:wf-plan-remediation`). If they do not, the plugin
+   `devkit:wf-implement`, `devkit:wf-review-loop`). If they do not, the plugin
    was installed or updated after this session started — say so and tell the developer to restart
    Claude Code. Everything below still works meanwhile via `scriptPath`.
 
@@ -29,8 +29,8 @@ Work through these, reporting each as ok / fixed / skipped-with-reason.
    ## Dev pipeline
    Medium/large tasks go through the devkit multi-agent pipeline: /dev-spec (large/ambiguous) →
    /dev-plan → /dev-implement → /dev-review → /dev-pr; /dev-status monitors flows.
-   PR reviews can feed `/dev-plan --review` remediation plans. Trivial/small changes don't need
-   it (the /dev-plan triage decides).
+   Confirmed PR-review findings are fixed with `/dev-review --from-report`. Trivial/small changes
+   don't need the pipeline (the /dev-plan triage decides).
    Cost profile: default.
    ```
    Ask which cost profile this repo wants (`cheap` | `default` | `max` — the manual's Cost control
@@ -68,13 +68,12 @@ Work through these, reporting each as ok / fixed / skipped-with-reason.
    invariants, a style guide) — but let the developer approve the content. Never invent conventions
    the repo has not stated.
 
-6. **Smoke test.** Run each of the four workflows with `args: {"dryRun": true}` — zero agents
-   spawned, zero cost. All four must return `{ok: true}`:
+6. **Smoke test.** Run each of the three workflows with `args: {"dryRun": true}` — zero agents
+   spawned, zero cost. All three must return `{ok: true}`:
    ```
    Workflow({ name: "devkit:wf-explore-plan", args: {"dryRun": true} })
    Workflow({ name: "devkit:wf-implement", args: {"dryRun": true} })
    Workflow({ name: "devkit:wf-review-loop", args: {"dryRun": true} })
-   Workflow({ name: "devkit:wf-plan-remediation", args: {"dryRun": true} })
    ```
    Fall back to `scriptPath: "${CLAUDE_PLUGIN_ROOT}/workflows/<name>.js"` if the names have not
    registered yet. A parse failure here is a plugin problem, not a repo problem — show the error.

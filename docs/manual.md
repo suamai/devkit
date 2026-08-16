@@ -11,7 +11,7 @@ pipeline, read this when you want to use it.
 | `/dev-setup` | Configuring a repo for the pipeline, or checking it after a plugin update | gitignore, CLAUDE.md pointer, Workflow permission, rules, smoke test |
 | `/dev-spec <rough idea>` | Task is large or requirements are fuzzy | `.dev/<slug>/spec.md` with verifiable acceptance criteria |
 | `/dev-plan <task>` | Start of any nontrivial task | Triage; a five-line `plan.md` for small, a validated step plan for medium+ |
-| `/dev-plan --review <review.md>` | Turn confirmed PR findings into approved grouped fix steps | `.dev/<slug>/remediations/<sha>/plan.md` |
+| `/dev-review --from-report <review.md>` | Apply the confirmed findings of a PR review | Fixes applied and explicitly re-reviewed; clean/not-clean |
 | `/dev-implement <slug>` | Plan approved | Implemented steps, executed verifications, review loops, phase commit |
 | `/dev-review [files]` | Validate changes (standalone) | Confirmed findings, applied fixes, clean/not-clean verdict |
 | `/dev-pr [base] [--review] [--draft] [--body-only]` | Prepare/review/publish the current branch | `pr.md`, optional SHA-bound review report, PR after approval |
@@ -57,11 +57,7 @@ a duplicate. The positional base is normally unnecessary in that case.
 | Invocation | Meaning |
 |---|---|
 | `/dev-plan <task>` | Normal task triage. Trivial/small work stays inline (small still writes a five-line `plan.md`); medium/large use repository exploration, and require a named escalation signal. |
-| `/dev-plan --review <review.md>` | Create a grouped remediation plan from the confirmed findings in a persisted `/dev-pr --review` report. Requires the report's branch and reviewed HEAD to match the current checkout. |
-| `/dev-plan --review <review.md> --deep` | Same remediation flow, with deeper inspection of callers, tests, and integration boundaries. It still avoids the full 3–5-scout feature exploration. Use for critical, architectural, or cross-subsystem findings. |
-
-`--deep` applies to review remediation, not ordinary task planning. A normal task can instead be
-promoted explicitly by saying “treat this as large”.
+A task can be promoted explicitly by saying “treat this as large”.
 
 ### Review, implementation, and status options
 
@@ -71,7 +67,7 @@ promoted explicitly by saying “treat this as large”.
 | `/dev-review [scope] --no-apply` | One report-only find/verify pass. No fixes are written. Unlike `/dev-pr --review`, it does not persist a SHA-bound PR-gate artifact. |
 | `/dev-implement <slug>` | Execute `.dev/<slug>/plan.md`. |
 | `/dev-implement <slug> --continue` | Resume a run that stopped early, after you resolved what stopped it. Implemented steps are not redone; any that were never reviewed are folded into the next checkpoint. |
-| `/dev-implement <workspace-or-plan.md>` | Execute an explicit normal or nested remediation workspace. This is the form used for `.dev/<slug>/remediations/<sha>`. |
+| `/dev-implement <workspace-or-plan.md>` | Execute an explicitly named workspace or plan file rather than a slug. |
 | `/dev-status clean <slug>` | Preview, confirm, then delete a task workspace (its state file goes with it). |
 | `/dev-status clean pr/<branch>` | Preview, confirm, then delete one standalone PR workspace. Bare `pr` never deletes all PR workspaces. |
 
@@ -141,19 +137,24 @@ implicit code edits. The report is saved as `reviews/<reviewed-head>.md`:
 - low/medium only: publication needs one extra explicit confirmation;
 - clean: the normal preview/publish checkpoint follows.
 
-Fixes go through the same planning discipline as feature work:
+Fixes go back through the review loop, seeded with what the report already proved:
 
 ```text
 /dev-pr --review
-  → /dev-plan --review .dev/<slug>/reviews/<sha>.md
-  → approve .dev/<slug>/remediations/<sha>/plan.md
-  → /dev-implement .dev/<slug>/remediations/<sha>
+  → /dev-review --from-report .dev/<slug>/reviews/<sha>.md
   → /dev-pr --review again
 ```
 
-The remediation planner groups root causes instead of spawning one implementer per finding. Small,
-obvious reviews are planned inline; larger/cross-cutting ones use at most one batched validator and
-one Sonnet synthesizer. The old report cannot clear the new `HEAD` after fixes.
+There is no separate remediation pipeline, on purpose. The report's findings were already found and
+already verified, so re-finding them would risk *missing* one — the loop skips straight to fixing
+them, then re-reviews explicitly, so `clean` still means a pass that found nothing. It refuses to run
+unless the branch matches, `HEAD` still equals the reviewed one and the tree is clean: the findings
+cite `file:line` in the reviewed commit, so on drifted code they point at something that is no longer
+there. The old report cannot clear the new `HEAD` after fixes.
+
+When the findings need an approach decision, span several subsystems, or must be applied in a set
+order, they are ordinary work: `/dev-plan "fix the findings in <report>"` gets exploration, a plan
+you approve, and waves — the same pipeline as everything else.
 
 ## What you are expected to do (and not do)
 
@@ -173,7 +174,6 @@ one Sonnet synthesizer. The old report cannot clear the new `HEAD` after fixes.
 | `notes/<id>.md` | The implementer's decisions and *whys* — read before questioning a choice |
 | `pr.md` | Proposed public PR body; safe to edit before publication |
 | `reviews/<sha>.md` | Confirmed/refuted review evidence for one exact branch HEAD |
-| `remediations/<sha>/plan.md` | Approved grouped correction strategy; its workspace gets separate briefs/notes |
 | `state.json` | This flow's own state: stage, baseline, last run id (resume) |
 
 When no task workspace matches a branch, `/dev-pr` uses `.dev/pr/<branch>/` instead. `/dev-status`
@@ -208,9 +208,9 @@ The completion notification of every workflow shows its total token usage, and e
 also returns a per-phase breakdown (`cost.by_phase`) and logs it as it goes — so "where did the
 money go" is answered by the run, not by arithmetic on notifications.
 
-PR drafting without `--review` uses no review agents. Remediation planning does not invoke the full
-3-5-scout exploration: simple findings use no agents; nontrivial findings use one planner and, only
-when warranted, one batched validator.
+PR drafting without `--review` uses no review agents. `/dev-review --from-report` skips the find and
+verify phases entirely — those were already paid for when the report was written — so it costs one
+fixer plus one re-review.
 
 ## Troubleshooting
 
@@ -224,7 +224,7 @@ when warranted, one batched validator.
 | Implementer wrote code/notes but has no result | Inspect rejected `StructuredOutput` calls; classify `result_serialization_failed`, not `implementation_failed` |
 | "Where did that review finding go?" | Refuted findings remain in the workflow result and `journal.jsonl` for audit |
 | PR review says it is stale | Its `reviewed_head` differs from `HEAD`; run `/dev-pr --review` again |
-| PR review found real bugs | Run the offered `/dev-plan --review <report.md>`, approve, then implement the remediation workspace |
+| PR review found real bugs | Run the offered `/dev-review --from-report <report.md>`, then `/dev-pr --review` again |
 | `gh` missing or not authenticated | `/dev-pr --body-only` still writes/returns the title and `pr.md`; publish manually or authenticate later |
 | Working tree is dirty | Commit/stash/discard intentionally; `/dev-pr` will draft but not publish bytes absent from `HEAD` |
 | Flow stuck at `implementing` | `/dev-status` — if no task is running, mark it abandoned |

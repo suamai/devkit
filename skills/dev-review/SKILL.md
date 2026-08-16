@@ -1,10 +1,51 @@
 ---
 name: dev-review
 description: Iterative multi-agent review of code changes — two complementary reviewers, semantic clustering and batched verification, confirmed fixes applied, explicitly re-reviewed until clean.
-argument-hint: [files/scope] [--no-apply]
+argument-hint: [files/scope] [--no-apply] | --from-report <review.md>
 ---
 
 You drive a standalone review loop over code changes using the `wf-review-loop` workflow.
+
+## Fixing a persisted PR review — `/dev-review --from-report <review.md>`
+
+Route here before the normal process when `--from-report` is present. A `/dev-pr --review` report is
+already adversarially verified evidence bound to one exact `HEAD`; this turns its confirmed findings
+into applied fixes. It is not a second review — re-finding what is already confirmed risks *missing*
+one, which silently drops a defect.
+
+1. **Validate the artifact.** Read the report's `Machine-readable findings` JSON block. Require
+   `version: 1` and branch/base-branch/base-ref/merge-base/reviewed-head. Refuse a clean report, or
+   one with no confirmed findings — there is nothing to fix.
+
+2. **Prove the code has not moved.** The current branch must match the report's, `HEAD` must equal
+   its `reviewed_head`, and the working tree must be clean. This is not ceremony: the findings cite
+   `file:line` in the reviewed commit, so on drifted code they describe something that no longer
+   exists, and the fixer would either patch the wrong thing or skip everything. Drift means a fresh
+   `/dev-pr --review`, not an override. Uncommitted bytes were never reviewed either.
+
+3. **Run the loop, seeded.**
+   ```
+   Workflow({ name: "devkit:wf-review-loop", args: {
+     scope, intent, files, rules,
+     baseline: <the report's merge-base>,
+     seedFindings: <the report's confirmed array, verbatim>,
+     priorRefuted: <the report's refuted array>,
+     apply: true, maxRounds: 2
+   } })
+   ```
+   `seedFindings` makes round 1 skip finding and verifying and go straight to the fixer; the explicit
+   post-fix re-review is unchanged, so `clean: true` still means a pass that found nothing.
+   `priorRefuted` stops that re-review re-litigating what the report already dismissed. `intent`:
+   what the branch was supposed to do, from the PR body or the plan.
+
+4. **Report and re-gate.** Say which findings were fixed, which were skipped and why, and the
+   clean/not-clean verdict. Then require a fresh `/dev-pr --review`: the old report stays as
+   evidence, but only a review of the *current* `HEAD` can clear the publication gate.
+
+**When this is the wrong tool.** If the findings need an approach decision, span several subsystems,
+or must be applied in a specific order, they are ordinary work — say so and offer
+`/dev-plan "fix the findings in <report>"`, which gets exploration, a plan you approve, and waves.
+There is no dedicated remediation machinery to reach for; that is deliberate.
 
 ## Process
 
@@ -46,6 +87,6 @@ You drive a standalone review loop over code changes using the `wf-review-loop` 
   developer gets. `floors_active: false` means the budget guards were inert (no target in the
   developer's message); mention it rather than implying the run was bounded.
 - Findings that fail verification do not trigger fixes; they remain available in the result's `refuted` list and workflow journal for audit.
-- For a branch-wide, persistent, report-only review that gates PR publication and can feed
-  `/dev-plan --review`, use `/dev-pr --review`; standalone `/dev-review` remains the direct
+- For a branch-wide, persistent, report-only review that gates PR publication, use `/dev-pr --review`;
+  its report is fixed by `--from-report` above. Standalone `/dev-review` remains the direct
   review-and-optionally-fix entry point.

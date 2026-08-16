@@ -52,9 +52,6 @@ pointer (never "read the whole workspace"):
     notes/<id>.md      ← per-step implementers (decisions + whys); read by reviewers & sub-steps
     pr.md              ← proposed public PR body; publication always waits for approval
     reviews/<sha>.md   ← immutable report-only PR review, tied to an exact HEAD
-    remediations/<sha>/
-      plan.md          ← /dev-plan --review correction strategy + machine-readable steps
-      briefs/ notes/   ← isolated implementation context for that remediation
 ```
 
 Notes from other agents are hints, not truth — every prompt says "verify load-bearing claims in code".
@@ -111,14 +108,12 @@ PR-reviewable and travels with git. Adding a pull-side memory channel is a possi
    ├─ writes pr.md and previews title/body
    └─ explicit approval → push if needed → gh pr create/edit
 
-Confirmed PR findings follow a separate remediation cycle:
+Confirmed PR findings go back through the same review loop, seeded:
 
   reviews/<sha>.md
-    → /dev-plan --review <report>
-      ├─ simple/local: inline deterministic plan
-      └─ wf-plan-remediation.js: optional batched validation + one synthesis agent
-    → remediations/<sha>/plan.md
-    → /dev-implement <remediation-workspace> (baseline = reviewed HEAD)
+    → /dev-review --from-report <report>
+      ├─ gate: branch matches, HEAD == reviewed_head, clean tree
+      └─ wf-review-loop with seedFindings → straight to Fix, then explicit re-review
     → /dev-pr --review again (only current HEAD can clear the PR gate)
 ```
 
@@ -137,8 +132,6 @@ or a repo, shifts them.
 - `clean: true` requires an explicit pass with no confirmed findings; skipped fixes and budget exits leave it false.
 - PR review artifacts are SHA-bound evidence. High/critical findings block publication; low/medium
   require an extra confirmation. Review mode never fixes code implicitly.
-- A review report and its remediation plan have different writers and purposes: evidence remains
-  immutable; the correction strategy can be iterated before approval.
 - All workflows accept `{ dryRun: true }` (zero-cost smoke test) and normalize `args` from JSON
   string. Named resolution requires a session restart after creating a workflow file; `scriptPath`
   works immediately.
@@ -224,8 +217,10 @@ precedence rules or parser.
 Workflow scripts are self-contained by runtime requirement — no imports — so there is nothing to
 `require()`. The harness that works instead: read the file, swap `export const meta` for `const
 meta`, wrap the whole thing in `new Function(...)` (the script body is a function body, top-level
-`return` and all) and call it with `dryRun: true` plus stubs for `agent`/`parallel`/`workflow` that
-**throw**. Nothing is rearranged in the script to accommodate the test, and the stubs turn "a
+`return` and all) and call it with stubs for `agent`/`parallel`/`workflow`. Stub them to **throw**
+and pass `dryRun: true` to test the scheduling; stub them to reply *by agent label* and let the loop
+run to test control flow — which is how `tests/seeded-review.test.js` proves no finder ever runs on
+the seeded path, since an unexpected label throws. Nothing is rearranged in the script to accommodate the test, and the stubs turn "a
 regression reached an agent" into a test failure instead of a surprise bill.
 
 That is what `dryRun` with `steps` is for: it runs the entire scheduler and returns the result, so
@@ -240,6 +235,7 @@ copies of them.
 | `tests/continuation.test.js` | dependency surgery when a stopped run continues |
 | `tests/policy.test.js` | model/effort resolution, plus `policy()` drift across the four scripts |
 | `tests/rules.test.js` | `paths:` frontmatter parsing, glob matching, matcher drift |
+| `tests/seeded-review.test.js` | `--from-report`: that no finder runs, and that `clean` still needs a post-fix pass |
 
 Run them with `node tests/<name>.test.js`; each prints a PASS/FAIL line per case and exits non-zero
 on failure. Where a test cannot reach through `dryRun` it extracts the shipped block by an anchor
@@ -300,9 +296,10 @@ A git repo is a **prerequisite** for `/dev-implement`, `/dev-review`, and `/dev-
   makes a **phase commit** (`impl(<slug>): <title>`) — the rollback/review boundary.
 - `/dev-pr` compares `base...HEAD` from the exact merge-base. A dirty tree can produce a body draft
   but blocks publication because those bytes are not in the proposed PR.
-- Remediation requires `HEAD == reviewed_head` **and a clean working tree** (uncommitted bytes were
-  not reviewed); after the fix commit, the prior report is historical and a fresh whole-branch PR
-  review is required.
+- `/dev-review --from-report` requires `HEAD == reviewed_head`, a matching branch **and a clean
+  working tree**: the findings cite `file:line` in the reviewed commit, so on drifted code they
+  describe something that no longer exists. After the fix commit the prior report is historical and
+  a fresh whole-branch PR review is required.
 
 ## Flow state & concurrency
 
@@ -317,11 +314,9 @@ recoverable case (infer the stage from its artifacts) rather than a corrupt regi
 `/dev-status` globs those files: table of flows, PR-review SHA/outcome, staleness flags, and
 `clean <slug>` to delete the workspace — which takes its state with it.
 
-Remediation cycles deliberately carry **no state of their own**: a remediation runs under its parent
-task's state file (so there is one lock, not two), and what exists on disk —
-`remediations/<sha>/plan.md`, and whether `notes/` sits beside it — is the whole record.
-`/dev-status` reads that directly. The PR-remediation path is a team-shaped extra, not a stage every
-task passes through, so it stays out of the state machine.
+Fixing a PR review adds no state and no stage: `/dev-review --from-report` is a review loop, and a
+review loop has never been a flow. See "Fixing a review, without a second pipeline" for why the
+dedicated remediation axis that used to live here was removed.
 
 **One implement per repo at a time** — the advisory lock is a glob (`.dev/*/state.json`, any at
 `implementing`), deliberately not a lock file: a shared file would reintroduce the writer the
@@ -358,6 +353,35 @@ Don't improvise same-tree concurrency.
   floor, and nothing degrades gracefully — it just runs. A script cannot fix this by setting its own
   ceiling: `budget` comes from the turn, not from args. What it can do is stop pretending, which is
   why every workflow now returns `cost.floors_active`.
+
+## Fixing a review, without a second pipeline
+
+A `/dev-pr --review` report is adversarially verified evidence bound to one exact `HEAD`. Turning it
+into applied fixes used to be a whole second axis — `wf-plan-remediation.js`, `/dev-plan --review`, a
+nested `remediations/<sha>/` workspace, and remediation branches in five of `/dev-implement`'s nine
+steps. That is gone. `/dev-review --from-report <path>` feeds the report's `confirmed` array to
+`wf-review-loop` as `seedFindings` and the loop goes straight to the fixer.
+
+The reasoning, since the deletion is the kind that looks like lost capability:
+
+- **The two bundled things separate cleanly.** SHA-bound evidence that gates publication is valuable
+  on its own, solo included; a *plan-and-approve cycle for the corrections* exists so that "the
+  review found things, someone else fixes them later" survives a handoff. Only the second was in
+  question, and only the second was removed.
+- **Seeding, not re-reviewing, is the correctness argument — not just the cheap one.** The findings
+  were already found and already confirmed. Running finders over them again risks *missing* one,
+  which silently drops a confirmed defect. So round 1 skips find and verify entirely. The explicit
+  post-fix re-review is untouched, so `clean: true` still means a pass that found nothing.
+- **The HEAD invariants were kept, not dropped with the rest.** They protect against applying
+  `file:line` findings to code that moved, which is true whether or not a plan sits in between.
+- **Escalation stays available and costs nothing to keep.** Findings that need an approach decision,
+  span subsystems, or must be ordered are ordinary work: `/dev-plan "fix the findings in <report>"`
+  gets exploration, an approved plan and waves — through the one pipeline that already exists.
+
+What this gives up: a batched revalidation pass over stale findings (the HEAD gate makes staleness
+impossible instead), root-cause grouping into steps (the fixer sees all findings at once), and
+`source_findings` traceability. The residual question — did anyone ever want an *approved plan* for
+a correction rather than the correction itself — was answered from real use, not from the armchair.
 
 ## Relation to built-in skills
 
@@ -416,8 +440,8 @@ House rules — each of these exists because it bit us or the runtime requires i
   individual agents inside a `parallel()`.
 - No `Date.now()` / `Math.random()` / argless `new Date()` — the runtime throws, because they would
   break resume. Timestamps arrive via args or from an agent running `date`.
-- **`workflow()` nests one level only.** Safe children: `wf-explore-plan`, `wf-plan-remediation`,
-  `wf-review-loop`. `wf-implement` calls `wf-review-loop` internally, so as a child it needs `review: false`.
+- **`workflow()` nests one level only.** Safe children: `wf-explore-plan`, `wf-review-loop`.
+  `wf-implement` calls `wf-review-loop` internally, so as a child it needs `review: false`.
 - Escape backticks inside template literals — an unescaped fence is the classic parse error.
 
 Smoke-test with `args: {"dryRun": true}` (zero agents, zero cost) before the real run; on a crash or
@@ -437,9 +461,6 @@ start.
   lessons per cycle is the natural producer, and was removed along with the store it wrote to.
 - Design judge-panel for arch-open tasks: N independent approach proposals + judges before
   synthesis — add as a workflow called by /dev-plan between explore and synthesize.
-- Per-agent `model`/`effort` on any `agent()` call; current split: Sonnet for decomposition,
-  scouts, validators, reviewers, remediation synthesis and ordinary fixes; Opus for main-plan
-  synthesis, implementation, critical fixes and cross-step consistency.
 - Parallel flows (designed, not built): `git worktree add` per flow, implement runs against the
   worktree path (prompts take a `root` arg), merge + review at the end; the workspace state gains a
   `worktree` field. Build only after single-flow cycles run well.

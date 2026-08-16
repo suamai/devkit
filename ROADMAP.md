@@ -429,7 +429,7 @@ line as it goes. The skills lead their reports with it.
 covers it — byte-identity across the four, delta accumulation, the clamp that stops a phase going
 negative, and that `floors_active` reports false when no budget is set.
 
-## 9. Decide the fate of the PR-remediation axis
+## 9. Decide the fate of the PR-remediation axis — ✅ done: collapsed
 
 **Now:** demoted out of the state machine, but still roughly 40% of the collection's conceptual
 surface. Half of that can be decided without any more evidence, because two separable things are
@@ -451,6 +451,36 @@ task.
 
 **What still needs real cycles:** only the residual question — did you ever want an *approved plan*
 for a correction rather than the correction itself? Answer that after #0, not from the armchair.
+
+**Done — collapsed, on the developer's call.** The residual question was put to them with the three
+options costed out; they had run the pipeline before and answered no. So the second axis is deleted
+and `/dev-review --from-report <review.md>` replaces it.
+
+Removed: `workflows/wf-plan-remediation.js` (172 lines), the `Review remediation mode` section of
+`dev-plan/SKILL.md` (41 lines, taking `--review` and `--deep` with it), the remediation branches in
+five of `dev-implement`'s nine steps, the `remediations/` branch of `dev-status`, and the nested
+workspace from the architecture tree. Net −250 lines and, more to the point, one fewer plan/implement
+axis for a reader to learn.
+
+Three things that shaped how it was done:
+
+- **Seeding is a correctness argument before it is a cost one.** `wf-review-loop` gained
+  `seedFindings`: findings that are already found *and* already adversarially verified skip round 1's
+  find and verify entirely. The obvious implementation — re-run the review scoped to the same files —
+  is not merely wasteful, it can **miss** a finding the report had confirmed, silently dropping a
+  defect. The post-fix re-review is untouched, so `clean: true` still means a pass that found nothing.
+- **The HEAD invariants were kept, not deleted with their host.** Branch match, `HEAD ==
+  reviewed_head`, clean tree. The findings cite `file:line` in the reviewed commit; on drifted code
+  they describe something that no longer exists and the fixer would patch the wrong thing. That is
+  true whether or not a plan sits in between, so it moved to the new route rather than going away.
+- **Escalation had to stay free, and it did.** Findings needing an approach decision, spanning
+  subsystems, or requiring an order are ordinary work: `/dev-plan "fix the findings in <report>"`.
+  Both skills say so explicitly, so the deleted capability has a named replacement rather than
+  becoming folklore.
+
+Given up knowingly: batched revalidation of stale findings (the HEAD gate makes staleness impossible
+instead of detecting it), root-cause grouping into steps (the fixer sees all findings in one prompt),
+and `source_findings` traceability from step to finding.
 
 ## 10. Give `.claude/rules/` a bootstrap and a ratchet
 

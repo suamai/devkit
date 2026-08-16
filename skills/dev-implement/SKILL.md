@@ -1,6 +1,6 @@
 ---
 name: dev-implement
-description: Execute an approved feature or PR-remediation plan from /dev-plan — adaptive context scouting, verified implementation, a cheap contract gate per dependency wave, and consolidated review at cost-driven checkpoints.
+description: Execute an approved plan from /dev-plan — adaptive context scouting, verified implementation, a cheap contract gate per dependency wave, and consolidated review at cost-driven checkpoints.
 argument-hint: <slug, workspace, or plan.md> [--continue] [extra notes]
 ---
 
@@ -8,31 +8,23 @@ You orchestrate the implementation phase of a planned dev task. The heavy liftin
 
 ## Process
 
-1. **Resolve the workspace.** A slug resolves to `.dev/<slug>/`; a directory may be a normal task
-   workspace or nested `<task>/remediations/<reviewed-sha>/`; a `plan.md` path resolves to its
-   parent. If absent, use the most recently modified top-level workspace only when unambiguous.
+1. **Resolve the workspace.** A slug resolves to `.dev/<slug>/`; a `plan.md` path resolves to its
+   parent. If absent, use the most recently modified workspace only when unambiguous.
    Read `<workspace>/plan.md` and parse the ```json steps block from the "Machine-readable steps"
    section. If missing or malformed, reconstruct it from the Steps sections and write it back. A
    plan marked `Tier: small` has no steps block by design and is not an input to this skill — it was
    triaged to be implemented inline; say so instead of manufacturing steps to fan a one-file change
-   out across agents.
-   Detect remediation plans by their source-review/reviewed-HEAD metadata and retain the parent
-   task slug for state and commit naming. With `--continue`, read `<workspace>/last-run.json` too
-   and follow "Continuing a run that stopped" below instead of starting over.
+   out across agents. With `--continue`, read `<workspace>/last-run.json` too and follow
+   "Continuing a run that stopped" below instead of starting over.
 
 2. **Concurrency lock.** Glob `.dev/*/state.json` and read them: any workspace at `implementing` is
-   the repo-wide lock — a remediation runs under its parent task's state file, so there is one lock,
-   not two. Check whether it is live (running workflow task, recent `updated`). Live → stop: one
-   implement per repo at a time because verifications share the working tree. Stale → offer to mark
-   it abandoned and proceed.
+   the repo-wide lock. Check whether it is live (running workflow task, recent `updated`). Live →
+   stop: one implement per repo at a time because verifications share the working tree. Stale →
+   offer to mark it abandoned and proceed.
 
-3. **Git preflight.** This phase requires a git repo (offer `git init` otherwise). For a normal plan,
-   if on the default branch, create and switch to `dev/<slug>`. For a remediation plan, require the
-   current branch to match its source review and require `HEAD` to equal its `reviewed_head`; drift
-   means rerun `/dev-pr --review` and `/dev-plan --review`. Never create a new branch for remediation.
-   Remediation also requires a clean working tree: uncommitted bytes were not reviewed. Ensure
-   `.dev/` is gitignored. Capture the baseline; for remediation it is exactly
-   `reviewed_head`, so the implementation's internal reviews judge only the fixes.
+3. **Git preflight.** This phase requires a git repo (offer `git init` otherwise). If on the default
+   branch, create and switch to `dev/<slug>`. Ensure `.dev/` is gitignored. Capture the baseline —
+   reviewers judge diffs since it.
 
 4. **Sanity-check the steps.** Each step needs `id`, `goal`, `files`, `depends_on`, `details`, and an
    executable `verify`; `risk: "contract" | "local"` is optional but worth filling in for steps that
@@ -49,8 +41,7 @@ You orchestrate the implementation phase of a planned dev task. The heavy liftin
    and get explicit go-ahead — this phase edits many files.
 
 5. **Update state and run.** Set `stage: "implementing"` with `baseline` and `updated` in the
-   workspace's `state.json`. A remediation writes to its **parent task's** file — the stage describes
-   what is running now, and it returns to `implemented` in step 8. Then:
+   workspace's `state.json`; it returns to `implemented` in step 8. Then:
    ```
    Workflow({ name: "devkit:wf-implement", args: { workspace, steps, baseline, notes, reviewLoopPath, rules } })
    ```
@@ -121,12 +112,9 @@ You orchestrate the implementation phase of a planned dev task. The heavy liftin
    surface (the built-in `/run` skill launches it). Give `unverifiedSteps` an actual check here — they
    are the only steps whose behavior nothing has executed.
 
-8. **Phase commit.** Normal plan: `impl(<slug>): <plan title>`. Remediation:
-   `fix(<slug>): address PR review findings`. Include the standard co-author trailer; using this
+8. **Phase commit.** `impl(<slug>): <plan title>`, with the standard co-author trailer; using this
    skill opts into phase commits unless the developer said otherwise. Then set `stage: "implemented"`
-   in the workspace's `state.json` — the parent task's, for a remediation. A completed remediation
-   leaves no extra state: the workspace on disk (`remediations/<sha>/` with its plan and notes) is
-   the record.
+   in the workspace's `state.json`.
 
 9. **Report.** Lead with `cost`: `by_phase` (`steps` = scouting + implementation, which cannot be
    split further because parallel steps interleave; `gate`; `review`; `check`) and `total`. If
@@ -139,9 +127,8 @@ You orchestrate the implementation phase of a planned dev task. The heavy liftin
    concerns. State `unverifiedSteps` explicitly — "N steps have no substantiated check of their
    own", with the honest/unevidenced split from step 6 — and
    if `stoppedEarly`, lead with `stopReason` rather than burying it under the per-step detail.
-   After remediation, always require a fresh `/dev-pr --review`: the old report remains evidence but
-   cannot clear a different `HEAD`. If the run stopped early, do **not** phase-commit and report as
-   done — say what stopped it and offer the continuation below.
+   If the run stopped early, do **not** phase-commit and report as done — say what stopped it and
+   offer the continuation below.
 
 ## Continuing a run that stopped
 
