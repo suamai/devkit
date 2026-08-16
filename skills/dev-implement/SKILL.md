@@ -16,10 +16,11 @@ You orchestrate the implementation phase of a planned dev task. The heavy liftin
    Detect remediation plans by their source-review/reviewed-HEAD metadata and retain the parent
    task slug for state and commit naming.
 
-2. **Concurrency lock.** Read `.dev/state.json`. Any flow at `implementing` is the repo-wide lock —
-   a remediation run uses its parent task's flow entry, so there is one lock, not two. Check whether
-   it is live (running workflow task, recent `updated`). Live → stop: one implement per repo at a
-   time because verifications share the working tree. Stale → offer to mark it abandoned and proceed.
+2. **Concurrency lock.** Glob `.dev/*/state.json` and read them: any workspace at `implementing` is
+   the repo-wide lock — a remediation runs under its parent task's state file, so there is one lock,
+   not two. Check whether it is live (running workflow task, recent `updated`). Live → stop: one
+   implement per repo at a time because verifications share the working tree. Stale → offer to mark
+   it abandoned and proceed.
 
 3. **Git preflight.** This phase requires a git repo (offer `git init` otherwise). For a normal plan,
    if on the default branch, create and switch to `dev/<slug>`. For a remediation plan, require the
@@ -39,9 +40,9 @@ You orchestrate the implementation phase of a planned dev task. The heavy liftin
    for judgment calls. If the plan wasn't approved in this conversation, show a one-paragraph summary
    and get explicit go-ahead — this phase edits many files.
 
-5. **Update state and run.** Set the flow to `implementing` with `baseline` and `updated`. A
-   remediation writes to its parent task's entry — the stage describes what is running now, and it
-   returns to `implemented` in step 8. You are the only state writer. Then:
+5. **Update state and run.** Set `stage: "implementing"` with `baseline` and `updated` in the
+   workspace's `state.json`. A remediation writes to its **parent task's** file — the stage describes
+   what is running now, and it returns to `implemented` in step 8. Then:
    ```
    Workflow({ name: "devkit:wf-implement", args: { workspace, steps, baseline, notes, reviewLoopPath, rules } })
    ```
@@ -65,7 +66,7 @@ You orchestrate the implementation phase of a planned dev task. The heavy liftin
    review — the developer asks for it, or the work is unusually contract-heavy — pass
    `checkpointFileThreshold: 1, checkpointMaxWaves: 1`. If the workflow name does not resolve (the plugin has not loaded in this session yet), invoke
    with `scriptPath` pointing at `${CLAUDE_PLUGIN_ROOT}/workflows/wf-implement.js`. Record the returned run id as
-   `lastRunId` in state.json — it enables resume.
+   `lastRunId` in the workspace's `state.json` — it enables resume.
 
 6. **On completion, read the result:**
    - `needs_user_input` with `blocking: true` → the run **stopped there on purpose**: an implementer
@@ -105,9 +106,10 @@ You orchestrate the implementation phase of a planned dev task. The heavy liftin
 
 8. **Phase commit.** Normal plan: `impl(<slug>): <plan title>`. Remediation:
    `fix(<slug>): address PR review findings`. Include the standard co-author trailer; using this
-   skill opts into phase commits unless the developer said otherwise. Then set the flow's stage to
-   `implemented`. A completed remediation leaves no extra state: the workspace on disk
-   (`remediations/<sha>/` with its plan and notes) is the record.
+   skill opts into phase commits unless the developer said otherwise. Then set `stage: "implemented"`
+   in the workspace's `state.json` — the parent task's, for a remediation. A completed remediation
+   leaves no extra state: the workspace on disk (`remediations/<sha>/` with its plan and notes) is
+   the record.
 
 9. **Report.** Per step: what changed, verification result, deviations and why. Report
    `implementation_failed`, `result_serialization_failed`, and `agent_failed_unknown` distinctly.

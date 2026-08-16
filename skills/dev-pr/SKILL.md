@@ -23,7 +23,8 @@ creating, or editing a PR always requires an explicit developer confirmation aft
 
 ## 2. Find task context
 
-Match a `.dev/<slug>/` workspace by evidence, not recency alone: its state baseline must be an
+Match a `.dev/<slug>/` workspace by evidence, not recency alone: the baseline in its
+`state.json` must be an
 ancestor of `HEAD`, recorded commits should be contained in the branch, and its plan paths should
 overlap the diff. If evidence conflicts or multiple workspaces match, ask.
 

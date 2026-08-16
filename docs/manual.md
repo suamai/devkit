@@ -71,7 +71,7 @@ promoted explicitly by saying “treat this as large”.
 | `/dev-review [scope] --no-apply` | One report-only find/verify pass. No fixes are written. Unlike `/dev-pr --review`, it does not persist a SHA-bound PR-gate artifact. |
 | `/dev-implement <slug>` | Execute `.dev/<slug>/plan.md`. |
 | `/dev-implement <workspace-or-plan.md>` | Execute an explicit normal or nested remediation workspace. This is the form used for `.dev/<slug>/remediations/<sha>`. |
-| `/dev-status clean <slug>` | Preview, confirm, then delete a task workspace and its state entry. |
+| `/dev-status clean <slug>` | Preview, confirm, then delete a task workspace (its state file goes with it). |
 | `/dev-status clean pr/<branch>` | Preview, confirm, then delete one standalone PR workspace. Bare `pr` never deletes all PR workspaces. |
 
 Implementation tuning is supplied in the request as intent rather than relying on rigid flag
@@ -171,7 +171,7 @@ one Sonnet synthesizer. The old report cannot clear the new `HEAD` after fixes.
 | `pr.md` | Proposed public PR body; safe to edit before publication |
 | `reviews/<sha>.md` | Confirmed/refuted review evidence for one exact branch HEAD |
 | `remediations/<sha>/plan.md` | Approved grouped correction strategy; its workspace gets separate briefs/notes |
-| `../state.json` | Flow registry: stages, baseline, last run id (resume) |
+| `state.json` | This flow's own state: stage, baseline, last run id (resume) |
 
 When no task workspace matches a branch, `/dev-pr` uses `.dev/pr/<branch>/` instead. `/dev-status`
 lists these separately; they are not registered as implementation flows.
@@ -194,7 +194,7 @@ when warranted, one batched validator.
 |---|---|
 | `/dev-*` not in autocomplete | Restart Claude Code (skills/workflows register at session start) |
 | "Workflow not found" | Same restart; meanwhile skills fall back to `scriptPath` automatically |
-| Implement crashed midway | `lastRunId` is in state.json — ask Claude to resume; completed steps replay from cache |
+| Implement crashed midway | `lastRunId` is in `.dev/<slug>/state.json` — ask Claude to resume; completed steps replay from cache |
 | Implementer wrote code/notes but has no result | Inspect rejected `StructuredOutput` calls; classify `result_serialization_failed`, not `implementation_failed` |
 | "Where did that review finding go?" | Refuted findings remain in the workflow result and `journal.jsonl` for audit |
 | PR review says it is stale | Its `reviewed_head` differs from `HEAD`; run `/dev-pr --review` again |

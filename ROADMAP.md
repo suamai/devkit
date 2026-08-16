@@ -90,7 +90,7 @@ it did not substantiate is now visible rather than silently counted as success.
 anchors rather than copying it, and throws if the anchors move (fail-closed, never a silent pass).
 That anchor trick is a stopgap; 7(b) replaces it with a `dryRun` that returns real computed output.
 
-## 2. Kill the global `.dev/state.json`
+## 2. Kill the global `.dev/state.json` — ✅ done
 
 **Now:** one shared registry, written by four different skills
 (`dev-spec/SKILL.md:24`, `dev-plan/SKILL.md:63,87`, `dev-implement/SKILL.md:20,68`,
@@ -110,6 +110,19 @@ already in the design and already works — remediation deliberately carries no 
 
 **Why here:** it deletes a class of defensive instruction, and it is the precondition for #3, which
 is the real prize.
+
+**Done:** state moved to `.dev/<slug>/state.json`, same shape minus the `flows` wrapper (the
+directory names the flow). The lock is a glob for any workspace at `implementing` — no `lock.json`,
+as argued above. Three pieces of defensive prose went away rather than being restated: the
+"skills are its ONLY writers" invariant (now structural — state sits inside the thing it
+describes, so there is no shared file to race on), the untracked-flow recovery path (a directory
+without a state file is just a missing file, and its stage is inferable from its artifacts, which is
+what `/dev-status` already did for remediations), and the separate "delete the entry" step in
+`clean` (the file lives inside the directory being deleted).
+
+`/dev-status` gained one thing instead: a legacy check that offers to split an old top-level
+`.dev/state.json` into per-workspace files. Untested against a real legacy file — no repo here has
+one.
 
 ## 3. Make resuming an implement a first-class path
 

@@ -37,9 +37,10 @@ evidence into an implementation plan; it does not repeat full feature exploratio
    steps block used by normal plans and names the source review + reviewed HEAD.
 5. **Interrupt and approval.** Surface open questions, then present: groups/steps, dependencies,
    verification, dropped stale/refuted findings, and risks. Stop for explicit approval.
-6. **Handoff.** On approval, suggest `/dev-implement <remediation-workspace>`. Remediation is not
-   registered in `.dev/state.json`: the workspace on disk is the record, and `/dev-status` finds it
-   by looking for `remediations/<sha>/plan.md`. Leave the parent flow's stage untouched.
+6. **Handoff.** On approval, suggest `/dev-implement <remediation-workspace>`. A remediation gets no
+   state file of its own: it runs under the parent task's `state.json` (one lock, not two), the
+   workspace on disk is the record, and `/dev-status` finds it by looking for
+   `remediations/<sha>/plan.md`. Leave the parent's stage untouched.
 
 Remediation mode is deliberately narrower than `wf-explore-plan`: the review already contains
 adversarially verified code evidence. Its work is correction strategy, grouping, dependencies, and
@@ -60,7 +61,7 @@ State your tier choice in one line; the developer can override ("treat as large"
 
 1. **Collect the task brief.** From the invocation arguments and conversation: `task`, `scope`, `requirements`, `constraints`. If `task` is missing or so vague that scouts would wander, ask with AskUserQuestion (one round, max 2-3 questions). Reasonable inference beats interrogation.
 
-2. **Workspace.** Reuse the `.dev/<slug>/` workspace if `/dev-spec` created one (then pass `specPath: <workspace>/spec.md`); otherwise derive the slug and create `.dev/<slug>/`. Always pass `workspace` as an absolute path. If `plan.md` already exists there, ask whether to overwrite or version. Update `.dev/state.json` (you are its only writer): `flows[<slug>] = { task, stage: "planning", updated }`. In a git repo, ensure `.dev/` is gitignored (suggest adding it).
+2. **Workspace.** Reuse the `.dev/<slug>/` workspace if `/dev-spec` created one (then pass `specPath: <workspace>/spec.md`); otherwise derive the slug and create `.dev/<slug>/`. Always pass `workspace` as an absolute path. If `plan.md` already exists there, ask whether to overwrite or version. Write `<workspace>/state.json`: `{ task, stage: "planning", updated }`, merging with whatever `/dev-spec` left there. In a git repo, ensure `.dev/` is gitignored (suggest adding it).
 
 3. **Run the exploration.**
    ```
@@ -84,7 +85,7 @@ State your tier choice in one line; the developer can override ("treat as large"
    code must exist to compile/run/verify) rather than reading order, and propose flattening or merging
    when it isn't. The workflow logs a warning for a suspiciously deep chain — relay it if present.
 
-6. **Handoff.** On approval, set the flow's stage to `plan-ready` in `.dev/state.json` and suggest `/dev-implement <slug>` (or continue yourself if asked).
+6. **Handoff.** On approval, set `stage: "plan-ready"` in `<workspace>/state.json` and suggest `/dev-implement <slug>` (or continue yourself if asked).
 
 ## Notes
 

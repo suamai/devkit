@@ -43,6 +43,7 @@ pointer (never "read the whole workspace"):
 .dev/
   pr/<branch>/         ← standalone PR artifacts when no task workspace matches; never flow state
   <slug>/
+    state.json         ← this flow's stage/baseline/lastRunId; written by the skill owning the phase
     spec.md            ← /dev-spec (dialogue in the main loop)
     plan.md            ← wf-explore-plan's synthesizer; then curated by the /dev-plan skill
     findings/<angle>.md← exploration scouts (full reports; compact summaries returned to the script)
@@ -167,7 +168,7 @@ Onboarding notes worth stating once:
 - Treat the plugin's prompts as code: change them via PR against the plugin repo, informed by the
   calibration checklist below. A change ships to every project at once — that is the point, and
   also the risk.
-- One `/dev-implement` per clone at a time (`.dev/state.json` is per-clone, so two people on
+- One `/dev-implement` per clone at a time (`.dev/` is per-clone, so two people on
   separate clones are fine).
 
 ## Git conventions
@@ -188,19 +189,26 @@ A git repo is a **prerequisite** for `/dev-implement`, `/dev-review`, and `/dev-
 
 ## Flow state & concurrency
 
-`.dev/state.json` registers every flow: `{ task, stage, updated, baseline, lastRunId }` with stages
-`spec → planning → plan-ready → implementing → implemented` (or `abandoned`). Written ONLY by
-skills in the main loop, at phase boundaries — workflow agents never touch it. `/dev-status` reads
-it: table of flows, PR-review SHA/outcome, staleness flags, and `clean <slug>` to delete the whole
-workspace + entry.
+Each workspace owns its state: `.dev/<slug>/state.json` holds
+`{ task, stage, updated, baseline, lastRunId }` with stages
+`spec → planning → plan-ready → implementing → implemented` (or `abandoned`), written by the skill
+that owns that phase. State sits **inside the thing it describes**, which is what makes the
+single-writer rule structural rather than an invariant every skill has to be told to respect: there
+is no shared file two skills could race on, and a directory that exists with no state file is a
+recoverable case (infer the stage from its artifacts) rather than a corrupt registry.
+
+`/dev-status` globs those files: table of flows, PR-review SHA/outcome, staleness flags, and
+`clean <slug>` to delete the workspace — which takes its state with it.
 
 Remediation cycles deliberately carry **no state of their own**: a remediation runs under its parent
-task's flow entry (so there is one lock, not two), and what exists on disk —
+task's state file (so there is one lock, not two), and what exists on disk —
 `remediations/<sha>/plan.md`, and whether `notes/` sits beside it — is the whole record.
 `/dev-status` reads that directly. The PR-remediation path is a team-shaped extra, not a stage every
 task passes through, so it stays out of the state machine.
 
-**One implement per repo at a time** (advisory lock via state.json). The reason is not file
+**One implement per repo at a time** — the advisory lock is a glob (`.dev/*/state.json`, any at
+`implementing`), deliberately not a lock file: a shared file would reintroduce the writer the
+per-workspace split just removed. The reason is not file
 collisions — it's that step verifications and the consistency check *run the test suite on the
 shared working tree*; a second concurrent flow makes every verification result unreliable. True
 parallel flows are a designed extension: one git worktree + branch per flow, merge at the end.
@@ -215,7 +223,8 @@ Don't improvise same-tree concurrency.
   `StructuredOutput` calls. Classify that as `result_serialization_failed`, distinct from
   `implementation_failed`; do not re-run completed implementation work just to recover a report.
 - **Crashed/killed run**: `Workflow({scriptPath, resumeFromRunId: <lastRunId>, args: <same>})` —
-  completed agents replay from cache; only edited/new calls run live. `lastRunId` is in state.json.
+  completed agents replay from cache; only edited/new calls run live. `lastRunId` is in the
+  workspace's `state.json`.
 - **Refuted review findings** never trigger fixes; they remain in the result and journal for audit.
 - Two known knobs surfaced by budget guards: wf-review-loop stops below ~30k remaining tokens
   (`clean: false`), implement skips steps below ~40k (`skipped_for_budget`). A "+500k"-style budget
@@ -291,7 +300,7 @@ start.
   scouts, validators, reviewers, remediation synthesis and ordinary fixes; Opus for main-plan
   synthesis, implementation, critical fixes and cross-step consistency.
 - Parallel flows (designed, not built): `git worktree add` per flow, implement runs against the
-  worktree path (prompts take a `root` arg), merge + review at the end; state.json gains a
+  worktree path (prompts take a `root` arg), merge + review at the end; the workspace state gains a
   `worktree` field. Build only after single-flow cycles run well.
-- Status dashboard (designed, not built): an Artifact-rendered HTML view of state.json;
+- Status dashboard (designed, not built): an Artifact-rendered HTML view of the workspace states;
   `/dev-status` covers the need until then.
