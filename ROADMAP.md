@@ -9,6 +9,18 @@ capability.
 Calibration knobs — clustering ratio, split rate, round convergence, tokens per phase — live in
 `docs/architecture.md` ("First-run calibration checklist"). Those are tuning; this is change.
 
+## Standing rules
+
+Constraints that apply to every item below. Each one is here because we caught ourselves breaking it.
+
+- **No migration paths for scratch state.** `.dev/` is gitignored, per-clone and disposable, so a
+  format change costs `rm -rf .dev/<slug>` — never a migration step, a legacy reader or a version
+  field. Such a path is speculative machinery for a state the world cannot be in, and it outlives
+  the format that justified it: nobody deletes a compatibility shim, because nobody can prove it is
+  unused. Before writing one, name the artifact that would actually be in the old format and say
+  where it is stored. If the answer is scratch, delete instead. *(Caught in #2: a legacy
+  `.dev/state.json` splitter was added, then removed.)*
+
 ---
 
 ## 0. Run it once
@@ -120,9 +132,10 @@ without a state file is just a missing file, and its stage is inferable from its
 what `/dev-status` already did for remediations), and the separate "delete the entry" step in
 `clean` (the file lives inside the directory being deleted).
 
-`/dev-status` gained one thing instead: a legacy check that offers to split an old top-level
-`.dev/state.json` into per-workspace files. Untested against a real legacy file — no repo here has
-one.
+`/dev-status` briefly gained a legacy check that split an old top-level `.dev/state.json` into
+per-workspace files. It was removed the same day: `.dev/` is scratch, so the migration is
+`rm -rf .dev/<slug>`. That mistake is what produced the first standing rule above — the net change
+here is subtraction only.
 
 ## 3. Make resuming an implement a first-class path
 

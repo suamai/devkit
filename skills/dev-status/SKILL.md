@@ -31,9 +31,6 @@ no shared registry to reconcile:
 3. Report a compact table: slug, stage, updated, task, artifacts, latest PR-review outcome/SHA, and
    any remediation workspace found on disk with its apparent state. Flag an `implementing` stage
    with no running task, or an update older than ~24h, as likely stale.
-4. **Legacy registry.** A `.dev/state.json` at the top level is the old shared registry. Offer to
-   migrate it: write one `.dev/<slug>/state.json` per entry, then delete the old file. Report
-   entries whose workspace no longer exists rather than recreating the directory.
 
 ## Clean (`clean <slug>`)
 
