@@ -5,6 +5,7 @@ A multi-agent development pipeline for Claude Code, packaged as a plugin.
 ```
 /dev-spec      →  grounded spec with verifiable acceptance criteria   (large/ambiguous tasks only)
 /dev-plan      →  triage, then fan-out exploration → validated step plan
+                  (--explain writes understanding instead, reusable by a later plan)
 /dev-implement →  steps in dependency waves, contract gates, review checkpoints, phase commit
 /dev-review    →  two complementary reviewers → verify → fix → re-review until clean
                   (--from-report applies a PR review's confirmed findings)
@@ -14,8 +15,8 @@ A multi-agent development pipeline for Claude Code, packaged as a plugin.
 /dev-setup     →  configure a repo to use all of the above
 ```
 
-Read `docs/manual.md` to use it, `docs/architecture.md` to change it, `ROADMAP.md` for what is
-knowingly unfinished.
+Read `docs/manual.md` to use it, `docs/architecture.md` to change it, `ROADMAP.md` for what was
+built and why — including what was deliberately dropped.
 
 ## What it is actually built around
 
@@ -31,7 +32,17 @@ Fan-out is the cheap part. The parts that carry their weight:
 - **Proportional cost** — triage defaults to the cheap tiers and makes the multi-agent flow argue for
   itself: escalation needs a named signal from a closed list, stated in the report;
   review checkpoints accumulate waves instead of paying a full loop per wave, with one cheap
-  contract gate in between.
+  contract gate in between. Model tier and reasoning effort are arguments, not constants
+  (`profile: "cheap"` shifts every agent down a rung), and every run reports what it actually spent
+  per phase.
+- **Nothing carries between cycles, so the repo is the memory** — `.claude/rules/*.md` (a native
+  Claude Code convention) is the one channel that specializes a generic pipeline to your code.
+  `/dev-setup` bootstraps it from what you already wrote down; after a run that found real problems,
+  `/dev-implement` proposes at most three edits, citing evidence, for you to approve as a diff.
+- **Tested where it can be** — the scheduler, the honesty gates, the continuation surgery, the rule
+  matcher and the cost policy all run under `sh tests/run-all.sh`, driven through the real workflow
+  entry points rather than copies. `tests/contract-drift.test.js` additionally checks that the prose
+  still states the values the scripts actually use.
 
 ## Install
 
@@ -50,10 +61,13 @@ declare `extraKnownMarketplaces` + `enabledPlugins` in its `.claude/settings.jso
 ## Layout
 
 ```
-.claude-plugin/plugin.json   manifest
+.claude-plugin/              plugin + marketplace manifests
 skills/dev-*/SKILL.md        control plane — runs in the main loop, talks to you
-workflows/*.js               data plane — background orchestration, invoked as devkit:<name>
+workflows/wf-*.js            data plane — background orchestration, invoked as devkit:wf-<name>
+scripts/                     small shell helpers the skills call (rules manifest)
 docs/                        manual (usage) + architecture (design rationale)
+tests/                       node, no dependencies — `sh tests/run-all.sh`
+evals/                       `claude plugin eval` cases for judgment calls no unit test reaches
 ```
 
 Projects contribute `.dev/` (scratch, gitignored) and optionally `.claude/rules/*.md` — path-scoped
@@ -62,5 +76,10 @@ only way a repo specializes the pipeline, so they are worth writing properly.
 
 ## Requirements
 
-Git for `/dev-implement`, `/dev-review` and `/dev-pr` (they judge diffs). `gh` for publishing a PR —
-`/dev-pr --body-only` still works without it.
+Git for `/dev-implement`, `/dev-review`, `/dev-debug` and `/dev-pr` — they judge diffs. Node to run
+the tests. Nothing else.
+
+`gh` is needed only for the last hop of `/dev-pr`: publication. Branch analysis, the coverage map
+against your plan, the SHA-bound review and the body draft are plain git, so a GitLab remote, a bare
+remote or no remote at all still gets everything except the `gh pr create`. `/dev-pr` detects which
+of those you are in and says so before starting.

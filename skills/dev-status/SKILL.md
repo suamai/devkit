@@ -13,15 +13,19 @@ no shared registry to reconcile:
   "stage": "spec | planning | plan-ready | implementing | implemented | abandoned",
   "updated": "2026-07-09 14:32",
   "baseline": "<git sha, set when implementing starts>",
-  "lastRunId": "wf_..."
+  "lastRunId": "wf_...",
+  "findings": [{ "angle": "...", "report_path": "...", "summary": "..." }]
 }
 ```
 
 ## Status (default)
 
 1. Glob `.dev/*/state.json` and read each. Then list `.dev/*/` directories to catch a workspace with
-   no state file — infer its stage from what is on disk (`spec.md` alone → `spec`; `plan.md` →
-   `plan-ready`; `notes/` present → `implementing` or `implemented`) and offer to write the file.
+   no state file — infer its stage from what is on disk (`spec.md` alone → `spec`; `understanding.md`
+   with no `plan.md` → explored but not planned; `plan.md` → `plan-ready`; `notes/` present →
+   `implementing` or `implemented`) and offer to write the file. `findings` is the reusable
+   exploration index `/dev-plan` stores so a later run in that workspace skips re-scouting; report
+   its presence, never its contents.
    `.dev/pr/<branch>/` workspaces are listed separately and never carry state.
 2. For each flow, check normal artifacts plus `pr.md` and `reviews/*.md`; also check whether a
    workflow task is running (TaskList). A review whose `reviewed_head` differs from current `HEAD`

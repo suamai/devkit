@@ -252,9 +252,9 @@ Four decisions are worth knowing about, because each one is a place this could h
   tier, not a hardcoded opus — otherwise "critical gets a better model" quietly means nothing under
   a cheap profile, which is exactly when it matters most.
 
-`policy()` is copied verbatim into all four scripts: they are self-contained by construction and
-cannot import a shared helper. `tests/policy.test.js` asserts the four copies are byte-identical, so
-the duplication cannot drift into four different cost models. `dryRun` returns the resolved policy,
+`policy()` is copied verbatim into every workflow script: they are self-contained by construction and
+cannot import a shared helper. `tests/policy.test.js` asserts the copies are byte-identical, so the
+duplication cannot drift into several different cost models. `dryRun` returns the resolved policy,
 which makes a cost setting checkable for free before it can spend anything.
 
 A repo pins its default through the `Cost profile:` line `/dev-setup` writes into `CLAUDE.md` —
@@ -282,11 +282,11 @@ copies of them.
 | `tests/schedule.test.js` | the whole scheduler, via the `dryRun` projection (real entry point) |
 | `tests/verify-gate.test.js` | the verified/unverified/failed truth table |
 | `tests/continuation.test.js` | dependency surgery when a stopped run continues |
-| `tests/policy.test.js` | model/effort resolution, plus `policy()` drift across the four scripts |
+| `tests/policy.test.js` | model/effort resolution, plus `policy()`/`metered()` drift across the scripts |
 | `tests/rules.test.js` | `paths:` frontmatter parsing, glob matching, matcher drift |
 | `tests/seeded-review.test.js` | `--from-report`: that no finder runs, and that `clean` still needs a post-fix pass |
 | `tests/explore-modes.test.js` | plan vs explain mode, and that reused findings skip scouting but not validation |
-| `tests/contract-drift.test.js` | that the prose still states the values the scripts actually use |
+| `tests/contract-drift.test.js` | that the prose still states the values the scripts use, and that every name it points at resolves |
 
 Run one with `node tests/<name>.test.js` or all of them with `sh tests/run-all.sh`; each prints a
 PASS/FAIL line per case and exits non-zero on failure. Where a test cannot reach through `dryRun` it extracts the shipped block by an anchor
@@ -296,7 +296,9 @@ and fails closed if the anchor moves — a stopgap, and the reason to prefer wid
 defaults, option sets and severity levels, and the skills restate them for a human, so a script that
 changes without its prose leaves a confident lie behind — the failure no reviewer catches, because
 nobody diffs a `SKILL.md` against a schema. It compares **concrete values only**, extracted from the
-source, never restated in the test. It deliberately does not grep for canonical sentences: a check
+source, never restated in the test — plus the names that are addresses: a `/dev-*` the docs mention
+must be a skill on disk, a skill must be mentioned somewhere, a `devkit:wf-*` must exist, and a
+skill's frontmatter `name` must match its directory. It deliberately does not grep for canonical sentences: a check
 that passes because a file still contains the word "disjoint" while the sentence around it now says
 the opposite is a check that teaches people to ignore the suite. Its own failure modes were verified
 by mutation — changing a default, adding an enum member, renaming a workflow file.
@@ -364,7 +366,7 @@ A git repo is a **prerequisite** for `/dev-implement`, `/dev-review`, and `/dev-
 ## Flow state & concurrency
 
 Each workspace owns its state: `.dev/<slug>/state.json` holds
-`{ task, stage, updated, baseline, lastRunId }` with stages
+`{ task, stage, updated, baseline, lastRunId, findings }` with stages
 `spec → planning → plan-ready → implementing → implemented` (or `abandoned`), written by the skill
 that owns that phase. State sits **inside the thing it describes**, which is what makes the
 single-writer rule structural rather than an invariant every skill has to be told to respect: there
@@ -447,8 +449,12 @@ a correction rather than the correction itself — was answered from real use, n
 
 - One-off change without a workspace → built-in `/code-review` (cheaper). Pipeline cycle →
   `/dev-review` (workspace context, severity-scaled verification, applies fixes in a loop).
-- `/dev-pr --review` deliberately uses that same verifier in report-only mode, persists evidence,
-  and routes fixes through plan approval instead of silently mutating code while preparing a PR.
+- `/dev-pr --review` deliberately uses that same verifier in report-only mode and persists evidence,
+  instead of silently mutating code while preparing a PR. Fixing it is a separate, explicit step
+  (`/dev-review --from-report`).
+- A question about existing code → the built-in `Explore` agent, at a fraction of the cost.
+  `/dev-plan --explain` is for the case where the *artifacts* are the point: validated
+  `findings/` a later plan run reuses. `/dev-plan`'s prose says to route bare questions away.
 - The built-in `/run` complements step 7 of `/dev-implement`: launch the app and exercise the
   changed flow end-to-end, not just tests.
 
@@ -462,6 +468,12 @@ Use workflow transcripts from real cycles to tune these before adding more agent
   triggering is fine.
 - **Round convergence**: wf-review-loop should go clean in 1–2 rounds; consistently hitting 3 means a
   weak fixer or redundant lenses.
+- **Escalation rate**: how often triage went past `small`, and which signal it named each time. If
+  one signal fires almost always, it is doing no discriminating work; if `medium` is the norm, the
+  bias in `/dev-plan` §0 is not holding and the prose needs sharpening, not the thresholds.
+- **Unverified rate**, split the way `/dev-implement` reports it: steps that honestly could not run a
+  check versus steps that *claimed* one without naming the command. The second number is a
+  prompt-calibration signal and should be zero.
 - **Tokens per phase**: no longer read off notifications by hand — every workflow returns
   `cost: { by_phase, total, budget_total, floors_active }` and logs a `cost: steps=42k review=18k …`
   line. Know where the money goes before cutting. First knobs: `profile: "cheap"`, then skip planning
@@ -513,12 +525,13 @@ start.
 ## Extending
 
 - Custom review lenses: pass `lenses` to `wf-review-loop`.
-- Shared memory (removed, re-addable): a pull-side channel where scouts/implementers/reviewers
-  discover lessons, gotchas and subsystem maps from earlier cycles. It was backed by an external
-  MCP knowledge base and was stripped out with it. Re-adding it means picking a store (committed
-  markdown entries + a grep-able catalog is the simplest), a query snippet in the exploration and
-  review prompts, and a curated set of writers — a post-implementation retro agent distilling ≤3
-  lessons per cycle is the natural producer, and was removed along with the store it wrote to.
+- Shared memory, half-built on purpose. The **write** side exists: `/dev-implement` step 10 distils
+  at most three lessons per cycle into `.claude/rules/*.md`, through a human. The **read** side is
+  native — a `paths:`-scoped rule reaches whoever touches those files — but it is *push*: agents get
+  the rules matching their files, and cannot go looking. A pull-side channel (scouts querying
+  earlier cycles' subsystem maps) is what remains, and it needs a store, a query snippet in the
+  exploration prompts, and an answer to the thing that killed the last one: an uncurated memory rots
+  and degrades every future agent's discovery. Curation, not storage, is the hard part.
 - Design judge-panel for arch-open tasks: N independent approach proposals + judges before
   synthesis — add as a workflow called by /dev-plan between explore and synthesize.
 - Parallel flows (designed, not built): `git worktree add` per flow, implement runs against the

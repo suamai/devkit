@@ -1,13 +1,25 @@
-# Roadmap — open improvements
+# Roadmap — what was built, and why
 
-What is left after two cleanup passes (doc/code drift, dead machinery) and the move to a plugin.
+Items 0-12 are **done**. They were ordered on one criterion: **0-3** stop the pipeline from losing
+work (the thing that actually hurts in use), **7-8** make changing a prompt stop being a bet, and the
+rest is capability. Each item keeps its original *Now / Change* text above a `**Done:**` note, so the
+reasoning that turned out to be wrong stays visible next to what replaced it — several items changed
+shape once built, and one (#9) was decided by the developer rather than by the plan.
 
-Ordered by what I'd do first, on one criterion: **0-3 stop the pipeline from losing work** (the thing
-that actually hurts in use), **7-8 make changing a prompt stop being a bet**, and the rest is
-capability.
+**Still open, and neither is code.** Both need one real cycle in a real repository:
 
-Calibration knobs — clustering ratio, split rate, round convergence, tokens per phase — live in
-`docs/architecture.md` ("First-run calibration checklist"). Those are tuning; this is change.
+- **#0's last two verifications.** Whether the CLI accepts the bare `/dev-plan` or only
+  `/devkit:dev-plan` (that decides whether the skills get renamed, and whether ~119 doc occurrences
+  are wrong), and whether `${CLAUDE_PLUGIN_ROOT}` expands inside a SKILL.md body — the `scriptPath`
+  fallback in five skills rests on it. `/devkit:dev-setup` step 6 answers both for free.
+- **#7(a)'s eval cases.** Written, never through the loader: `claude plugin eval` is early-access and
+  gated per organization. `evals/README.md` carries the self-test.
+
+Calibration knobs — clustering ratio, split rate, round convergence, escalation rate, cost per phase
+— live in `docs/architecture.md` ("First-run calibration checklist"). Those are tuning; this was
+change.
+
+Tests: `sh tests/run-all.sh` (node, no dependencies).
 
 ## Standing rules
 
@@ -23,7 +35,7 @@ Constraints that apply to every item below. Each one is here because we caught o
 
 ---
 
-## 0. Run it once
+## 0. Run it once — ✅ done, minus two checks that need a real repo
 
 **Now:** `git log` says the repo has no commits. `~/.claude/skills/` is empty, no marketplace points
 here, `.claude-plugin/marketplace.json` does not exist. **The plugin has never run in this form.**

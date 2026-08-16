@@ -39,6 +39,20 @@ const invoked = [...new Set(PROSE.flatMap(({ text }) => [...text.matchAll(/devki
 check('every workflow the skills invoke exists', invoked.filter((n) => !shipped.includes(n)), [])
 check('and every shipped workflow is reachable', shipped.filter((n) => !invoked.includes(n)), [])
 
+// Same for skills. A `/dev-foo` in the docs that does not exist is a command the reader will type
+// and watch fail; a skill nothing points at is one nobody will find.
+const skills = fs.readdirSync(path.join(ROOT, 'skills')).sort()
+const named = [...new Set(PROSE.flatMap(({ text }) => [...text.matchAll(/\/(dev-[a-z]+)\b/g)].map((m) => m[1])))].sort()
+check('every /dev-* the docs name exists', named.filter((n) => !skills.includes(n)), [])
+check('and every skill is named somewhere', skills.filter((n) => !named.includes(n)), [])
+
+// A skill's frontmatter name is its address; a directory renamed without it silently stops resolving.
+const misnamed = skills.filter((d) => {
+  const m = read(`skills/${d}/SKILL.md`).match(/^name:\s*(\S+)/m)
+  return !m || m[1] !== d
+})
+check('frontmatter name matches its directory', misnamed, [])
+
 // ---- 2. Defaults. The script owns the number; prose that names one must name the same number.
 // Extracted from the source, never restated here — a constant copied into the test drifts too.
 function defaultOf(file, expr) {
@@ -128,5 +142,5 @@ const promptGuide = read('workflows/wf-explore-plan.js').match(/roughly (\d+) fi
 const diagramGuide = read('docs/architecture.md').match(/~(\d+) files as a soft guide/)
 check('step-size guide agrees', promptGuide && promptGuide[1], diagramGuide && diagramGuide[1])
 
-console.log(failed ? `\n${failed} FAILED` : `\nall ${11} cases pass`)
+console.log(failed ? `\n${failed} FAILED` : `\nall ${14} cases pass`)
 process.exit(failed ? 1 : 0)
