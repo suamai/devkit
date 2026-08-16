@@ -125,7 +125,23 @@ signal and escalate.
 
 4. **Interrupt point — open questions.** The result contains `open_questions` (decisions only the developer can make). If non-empty, surface them via AskUserQuestion (use the provided `options`). Fold answers into the plan: edit `<workspace>/plan.md` yourself — including the machine-readable JSON steps block — or, if an answer invalidates the approach, re-run the workflow with the answers appended to `constraints`.
 
-5. **Present the plan.** Concise prose: the approach, the step list with dependencies/parallelism, risks, and what was dropped as refuted during validation (`dropped_claims`). Full detail is in `plan.md`; scout reports in `<workspace>/findings/`. Then stop — the developer reviews; apply their adjustments to the plan file (keep the JSON block in sync).
+5. **Lint the plan before presenting it.** Zero agents, zero tokens, one call:
+   ```
+   Workflow({ name: "devkit:wf-implement", args: { dryRun: true, steps, rules } })
+   ```
+   It returns `schedule`: the dependency waves, which steps *actually* run in parallel
+   (`parallel_groups` — only disjoint declared files do), which get a scout, which repo rules match,
+   where review checkpoints would fire and why, `warnings`, and `agents_min`. Fix what it finds
+   before the developer sees the plan; a plan that lints badly is cheaper to fix now than after an
+   implement run. Two `warnings` are worth acting on rather than reporting: steps with overlapping
+   files and no dependency (they cost the parallelism the plan appears to have), and a step with no
+   `verify` (it can only ever come back `unverified`).
+
+   The projection errs in one direction: checkpoints can fire **earlier** than shown, never later,
+   because a blocking question or a contract-gate break also forces one and neither is knowable
+   before the agents run. Same for `agents_min` — a floor, not an estimate.
+
+6. **Present the plan.** Concise prose: the approach, the step list with dependencies/parallelism, risks, and what was dropped as refuted during validation (`dropped_claims`). Full detail is in `plan.md`; scout reports in `<workspace>/findings/`. Then stop — the developer reviews; apply their adjustments to the plan file (keep the JSON block in sync).
 
    Two per-step fields shape what implementation costs, so sanity-check them rather than passing them
    through: `risk` (`contract` earns an immediate review checkpoint) and `context_confidence`
@@ -133,13 +149,13 @@ signal and escalate.
    the plan is admitting it is vague — worth a look before approval; if a step you know is
    hand-waved came back `high`, fix it.
 
-   State the **wave shape** from the result's `waves` (e.g. "3 waves: s1+s2 → s3 → s4+s5"). Waves are
+   State the **wave shape** from the lint's `schedule` (e.g. "3 waves: s1+s2 → s3 → s4+s5"). Waves are
    the sequential spine of implementation, so a deep chain of single steps is worth challenging at
    approval time, not after: check whether each `depends_on` is a hard dependency (the other step's
    code must exist to compile/run/verify) rather than reading order, and propose flattening or merging
    when it isn't. The workflow logs a warning for a suspiciously deep chain — relay it if present.
 
-6. **Handoff.** On approval, set `stage: "plan-ready"` in `<workspace>/state.json` and suggest `/dev-implement <slug>` (or continue yourself if asked).
+7. **Handoff.** On approval, set `stage: "plan-ready"` in `<workspace>/state.json` and suggest `/dev-implement <slug>` (or continue yourself if asked).
 
 ## Cost
 

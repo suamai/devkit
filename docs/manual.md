@@ -210,6 +210,7 @@ when warranted, one batched validator.
 | Symptom | Fix |
 |---|---|
 | `/dev-*` not in autocomplete | Restart Claude Code (skills/workflows register at session start) |
+| Edited a workflow, but the run behaves as before | `name:` resolution serves a snapshot from plugin load. Invoke by `scriptPath` while iterating, or restart |
 | "Workflow not found" | Same restart; meanwhile skills fall back to `scriptPath` automatically |
 | Implement crashed midway | `lastRunId` is in `.dev/<slug>/state.json` — ask Claude to resume; completed steps replay from cache |
 | Implement *stopped* midway (blocking question, unclean checkpoint, failed step, budget) | Not a crash — that is the design. Resolve what stopped it, then `/dev-implement <slug> --continue` |

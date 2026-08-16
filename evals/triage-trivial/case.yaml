@@ -1,0 +1,23 @@
+schema_version: "1.1"
+name: triage-trivial
+tags: [triage]
+plugins: ["../.."]
+execution:
+  prompt: |
+    /dev-plan fix the typo "recieve" -> "receive" in the comment at the top of README.md
+  max_turns: 6
+graders:
+  # The tier line is mandatory in either direction, so its absence is itself a failure.
+  - type: regex
+    pattern: '(?i)tier:\s*(trivial|small)'
+    match: contains
+    target: last_message
+  - type: regex
+    pattern: '(?i)tier:\s*(medium|large)'
+    match: not_contains
+    target: last_message
+  # The expensive failure is not a wrong word, it is spawning the fan-out for a one-word edit.
+  - type: tool_used
+    tool: Workflow
+    min: 0
+    max: 0

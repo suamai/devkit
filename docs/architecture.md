@@ -219,6 +219,36 @@ A repo pins its default through the `Cost profile:` line `/dev-setup` writes int
 already in every session's context, committed with the repo, and needing no config format,
 precedence rules or parser.
 
+## Testing
+
+Workflow scripts are self-contained by runtime requirement — no imports — so there is nothing to
+`require()`. The harness that works instead: read the file, swap `export const meta` for `const
+meta`, wrap the whole thing in `new Function(...)` (the script body is a function body, top-level
+`return` and all) and call it with `dryRun: true` plus stubs for `agent`/`parallel`/`workflow` that
+**throw**. Nothing is rearranged in the script to accommodate the test, and the stubs turn "a
+regression reached an agent" into a test failure instead of a surprise bill.
+
+That is what `dryRun` with `steps` is for: it runs the entire scheduler and returns the result, so
+`tests/schedule.test.js` covers `toWaves`, `disjoint`/`pathScope`, `globToRegExp`/`ruleMatchesFile`,
+the scout heuristic and the checkpoint policy through the real entry point rather than through
+copies of them.
+
+| File | Covers |
+|---|---|
+| `tests/schedule.test.js` | the whole scheduler, via the `dryRun` projection (real entry point) |
+| `tests/verify-gate.test.js` | the verified/unverified/failed truth table |
+| `tests/continuation.test.js` | dependency surgery when a stopped run continues |
+| `tests/policy.test.js` | model/effort resolution, plus `policy()` drift across the four scripts |
+| `tests/rules.test.js` | `paths:` frontmatter parsing, glob matching, matcher drift |
+
+Run them with `node tests/<name>.test.js`; each prints a PASS/FAIL line per case and exits non-zero
+on failure. Where a test cannot reach through `dryRun` it extracts the shipped block by an anchor
+and fails closed if the anchor moves — a stopgap, and the reason to prefer widening `dryRun`.
+
+`evals/` is the other half: `claude plugin eval` cases for judgment calls no unit test can reach
+(does triage escalate, and does it say why). See `evals/README.md` — including that the command is
+early-access gated, so those cases are written but unrun.
+
 ## Distribution
 
 The pipeline is a **Claude Code plugin**. Skills, workflows and these docs live in one place and
@@ -244,7 +274,11 @@ repo-specific knowledge can steer the agents. Treat them accordingly.
 Onboarding notes worth stating once:
 
 - New or renamed workflow files register on **session start** — restart after installing or
-  updating the plugin. `scriptPath` works immediately.
+  updating the plugin. More precisely: `name:` resolution serves a **snapshot** taken when the
+  plugin loaded, so *editing* an already-registered workflow does not change what `name:` runs
+  either. While working on a workflow, invoke it by `scriptPath` — that always reads the file on
+  disk. (Observed directly: a `dryRun` by name returned the pre-edit result while the same args by
+  `scriptPath` returned the new one.)
 - The pipeline spawns many sonnet/opus agents; token cost scales with the triage tier (see that
   table). A "+300k"-style budget directive caps a run hard, and `profile: "cheap"` shifts every
   agent down a model tier.

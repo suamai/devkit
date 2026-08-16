@@ -1,0 +1,35 @@
+schema_version: "1.1"
+name: small-tier-artifact
+tags: [triage, artifacts]
+plugins: ["../.."]
+execution:
+  prompt: |
+    /dev-plan add a --quiet flag to the existing CLI entrypoint in src/cli.ts that suppresses the
+    progress spinner. The flag parsing and the spinner are both already in that one file.
+  max_turns: 8
+graders:
+  - type: regex
+    pattern: '(?i)tier:\s*small'
+    match: contains
+    target: last_message
+  # A tier that leaves nothing behind makes /dev-pr and /dev-review weaker for exactly the change
+  # most likely to reach them.
+  - type: file_exists
+    path: ".dev/*/plan.md"
+  - type: regex
+    pattern: '(?i)\*\*tier:\*\*\s*small'
+    match: contains
+    target:
+      source: file
+      path: ".dev/*/plan.md"
+  # Five lines, not a plan: a small-tier plan.md with a steps block was a medium task.
+  - type: regex
+    pattern: 'Machine-readable steps'
+    match: not_contains
+    target:
+      source: file
+      path: ".dev/*/plan.md"
+  - type: tool_used
+    tool: Workflow
+    min: 0
+    max: 0

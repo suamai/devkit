@@ -14,6 +14,9 @@ export const meta = {
 //         reviewLoopPath?, scoutMode?='adaptive', maxParallelSteps?=5,
 //         gate?=true, checkpointFileThreshold?=20, checkpointMaxWaves?=3, rules?,
 //         profile?, models?, efforts?, dryRun? }
+//   dryRun: with `steps`, returns the computed schedule (waves, parallel groups, scouts, matched
+//          rules, projected checkpoints, plan warnings) instead of running anything — a zero-cost
+//          plan lint. Without `steps`, the old parse-only smoke test.
 //   profile/models/efforts: model tier per role (scout, impl, gate, check) — see the policy block
 //          below. Passed through to the nested review loop, so one dial covers the whole run.
 //   completed: what an earlier run of this same plan already implemented — the `continuation.completed`
@@ -80,11 +83,19 @@ const ROLE = policy({
   check: { model: 'opus' },
 })
 
-if (args && args.dryRun) return { ok: true, workflow: 'wf-implement', policy: ROLE }
-if (!args || !args.workspace) throw new Error('args.workspace is required: absolute path to the task workspace')
-if (!args.steps || !args.steps.length) throw new Error('args.steps is required: the machine-readable steps from the plan')
+// `dryRun` is no longer a parse check. Given `steps` it runs the entire scheduler — waves, disjoint
+// batches, scout decisions, rule matching, checkpoint policy — and returns what the run WOULD do,
+// at zero agents and zero tokens. So the arg gate has to let a projection through: it needs steps,
+// not a workspace. Without steps it stays the old smoke test.
+const dryRun = !!(args && args.dryRun)
+if (!args) throw new Error('args is required')
+if (!dryRun && !args.workspace) throw new Error('args.workspace is required: absolute path to the task workspace')
+if (!args.steps || !args.steps.length) {
+  if (dryRun) return { ok: true, workflow: 'wf-implement', policy: ROLE }
+  throw new Error('args.steps is required: the machine-readable steps from the plan')
+}
 
-const workspace = args.workspace.replace(/\/+$/, '')
+const workspace = (args.workspace || '').replace(/\/+$/, '')
 const planPath = args.planPath || `${workspace}/plan.md`
 const notes = args.notes || ''
 const MAX_SPLIT_DEPTH = 2 // recursive splitting is an escape valve, not the default mode
@@ -624,6 +635,85 @@ if (completed.length) log(`continuing: ${completed.length} step(s) already imple
 
 const allWaves = toWaves(todoSteps)
 log(`${todoSteps.length} steps in ${allWaves.length} dependency wave(s)`)
+
+// What this run WOULD do, from the same functions the run itself uses — never a second model of the
+// schedule, which would be free to be wrong in exactly the way the real one is not.
+//
+// It is a projection, not a promise, and it errs in one direction only: checkpoints can fire
+// EARLIER than shown, never later, because a blocking question or a gate break also forces one and
+// neither is knowable before the agents run. Same for the agent floor.
+function projectSchedule() {
+  const out = []
+  let pendingProjected = inheritedReports.map((r) => stepsById.get(r.step)).filter(Boolean)
+  let pendingWaves = 0
+  let checkpoints = 0
+  let gates = 0
+  let scouts = 0
+  for (let i = 0; i < allWaves.length; i++) {
+    const wave = allWaves[i]
+    pendingWaves++
+    pendingProjected = [...pendingProjected, ...wave]
+    const accumulated = changedFilesOf(pendingProjected, [])
+    const laterSteps = allWaves.slice(i + 1).flat()
+    const waveScouts = wave.filter((s) => needsScout(s, 0)).map((s) => s.id)
+    scouts += waveScouts.length
+    // Mirrors the flush condition in the loop below, minus the two agent-dependent triggers.
+    const reason = !laterSteps.length ? 'final wave'
+      : wave.some((s) => s.risk === 'contract') ? 'contract-risk step'
+      : accumulated.length >= checkpointFileThreshold ? `${accumulated.length} files pending`
+      : pendingWaves >= checkpointMaxWaves ? `${pendingWaves} waves pending`
+      : null
+    const entry = {
+      wave: i + 1,
+      steps: wave.map((s) => s.id),
+      // Only steps with declared disjoint files run together; everything else is serialized here,
+      // which is the single most useful thing to see before approving a plan.
+      parallel_groups: disjointBatches(wave).flatMap((b) => chunks(b, maxParallelSteps)).map((b) => b.map((s) => s.id)),
+      scouts: waveScouts,
+      rules: Object.fromEntries(wave.map((s) => [s.id, rulesFor(s.files || [])]).filter(([, r]) => r.length)),
+    }
+    if (reason) {
+      checkpoints++
+      entry.checkpoint = { number: checkpoints, reason, waves_covered: pendingWaves, files: accumulated.length }
+      pendingWaves = 0
+      pendingProjected = []
+    } else {
+      const dependents = laterSteps.filter((s) => (s.depends_on || []).some((d) => wave.some((w) => w.id === d)))
+      const fires = gateEnabled && dependents.length > 0 && changedFilesOf(wave, []).length > 0
+      if (fires) gates++
+      entry.gate = fires ? { dependents: dependents.map((s) => s.id) } : null
+    }
+    out.push(entry)
+  }
+
+  const warnings = []
+  if (allWaves.length >= 4 && allWaves.every((w) => w.length === 1)) {
+    warnings.push(`${allWaves.length} waves of one step each: waves are the sequential spine, so this is the plan's wall-clock. Check every depends_on is a hard dependency, not reading order.`)
+  }
+  for (let i = 0; i < allWaves.length; i++) {
+    for (const [a, b] of allWaves[i].flatMap((x, xi) => allWaves[i].slice(xi + 1).map((y) => [x, y]))) {
+      // Same wave means no dependency between them, so an overlap is not a correctness bug — but it
+      // silently costs the parallelism the plan looks like it has.
+      if (!disjoint(a, b)) warnings.push(`wave ${i + 1}: ${a.id} and ${b.id} declare overlapping files and no dependency, so they run sequentially anyway`)
+    }
+  }
+  for (const s of todoSteps) {
+    if (!(s.files || []).length) warnings.push(`${s.id} declares no files: it can never run in parallel, and rule matching has nothing to match`)
+    if (!s.verify) warnings.push(`${s.id} has no verify command: it can only ever come back unverified`)
+  }
+
+  return {
+    waves: out,
+    warnings,
+    // A floor, and labelled as one: gates that find breaks, blocking questions and extra review
+    // rounds all add agents, and nothing here removes any.
+    agents_min: scouts + todoSteps.length + gates + checkpoints * 4 + 1,
+    agents_min_note: 'floor: scouts + one implementer per step + gates + ~4 per review checkpoint + the final consistency check. Gate breaks, blocking questions and extra review rounds only add.',
+  }
+}
+
+if (dryRun) return { ok: true, workflow: 'wf-implement', policy: ROLE, schedule: projectSchedule() }
+
 let waveNumber = 0
 let checkpointNumber = 0
 let stoppedEarly = false

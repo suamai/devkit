@@ -1,0 +1,25 @@
+schema_version: "1.1"
+name: triage-escalates
+tags: [triage]
+plugins: ["../.."]
+execution:
+  prompt: |
+    /dev-plan we need request-level rate limiting across every public HTTP endpoint, with the
+    limits configurable per API key. I don't know where the middleware chain is assembled.
+  max_turns: 8
+graders:
+  - type: regex
+    pattern: '(?i)tier:\s*(medium|large)'
+    match: contains
+    target: last_message
+  # Escalating is only half of it: the point of the closed list is that the reason is auditable.
+  - type: regex
+    pattern: 'unknown-code|contract-change|independent-parts|needs-approval|no-spec'
+    match: contains
+    target: last_message
+  - type: llm
+    criteria: |
+      The response names a specific escalation signal AND states the fact behind it — something
+      observed about this repository or this request, not a restatement of the signal's name and
+      not a generic appeal to complexity, size, or thoroughness.
+    focus: last_message

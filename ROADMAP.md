@@ -321,7 +321,7 @@ Left alone deliberately: `/dev-pr --review` passes explicit `lenses`, so it neve
 `repo-conventions` lens. That is arguably a gap, but adding a third lens to every PR review is a cost
 decision, not a contract fix.
 
-## 7. Eval cases, and a `dryRun` that actually runs something
+## 7. Eval cases, and a `dryRun` that actually runs something — ✅ (b) done, (a) written but gated
 
 **Now:** prompts are tuned by reading transcripts and arguing about them. And the pure logic in the
 workflow scripts — `toWaves`, `disjoint`/`pathScope`, `globToRegExp`/`ruleMatchesFile`, and the
@@ -343,6 +343,52 @@ returns `{ok: true}` before any logic runs (`wf-implement.js:28`): it tests that
 
 **Why:** it turns "this prompt feels better" into evidence, and it is the only thing that makes
 tuning safe once a change ships to every project at once.
+
+**Done (b), and it paid off immediately.** `dryRun` with `steps` now runs the whole scheduler and
+returns `schedule`: waves, `parallel_groups`, scouts, matched rules, projected checkpoints with the
+reason each fired, `warnings` and an `agents_min` floor. Zero agents, ~7ms. `/dev-plan` runs it
+before presenting a plan and `/dev-implement` before running one.
+
+- **The projection reuses the run's own functions rather than modelling the schedule a second time.**
+  A parallel model would be free to be wrong in exactly the way the real one is not, which is the
+  failure mode that makes a lint worse than nothing.
+- **It errs in one direction and says so.** Checkpoints can fire *earlier* than projected, never
+  later — a blocking question or a gate break also forces one, and neither is knowable before the
+  agents run. `agents_min` is labelled a floor for the same reason.
+- **The plan lints that matter are the ones nothing surfaced before:** steps with overlapping files
+  and no dependency get silently serialized, so a wave that looks three-wide is two rounds; and a
+  step with no `verify` can only ever come back `unverified`. Both were invisible until the run was
+  already paid for.
+
+**The harness question the item posed answered itself.** These scripts cannot be imported — but a
+script *is* a function body, so `new Function` over the whole file, called with `dryRun: true` and
+`agent`/`parallel`/`workflow` stubs that **throw**, runs it end to end. `tests/schedule.test.js` (17
+cases) covers `toWaves`, `disjoint`/`pathScope`, `globToRegExp`/`ruleMatchesFile`, the scout
+heuristic and the checkpoint policy through the real entry point, and a regression that reaches an
+agent fails the test instead of the invoice. Nothing in the script was rearranged for it. The
+anchor-extraction trick in the older tests is now the fallback, not the technique.
+
+**Found while testing this, and it contradicts item 0's note:** `name:` resolution serves a
+**snapshot** taken when the plugin loaded. Renaming a file registers a new name mid-session (what
+item 0 observed), but *editing* a registered workflow does not refresh what `name:` runs — a
+`dryRun` by name returned the pre-edit result while the same args by `scriptPath` returned the new
+one. So `scriptPath` is not just the fallback for an unregistered workflow, it is the only way to
+run an edit in the same session. Recorded in `docs/architecture.md` and the manual's troubleshooting.
+
+**(a) written, not run — and that gap is the point of saying so.** `claude plugin eval` is in early
+access, **enabled per organization**, and it is not enabled on this account (self-test: the command
+prints "`plugin eval` is currently in early access"). So `evals/` holds three cases whose format
+came from the CLI's embedded reference and from schema strings in the binary, never from a passing
+run. `evals/README.md` leads with that. Two scoping decisions:
+
+- **Three cases, not thirty.** The format risk is unvalidated, so it is concentrated: one run either
+  blesses the pattern or rejects it once.
+- **All three are control-plane.** They grade the triage decision and the small-tier artifact —
+  prompt in, last message and created files out. The decision points the item named inside workflows
+  (the verifier refusing an unreachable defect, the implementer reporting `unverified`) need
+  `context.history_file` transcript replay, and those transcripts come from real runs that do not
+  exist yet. Same dependency as item 0; writing cases against imagined transcripts would be
+  fabricating the evidence the eval exists to collect.
 
 ## 8. Report cost per phase; stop over-promising on budget
 

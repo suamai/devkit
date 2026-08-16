@@ -39,9 +39,13 @@ You orchestrate the implementation phase of a planned dev task. The heavy liftin
    change a consumed surface — it earns an immediate review checkpoint. Steps sharing files must be
    linked by `depends_on`, but the reverse is a smell: a `depends_on` that isn't a hard dependency
    (the other step's code must exist to compile/run/verify) deepens the sequential chain for nothing.
-   If the steps form a chain of mostly single steps, say so and offer to flatten it before running —
-   depth is the main driver of implementation wall-clock. Fix obvious gaps in the plan file; ask only
-   for judgment calls. If the plan wasn't approved in this conversation, show a one-paragraph summary
+   Run the lint rather than eyeballing it — zero agents, zero tokens:
+   `Workflow({ name: "devkit:wf-implement", args: { dryRun: true, steps, rules } })` returns the
+   schedule this run would follow (waves, real parallel groups, scouts, matched rules, projected
+   checkpoints) plus `warnings` and an `agents_min` floor. A chain of mostly single steps, steps
+   with overlapping files and no dependency, or a step with no `verify` all show up there; depth is
+   the main driver of wall-clock, so offer to flatten before running. Fix obvious gaps in the plan
+   file; ask only for judgment calls. If the plan wasn't approved in this conversation, show a one-paragraph summary
    and get explicit go-ahead — this phase edits many files.
 
 5. **Update state and run.** Set `stage: "implementing"` with `baseline` and `updated` in the
