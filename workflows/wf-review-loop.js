@@ -72,6 +72,29 @@ const ROLE = policy({
   fix: { model: 'sonnet' },
 })
 
+// >>> shared: per-phase cost — byte-identical across workflows (tests/policy.test.js)
+// budget.spent() is the TURN's cumulative output tokens, shared with the main loop and with every
+// other workflow, so only deltas mean anything and only around intervals that do not overlap.
+// Phases are sequential even when the agents inside one are not — which is exactly why the split
+// stops at phase granularity: agents running concurrently interleave, and no delta can separate
+// them. A second workflow running at the same time inflates these numbers and nothing here can
+// detect that, so this reports what it measured, not what it is certain the phase cost.
+const cost = {}
+async function metered(phase, fn) {
+  const before = budget.spent()
+  try { return await fn() } finally { cost[phase] = (cost[phase] || 0) + Math.max(0, budget.spent() - before) }
+}
+function costReport() {
+  const phases = Object.keys(cost).filter((k) => cost[k] > 0)
+  const total = phases.reduce((sum, k) => sum + cost[k], 0)
+  if (total) log(`cost: ${phases.map((k) => `${k}=${Math.round(cost[k] / 1000)}k`).join(' ')} — ${Math.round(total / 1000)}k output tokens`)
+  // budget.total is null unless the developer put a "+300k"-style target in their own message, and
+  // every budget floor in this file is gated on it. Reporting that is the difference between a run
+  // that was protected and one that only looked protected.
+  return { by_phase: { ...cost }, total, budget_total: budget.total, floors_active: budget.total != null }
+}
+// <<< shared: per-phase cost
+
 if (args && args.dryRun) return { ok: true, workflow: 'wf-review-loop', policy: ROLE }
 if (!args || !args.scope) throw new Error('args.scope is required: which files/changes to review')
 
@@ -368,13 +391,13 @@ while (round < maxRounds) {
 
   let found
   if (round === 1) {
-    found = (await parallel(LENSES.map((l) => () =>
+    found = (await metered('review', () => parallel(LENSES.map((l) => () =>
       agent(reviewPrompt(l, round), { label: `review:${l.key} r${round}`, phase: 'Review', ...ROLE.review, schema: FINDINGS_SCHEMA }),
-    ))).filter(Boolean).flatMap((r) => r.findings)
+    )))).filter(Boolean).flatMap((r) => r.findings)
   } else {
-    const re = await agent(rereviewPrompt(lastRound.confirmed, lastRound.applied, lastRound.skipped, round), {
+    const re = await metered('review', () => agent(rereviewPrompt(lastRound.confirmed, lastRound.applied, lastRound.skipped, round), {
       label: `re-review r${round}`, phase: 'Review', ...ROLE.review, schema: FINDINGS_SCHEMA,
-    })
+    }))
     // An unavailable re-review is not evidence of a clean result — never let it fall through as one.
     if (!re) { log(`round ${round}: re-review agent unavailable — stopping without a clean verdict`); break }
     found = re.findings
@@ -384,14 +407,14 @@ while (round < maxRounds) {
   if (!found.length) { clean = true; break }
 
   if (budget.total && budget.remaining() < 20000) { log('budget too low for verification — stopping without clean verdict'); break }
-  const verified = await agent(verifyPrompt(found, round), { label: `verify:batch r${round}`, phase: 'Verify', ...ROLE.verify, schema: VERIFIED_FINDINGS_SCHEMA })
+  const verified = await metered('verify', () => agent(verifyPrompt(found, round), { label: `verify:batch r${round}`, phase: 'Verify', ...ROLE.verify, schema: VERIFIED_FINDINGS_SCHEMA }))
   if (!verified) break
   let confirmed = verified.findings.filter((f) => f.confirmed)
   allRefuted.push(...verified.findings.filter((f) => !f.confirmed))
 
   const critical = confirmed.filter((f) => f.severity === 'critical')
   if (critical.length) {
-    const second = await agent(criticalPrompt(critical), { label: `verify:critical r${round}`, phase: 'Verify', ...ROLE.verify, schema: SECOND_OPINION_SCHEMA })
+    const second = await metered('verify', () => agent(criticalPrompt(critical), { label: `verify:critical r${round}`, phase: 'Verify', ...ROLE.verify, schema: SECOND_OPINION_SCHEMA }))
     if (!second) break
     const byId = new Map(second.verdicts.map((v) => [v.id, v]))
     confirmed = confirmed.filter((f) => {
@@ -413,7 +436,7 @@ while (round < maxRounds) {
   // A critical defect buys one rung above this run's fix tier, not a hardcoded opus: the
   // escalation has to keep meaning something under a cheap profile, where sonnet IS the escalation.
   const fixModel = args.fixModel || (confirmed.some((f) => f.severity === 'critical') ? escalate(ROLE.fix.model) : ROLE.fix.model)
-  const fix = await agent(fixPrompt(confirmed), { label: `fix r${round}`, phase: 'Fix', ...ROLE.fix, model: fixModel, schema: FIX_SCHEMA })
+  const fix = await metered('fix', () => agent(fixPrompt(confirmed), { label: `fix r${round}`, phase: 'Fix', ...ROLE.fix, model: fixModel, schema: FIX_SCHEMA }))
   if (fix) {
     allApplied.push(...fix.applied)
     allSkipped.push(...fix.skipped)
@@ -433,4 +456,5 @@ return {
   refuted: allRefuted,
   applied: allApplied,
   skipped: allSkipped,
+  cost: costReport(),
 }

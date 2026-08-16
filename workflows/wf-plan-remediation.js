@@ -53,6 +53,29 @@ const ROLE = policy({
   synth: { model: 'sonnet' },
 })
 
+// >>> shared: per-phase cost — byte-identical across workflows (tests/policy.test.js)
+// budget.spent() is the TURN's cumulative output tokens, shared with the main loop and with every
+// other workflow, so only deltas mean anything and only around intervals that do not overlap.
+// Phases are sequential even when the agents inside one are not — which is exactly why the split
+// stops at phase granularity: agents running concurrently interleave, and no delta can separate
+// them. A second workflow running at the same time inflates these numbers and nothing here can
+// detect that, so this reports what it measured, not what it is certain the phase cost.
+const cost = {}
+async function metered(phase, fn) {
+  const before = budget.spent()
+  try { return await fn() } finally { cost[phase] = (cost[phase] || 0) + Math.max(0, budget.spent() - before) }
+}
+function costReport() {
+  const phases = Object.keys(cost).filter((k) => cost[k] > 0)
+  const total = phases.reduce((sum, k) => sum + cost[k], 0)
+  if (total) log(`cost: ${phases.map((k) => `${k}=${Math.round(cost[k] / 1000)}k`).join(' ')} — ${Math.round(total / 1000)}k output tokens`)
+  // budget.total is null unless the developer put a "+300k"-style target in their own message, and
+  // every budget floor in this file is gated on it. Reporting that is the difference between a run
+  // that was protected and one that only looked protected.
+  return { by_phase: { ...cost }, total, budget_total: budget.total, floors_active: budget.total != null }
+}
+// <<< shared: per-phase cost
+
 if (args && args.dryRun) return { ok: true, workflow: 'wf-plan-remediation', policy: ROLE }
 if (!args || !args.reviewPath) throw new Error('args.reviewPath is required: persisted PR review markdown')
 if (!args.workspace) throw new Error('args.workspace is required: absolute remediation workspace path')
@@ -109,14 +132,14 @@ const PLAN_SCHEMA = {
 }
 
 phase('Validate')
-const validation = args.validate === false ? null : await agent(
+const validation = args.validate === false ? null : await metered('validate', () => agent(
   `You are the single batched validator for a PR remediation plan.
 
 Read the persisted review at "${args.reviewPath}". Use only its machine-readable CONFIRMED findings as candidates. Re-read current code and relevant callers/tests. Confirm whether each defect is still reachable, identify findings with the same root cause, dependencies between fixes, and the cheapest executable verification. ${args.deep ? 'Inspect integration boundaries deeply because the developer requested deep remediation planning.' : 'Stay proportional: do not rediscover the whole feature or report unrelated defects.'}
 
 Do not modify files. Return native structured data only; no XML or wrapper object.`,
   { label: 'validate:remediation', phase: 'Validate', ...ROLE.validate, schema: VALIDATION_SCHEMA },
-)
+))
 if (args.validate !== false && !validation) throw new Error('remediation validation failed')
 if (validation && !validation.assessments.some((a) => a.verdict === 'confirmed')) {
   return {
@@ -129,7 +152,7 @@ if (validation && !validation.assessments.some((a) => a.verdict === 'confirmed')
 }
 
 phase('Synthesize')
-const plan = await agent(
+const plan = await metered('synthesize', () => agent(
   `You are planning fixes for an already-reviewed pull request.
 
 Review evidence: "${args.reviewPath}" (read it, including the machine-readable block).
@@ -143,7 +166,7 @@ WRITE markdown to "${planPath}" with: title, source review and reviewed HEAD, ap
 
 Return one native JSON object with these top-level properties: title, approach_summary, steps, risks, open_questions, dropped_findings, and plan_path. Pass them as actual tool-input properties. Do not put the object inside a summary string; do not use XML/tags or nest it under input/result. Keep prose detail in the plan file.`,
   { label: 'synthesize:remediation', phase: 'Synthesize', ...ROLE.synth, schema: PLAN_SCHEMA },
-)
+))
 if (!plan) throw new Error('remediation plan synthesis failed')
 
-return plan
+return { ...plan, cost: costReport() }

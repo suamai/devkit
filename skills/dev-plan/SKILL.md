@@ -141,7 +141,9 @@ signal and escalate.
    because a blocking question or a contract-gate break also forces one and neither is knowable
    before the agents run. Same for `agents_min` — a floor, not an estimate.
 
-6. **Present the plan.** Concise prose: the approach, the step list with dependencies/parallelism, risks, and what was dropped as refuted during validation (`dropped_claims`). Full detail is in `plan.md`; scout reports in `<workspace>/findings/`. Then stop — the developer reviews; apply their adjustments to the plan file (keep the JSON block in sync).
+6. **Present the plan.** Lead with the exploration's `cost` (`by_phase`: decompose / explore /
+   validate / synthesize, plus `total`) — it is the developer's calibration data and it is what makes
+   the next `angles`/`validate: false` decision an informed one. Then concise prose: the approach, the step list with dependencies/parallelism, risks, and what was dropped as refuted during validation (`dropped_claims`). Full detail is in `plan.md`; scout reports in `<workspace>/findings/`. Then stop — the developer reviews; apply their adjustments to the plan file (keep the JSON block in sync).
 
    Two per-step fields shape what implementation costs, so sanity-check them rather than passing them
    through: `risk` (`contract` earns an immediate review checkpoint) and `context_confidence`

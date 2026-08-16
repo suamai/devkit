@@ -128,7 +128,11 @@ You orchestrate the implementation phase of a planned dev task. The heavy liftin
    leaves no extra state: the workspace on disk (`remediations/<sha>/` with its plan and notes) is
    the record.
 
-9. **Report.** Per step: what changed, verification result, deviations and why. Report
+9. **Report.** Lead with `cost`: `by_phase` (`steps` = scouting + implementation, which cannot be
+   split further because parallel steps interleave; `gate`; `review`; `check`) and `total`. If
+   `floors_active` is false, say so once — the budget floors that skip steps and stop review rounds
+   were inert, because they only exist when the developer put a "+300k"-style target in their own
+   message. Then per step: what changed, verification result, deviations and why. Report
    `implementation_failed`, `result_serialization_failed`, and `agent_failed_unknown` distinctly.
    Then, per checkpoint, which waves it covered and its rounds/fixes (`checkpointReviews[].reason`
    says why it fired); contract gates that found breaks; consistency check, commit hash, and

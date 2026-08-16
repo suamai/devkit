@@ -193,13 +193,20 @@ rest, roughly in order:
   verify, fix`), and `efforts: { … }` for reasoning effort. Say it in your message — "run this
   cheap", "use sonnet for the implementers" — and Claude passes it through. To pin a default for the
   whole repo, put a `Cost profile:` line in `CLAUDE.md`; `/dev-setup` offers this.
-- **Token budget.** Say "+300k" (or any target) in your message to set a hard budget the loops
+- **Token budget.** Say "+300k" (or any target) **in your message** to set a hard budget the loops
   respect. Unlike the profile this stops work rather than making it cheaper: steps past the floor
-  come back as `skipped_for_budget`.
+  come back as `skipped_for_budget`, and a review that runs out returns `clean: false`.
+
+  Read that literally: the floors exist *only* when you set a target. Without one there is no
+  ceiling and nothing degrades gracefully — the run simply runs. This is not something the plugin
+  can default for you; the budget comes from your turn, not from a config file. Every workflow now
+  reports which of the two you were in (`cost.floors_active`), so at least you are never guessing.
 - **Stage knobs.** `reviewRounds`/`review: false`, `scoutMode`, `maxParallelSteps` for implement;
   fewer `angles` or `validate: false` for exploration.
 
-The completion notification of every workflow shows its token usage — glance at it.
+The completion notification of every workflow shows its total token usage, and every workflow now
+also returns a per-phase breakdown (`cost.by_phase`) and logs it as it goes — so "where did the
+money go" is answered by the run, not by arithmetic on notifications.
 
 PR drafting without `--review` uses no review agents. Remediation planning does not invoke the full
 3-5-scout exploration: simple findings use no agents; nontrivial findings use one planner and, only

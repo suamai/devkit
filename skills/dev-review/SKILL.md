@@ -41,6 +41,10 @@ You drive a standalone review loop over code changes using the `wf-review-loop` 
 
 - One verifier clusters and checks all findings against evidence, reachability and prior handling. Critical findings alone receive a second independent opinion.
 - Skipped fixes and budget exits always leave `clean: false`; findings are never suppressed between rounds.
+- The result carries `cost`: `by_phase` (review / verify / fix) and `total`. Report it — a review
+  loop is the pipeline's most repeatable spend, so its per-phase split is the most useful number the
+  developer gets. `floors_active: false` means the budget guards were inert (no target in the
+  developer's message); mention it rather than implying the run was bounded.
 - Findings that fail verification do not trigger fixes; they remain available in the result's `refuted` list and workflow journal for audit.
 - For a branch-wide, persistent, report-only review that gates PR publication and can feed
   `/dev-plan --review`, use `/dev-pr --review`; standalone `/dev-review` remains the direct

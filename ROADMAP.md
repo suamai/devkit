@@ -390,7 +390,7 @@ run. `evals/README.md` leads with that. Two scoping decisions:
   exist yet. Same dependency as item 0; writing cases against imagined transcripts would be
   fabricating the evidence the eval exists to collect.
 
-## 8. Report cost per phase; stop over-promising on budget
+## 8. Report cost per phase; stop over-promising on budget — ✅ done
 
 **Now:** the calibration checklist asks the developer to read `subagent_tokens` off completion
 notifications by hand. And every budget guard is `if (budget.total && ...)` — `budget.total` exists
@@ -402,6 +402,32 @@ its own calibration data — which feeds #5 (where to cut) and #7 directly. Conf
 with no budget directive set. (b) Either document the floors honestly ("only active with an explicit
 budget directive") or have `/dev-setup` offer a per-repo default. Half an hour of work; today the
 docs promise more than the code delivers.
+
+**Done.** Every workflow now brackets its phases with `metered(phase, fn)` and returns
+`cost: { by_phase, total, budget_total, floors_active }`, logging a `cost: steps=42k review=18k …`
+line as it goes. The skills lead their reports with it.
+
+- **`budget.spent()` works with no directive; `budget.total` does not exist.** Checked with a
+  zero-agent probe workflow rather than assumed: `total: null`, `spent(): 262394`,
+  `remaining(): Infinity`. So the item's suspicion was exactly right — every `if (budget.total && …)`
+  floor is dead code in a normal run. (Aside worth knowing: `Infinity` in a return value serializes
+  to `null`, which briefly made the probe look like it contradicted the docs.)
+- **The split has to stop at phase granularity, and saying why matters.** `spent()` is the *turn's*
+  cumulative output, so only deltas mean anything, and only around intervals that do not overlap.
+  Steps in a wave run concurrently, so metering each `agent()` would count every step's tokens once
+  per step. Metering the batch is honest; `steps` therefore covers scouting *and* implementation
+  together and cannot be split further by any delta. A second workflow running concurrently also
+  inflates the numbers and nothing in the script can detect it — both stated in the report rather
+  than papered over.
+- **On (b), only one of the two options was actually buildable.** A per-repo default is impossible:
+  `budget` comes from the developer's turn directive, not from args, so no script and no
+  `/dev-setup` line can set a ceiling. Documenting honestly was the whole available move — and
+  `floors_active` makes it structural instead of a doc claim that can rot. The manual now says
+  plainly that without a target there is no floor and nothing degrades gracefully.
+
+`metered`/`costReport` is the third block copied across all four scripts; `tests/policy.test.js`
+covers it — byte-identity across the four, delta accumulation, the clamp that stops a phase going
+negative, and that `floors_active` reports false when no budget is set.
 
 ## 9. Decide the fate of the PR-remediation axis
 

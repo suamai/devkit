@@ -60,6 +60,29 @@ const ROLE = policy({
   synth: { model: 'opus' },
 })
 
+// >>> shared: per-phase cost — byte-identical across workflows (tests/policy.test.js)
+// budget.spent() is the TURN's cumulative output tokens, shared with the main loop and with every
+// other workflow, so only deltas mean anything and only around intervals that do not overlap.
+// Phases are sequential even when the agents inside one are not — which is exactly why the split
+// stops at phase granularity: agents running concurrently interleave, and no delta can separate
+// them. A second workflow running at the same time inflates these numbers and nothing here can
+// detect that, so this reports what it measured, not what it is certain the phase cost.
+const cost = {}
+async function metered(phase, fn) {
+  const before = budget.spent()
+  try { return await fn() } finally { cost[phase] = (cost[phase] || 0) + Math.max(0, budget.spent() - before) }
+}
+function costReport() {
+  const phases = Object.keys(cost).filter((k) => cost[k] > 0)
+  const total = phases.reduce((sum, k) => sum + cost[k], 0)
+  if (total) log(`cost: ${phases.map((k) => `${k}=${Math.round(cost[k] / 1000)}k`).join(' ')} — ${Math.round(total / 1000)}k output tokens`)
+  // budget.total is null unless the developer put a "+300k"-style target in their own message, and
+  // every budget floor in this file is gated on it. Reporting that is the difference between a run
+  // that was protected and one that only looked protected.
+  return { by_phase: { ...cost }, total, budget_total: budget.total, floors_active: budget.total != null }
+}
+// <<< shared: per-phase cost
+
 if (args && args.dryRun) return { ok: true, workflow: 'wf-explore-plan', policy: ROLE }
 if (!args || !args.task) throw new Error('args.task is required: what is being built or changed')
 if (!args.workspace) throw new Error('args.workspace is required: absolute path to the task workspace (e.g. <repo>/.dev/<slug>)')
@@ -184,7 +207,7 @@ const PLAN_SCHEMA = {
 phase('Decompose')
 let angles = args.angles
 if (!angles || !angles.length) {
-  const d = await agent(
+  const d = await metered('decompose', () => agent(
     `You are decomposing a development task into parallel repository-exploration angles.
 
 ${TASK_BRIEF}
@@ -193,7 +216,7 @@ Produce 3-5 exploration angles for read-only scouts. Merge related concerns into
 
 Your final output is consumed by a script, not a human — return the structured data only.`,
     { label: 'decompose', ...ROLE.decompose, schema: ANGLES_SCHEMA },
-  )
+  ))
   if (!d) throw new Error('decomposition agent failed')
   angles = d.angles
 }
@@ -235,9 +258,9 @@ Validate only HEADLINE claims that materially change the plan; do not re-check e
 Do NOT modify any files. Your final output is raw data for an orchestrator.`
 }
 
-const scoutResults = await parallel(angles.map((a) => () =>
+const scoutResults = await metered('explore', () => parallel(angles.map((a) => () =>
   agent(scoutPrompt(a), { label: `scout:${a.name}`, phase: 'Explore', ...ROLE.scout, schema: SCOUT_SCHEMA })
-))
+)))
 const scouted = angles.map((angle, index) => ({ angle, scout: scoutResults[index] })).filter((entry) => entry.scout)
 
 if (!scouted.length) throw new Error('all scouts failed — nothing to synthesize')
@@ -245,7 +268,7 @@ if (!scouted.length) throw new Error('all scouts failed — nothing to synthesiz
 phase('Validate')
 const validation = args.validate === false
   ? { verdicts: [], missed_findings: [], suggested_adjustments: [] }
-  : await agent(validatePrompt(scouted), { label: 'validate:batch', phase: 'Validate', ...ROLE.validate, schema: VALIDATION_SCHEMA })
+  : await metered('validate', () => agent(validatePrompt(scouted), { label: 'validate:batch', phase: 'Validate', ...ROLE.validate, schema: VALIDATION_SCHEMA }))
 if (!validation) throw new Error('batched validation failed')
 
 const validated = scouted.map(({ angle, scout }) => ({
@@ -262,7 +285,7 @@ const validated = scouted.map(({ angle, scout }) => ({
 // ---- Phase 4: cross-check everything and write the plan (opus)
 // The synthesizer receives compact summaries + verdicts; full reports stay on disk as paths.
 phase('Synthesize')
-const synth = await agent(
+const synth = await metered('synthesize', () => agent(
   `You are the planning orchestrator for a development task. Scouts explored the repo by angle (full reports on disk), followed by one batched adversarial pass over their load-bearing claims (verdicts: confirmed / refuted / unverified, plus corrections and missed findings).
 
 ${TASK_BRIEF}
@@ -293,7 +316,7 @@ A fenced \`\`\`json block containing exactly the steps array you return in your 
 
 Return the structured data; the plan file is the human-facing artifact.`,
   { label: 'synthesize', ...ROLE.synth, schema: PLAN_SCHEMA },
-)
+))
 
 if (!synth) throw new Error('synthesis agent failed')
 log(`plan written: ${planPath} — ${synth.steps.length} steps, ${synth.open_questions.length} open questions`)
@@ -335,4 +358,5 @@ return {
   dropped_claims: synth.dropped_claims || [],
   angles: angles.map((a) => a.name),
   finding_reports: validated.map((v) => v.scout.report_path),
+  cost: costReport(),
 }

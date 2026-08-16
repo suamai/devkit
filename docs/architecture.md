@@ -350,9 +350,14 @@ Don't improvise same-tree concurrency.
   completed agents replay from cache; only edited/new calls run live. `lastRunId` is in the
   workspace's `state.json`.
 - **Refuted review findings** never trigger fixes; they remain in the result and journal for audit.
-- Two known knobs surfaced by budget guards: wf-review-loop stops below ~30k remaining tokens
-  (`clean: false`), implement skips steps below ~40k (`skipped_for_budget`). A "+500k"-style budget
-  directive in the user message sets the pool.
+- **The budget floors only exist when a budget does.** wf-review-loop stops below ~30k remaining
+  tokens (`clean: false`) and implement skips steps below ~40k (`skipped_for_budget`) — but every one
+  of those guards reads `if (budget.total && …)`, and `budget.total` is `null` unless the developer
+  put a "+300k"-style target in their own *message*. Verified, not assumed: a zero-agent probe
+  returned `total: null` with `spent()` working normally. So in a run with no directive there is no
+  floor, and nothing degrades gracefully — it just runs. A script cannot fix this by setting its own
+  ceiling: `budget` comes from the turn, not from args. What it can do is stop pretending, which is
+  why every workflow now returns `cost.floors_active`.
 
 ## Relation to built-in skills
 
@@ -373,8 +378,16 @@ Use workflow transcripts from real cycles to tune these before adding more agent
   triggering is fine.
 - **Round convergence**: wf-review-loop should go clean in 1–2 rounds; consistently hitting 3 means a
   weak fixer or redundant lenses.
-- **Tokens per phase** (`subagent_tokens` in each completion notification): know where the money
-  goes before cutting. First knobs: skip planning validation, reduce angles, or disable scouts.
+- **Tokens per phase**: no longer read off notifications by hand — every workflow returns
+  `cost: { by_phase, total, budget_total, floors_active }` and logs a `cost: steps=42k review=18k …`
+  line. Know where the money goes before cutting. First knobs: `profile: "cheap"`, then skip planning
+  validation, reduce angles, or disable scouts.
+
+  Two things the numbers are not. `steps` in wf-implement covers scouting *and* implementation
+  together: the steps in a wave run concurrently, so their agents interleave and no delta can
+  attribute tokens to one or the other. And `budget.spent()` is the whole turn's output tokens,
+  shared with the main loop and any other workflow — so a second workflow running at the same time
+  inflates these, and nothing in the script can detect that. Measure with one run at a time.
 
 ## Authoring a bespoke workflow
 
@@ -396,7 +409,11 @@ House rules — each of these exists because it bit us or the runtime requires i
   dump piped into the next prompt.
 - `pipeline()` by default; `parallel()` only for a true barrier. Agents that mutate files need
   disjoint file ownership, or run serial.
-- A budget guard in every loop: `if (budget.total && budget.remaining() < 30000) break`.
+- A budget guard in every loop: `if (budget.total && budget.remaining() < 30000) break` — and know
+  that it is inert unless the developer set a target in their message; guard, don't promise.
+- Bracket phases with `metered(phase, fn)` so the run reports its own cost. Deltas of
+  `budget.spent()` are only meaningful around non-overlapping intervals, so meter phases, never
+  individual agents inside a `parallel()`.
 - No `Date.now()` / `Math.random()` / argless `new Date()` — the runtime throws, because they would
   break resume. Timestamps arrive via args or from an agent running `date`.
 - **`workflow()` nests one level only.** Safe children: `wf-explore-plan`, `wf-plan-remediation`,

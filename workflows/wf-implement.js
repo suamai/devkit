@@ -83,6 +83,29 @@ const ROLE = policy({
   check: { model: 'opus' },
 })
 
+// >>> shared: per-phase cost — byte-identical across workflows (tests/policy.test.js)
+// budget.spent() is the TURN's cumulative output tokens, shared with the main loop and with every
+// other workflow, so only deltas mean anything and only around intervals that do not overlap.
+// Phases are sequential even when the agents inside one are not — which is exactly why the split
+// stops at phase granularity: agents running concurrently interleave, and no delta can separate
+// them. A second workflow running at the same time inflates these numbers and nothing here can
+// detect that, so this reports what it measured, not what it is certain the phase cost.
+const cost = {}
+async function metered(phase, fn) {
+  const before = budget.spent()
+  try { return await fn() } finally { cost[phase] = (cost[phase] || 0) + Math.max(0, budget.spent() - before) }
+}
+function costReport() {
+  const phases = Object.keys(cost).filter((k) => cost[k] > 0)
+  const total = phases.reduce((sum, k) => sum + cost[k], 0)
+  if (total) log(`cost: ${phases.map((k) => `${k}=${Math.round(cost[k] / 1000)}k`).join(' ')} — ${Math.round(total / 1000)}k output tokens`)
+  // budget.total is null unless the developer put a "+300k"-style target in their own message, and
+  // every budget floor in this file is gated on it. Reporting that is the difference between a run
+  // that was protected and one that only looked protected.
+  return { by_phase: { ...cost }, total, budget_total: budget.total, floors_active: budget.total != null }
+}
+// <<< shared: per-phase cost
+
 // `dryRun` is no longer a parse check. Given `steps` it runs the entire scheduler — waves, disjoint
 // batches, scout decisions, rule matching, checkpoint policy — and returns what the run WOULD do,
 // at zero agents and zero tokens. So the arg gate has to let a projection through: it needs steps,
@@ -579,9 +602,9 @@ Severity high or critical means later work would be built on something wrong. Do
 async function gateWave(waveNumber, changed, dependents) {
   if (!gateEnabled || !dependents.length || !changed.length) return null
   if (budget.total && budget.remaining() < 30000) return null
-  return agent(gatePrompt(waveNumber, changed, dependents), {
+  return metered('gate', () => agent(gatePrompt(waveNumber, changed, dependents), {
     label: `gate:wave-${waveNumber}`, phase: 'Gate', ...ROLE.gate, schema: GATE_SCHEMA,
-  })
+  }))
 }
 
 async function reviewCheckpoint(pending, checkpointNumber) {
@@ -604,7 +627,7 @@ async function reviewCheckpoint(pending, checkpointNumber) {
     selfReported.length ? `The implementers flagged these as things they were unsure they got right — start here, then widen:\n${selfReported.join('\n')}` : '',
     unverifiedSteps.length ? `These steps have NO substantiated executable check — either none ran, or the implementer claimed one without naming the command or its result. Nothing but this review stands between them and the developer: judge their behavior, do not assume it works:\n${unverifiedSteps.map((r) => `- ${r.step} (${r.unverified_reason || 'no reason given'}): ${(r.impl.changed_files || []).join(', ')}`).join('\n')}` : '',
   ].filter(Boolean).join('\n\n')
-  return workflow(reviewLoopRef, {
+  return metered('review', () => workflow(reviewLoopRef, {
     scope: `Files changed in implementation ${waveLabel}: ${changed.join(', ')}`,
     intent: `Plan steps covered by this checkpoint (${waveLabel} of ${planPath}) — review them as one composed change, including how they fit together:\n${pending.steps.map((s) => `- ${s.id}: ${s.goal}\n  ${s.details || ''}`).join('\n')}`,
     contextPaths: contexts,
@@ -626,7 +649,7 @@ async function reviewCheckpoint(pending, checkpointNumber) {
     profile: args.profile,
     models: args.models,
     efforts: args.efforts,
-  })
+  }))
 }
 
 const todoSteps = pendingSteps(args.steps, completedIds)
@@ -731,7 +754,7 @@ for (const wave of allWaves) {
   for (const batch of disjointBatches(wave)) {
     for (const group of chunks(batch, maxParallelSteps)) {
       log(`steps ${group.map((s) => s.id).join(', ')}${group.length > 1 ? ' (parallel, disjoint files)' : ''}`)
-      const rs = await parallel(group.map((s) => () => runStep(s, batch, 0, { briefPaths: [], notesPaths: [] })))
+      const rs = await metered('steps', () => parallel(group.map((s) => () => runStep(s, batch, 0, { briefPaths: [], notesPaths: [] }))))
       waveReports.push(...rs.filter(Boolean))
     }
   }
@@ -867,7 +890,7 @@ const leafReports = flat(reports)
 let finalCheck = null
 if (!stoppedEarly) {
   phase('Check')
-  finalCheck = await agent(
+  finalCheck = await metered('check', () => agent(
     `You are the final consistency checker for a multi-step implementation.
 
 Plan: "${planPath}" (read it). Workspace: "${workspace}" — per-step briefs in briefs/, implementer notes in notes/.
@@ -885,7 +908,7 @@ Keep the suite output out of your report — a compact observed result in suite_
 
 Return the structured report.`,
     { label: 'consistency-check', ...ROLE.check, schema: CHECK_SCHEMA },
-  )
+  ))
 } else {
   finalCheck = {
     consistent: false,
@@ -948,6 +971,10 @@ return {
   stoppedEarly,
   stopReason,
   needs_user_input: needsInput,
+  // `steps` covers scouting AND implementation: the steps in a wave run concurrently, so their
+  // agents interleave and no delta can attribute tokens to one or the other. `review` is the whole
+  // nested review loop, which reports its own breakdown separately.
+  cost: costReport(),
   // Pass `completed` straight back with the SAME `steps` to continue; fold any answers into `notes`.
   continuation: {
     completed: completedEntries,

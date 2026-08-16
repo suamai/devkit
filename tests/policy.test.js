@@ -85,10 +85,44 @@ check('critical escalates one rung', [escalate('haiku'), escalate('sonnet'), esc
 
 // --- Four self-contained scripts cannot import a shared helper, so the resolver is copied. This is
 // the check that the copies have not drifted apart into four different cost models.
-const RESOLVERS = ['wf-implement.js', 'wf-explore-plan.js', 'wf-review-loop.js', 'wf-plan-remediation.js']
-  .map((f) => ({ f, body: extract(wf(f), 'function policy(') }))
-const drifted = RESOLVERS.filter((r) => r.body !== RESOLVERS[0].body).map((r) => r.f)
-check('policy() is identical in all 4 workflows', drifted, [])
+const WORKFLOWS = ['wf-implement.js', 'wf-explore-plan.js', 'wf-review-loop.js', 'wf-plan-remediation.js']
+const RESOLVERS = WORKFLOWS.map((f) => ({ f, body: extract(wf(f), 'function policy(') }))
+check('policy() is identical in all 4 workflows', RESOLVERS.filter((r) => r.body !== RESOLVERS[0].body).map((r) => r.f), [])
 
-console.log(failed ? `\n${failed} FAILED` : `\nall ${18} cases pass`)
-process.exit(failed ? 1 : 0)
+// Same for the per-phase cost accounting, which is fenced rather than extracted by signature
+// because it is a const plus two functions.
+function fencedCost(src, file) {
+  const a = src.indexOf('// >>> shared: per-phase cost')
+  const b = src.indexOf('// <<< shared: per-phase cost')
+  if (a === -1 || b === -1) throw new Error(`${file}: per-phase cost markers missing`)
+  return src.slice(src.indexOf('\n', a) + 1, b)
+}
+const METERS = WORKFLOWS.map((f) => ({ f, body: fencedCost(wf(f), f) }))
+check('metered()/costReport() identical too', METERS.filter((m) => m.body !== METERS[0].body).map((m) => m.f), [])
+
+// The report must never claim protection it does not have: budget.total is null unless the
+// developer put a "+300k"-style target in their own message, and every floor is gated on it.
+const meter = new Function('log', 'budget', `${METERS[0].body}\nreturn { metered, costReport }`)
+const noBudget = meter(() => {}, { total: null, spent: () => 1000, remaining: () => Infinity })
+check('no directive → floors reported inactive', noBudget.costReport(), { by_phase: {}, total: 0, budget_total: null, floors_active: false })
+const withBudget = meter(() => {}, { total: 300000, spent: () => 1000, remaining: () => 299000 })
+check('a directive → floors reported active', withBudget.costReport().floors_active, true)
+
+// Deltas around real awaits, and the clamp that keeps a phase from going negative if spent() ever
+// moves backwards under concurrency.
+;(async () => {
+  let fake = 0
+  const lines = []
+  const m2 = new Function('log', 'budget', `${METERS[0].body}\nreturn { metered, costReport }`)(
+    (l) => lines.push(l), { total: null, spent: () => fake, remaining: () => Infinity })
+  await m2.metered('steps', async () => { fake += 12000 })
+  await m2.metered('review', async () => { fake += 3000 })
+  await m2.metered('steps', async () => { fake += 500 })
+  check('deltas accumulate per phase', m2.costReport().by_phase, { steps: 12500, review: 3000 })
+  check('and are logged in thousands', lines[0], 'cost: steps=13k review=3k — 16k output tokens')
+  await m2.metered('backwards', async () => { fake -= 9999 })
+  check('a backwards delta clamps to zero', m2.costReport().by_phase.backwards, 0)
+
+  console.log(failed ? `\n${failed} FAILED` : `\nall ${25} cases pass`)
+  process.exit(failed ? 1 : 0)
+})()
