@@ -1,0 +1,297 @@
+# devkit — dev-process workflows
+
+Reusable multi-agent development pipeline for Claude Code, inspired by the
+[Recursive Language Models](https://arxiv.org/abs/2512.24601) paper (Zhang, Kraska, Khattab):
+context lives in the *environment* (files, structured summaries, pointers), and orchestration is
+*programmatic* (deterministic JS with loops/branches spawning sub-agents), never a verbalized
+linear chain.
+
+> **Just want to use it?** Read the [user manual](manual.md) — commands, the standard cycle, your
+> checkpoints, troubleshooting. This document is the architecture: read it to *change* the
+> pipeline. Both ship inside the plugin at `${CLAUDE_PLUGIN_ROOT}/docs/`, so every repo that has
+> the plugin has them — they are never copied into a project.
+
+## Architecture
+
+Two layers, deliberately split:
+
+| Layer | Mechanism | Runs | Can talk to the dev? |
+|---|---|---|---|
+| Control plane | `skills/*/SKILL.md` (`/dev-spec`, `/dev-plan`, `/dev-implement`, `/dev-review`, `/dev-pr`, plus `/dev-status`, `/dev-setup`) | main conversation loop | yes — `AskUserQuestion`, approval |
+| Data plane | `workflows/*.js`, invoked as `devkit:<name>` (Workflow tool scripts) | background, deterministic JS | no — returns structured data + `open_questions` / `needs_user_input` |
+
+Both live in the plugin. A project contributes only `.dev/` (scratch, gitignored) and, optionally,
+`.claude/rules/*.md` — the one channel through which a repo specializes a generic pipeline.
+
+**Interrupts** live *between* workflow phases: agents flag questions in structured output; the
+skill surfaces them to the dev and feeds answers into the next phase.
+
+**Three memory tiers** (the RLM mapping):
+
+| Tier | In the paper | Here | Read cost |
+|---|---|---|---|
+| Symbolic state | REPL variables | the workflow script's JS variables | zero — it's code, no context window |
+| Dense context | slices sub-LMs read | repo + task workspace, read by pointer | paid only by whoever needs it |
+| Agent window | sub-LM context | prompt assembled by the script from minimal slices | disposable |
+
+## Task workspace — the shared scratchpad
+
+Each task gets `.dev/<slug>/`. Every file has **exactly one writer**; everyone else reads by
+pointer (never "read the whole workspace"):
+
+```
+.dev/
+  pr/<branch>/         ← standalone PR artifacts when no task workspace matches; never flow state
+  <slug>/
+    spec.md            ← /dev-spec (dialogue in the main loop)
+    plan.md            ← explore-plan's synthesizer; then curated by the /dev-plan skill
+    findings/<angle>.md← exploration scouts (full reports; compact summaries returned to the script)
+    briefs/<id>.md     ← adaptive scouts only; inherited by sub-steps on recursive split
+    notes/<id>.md      ← per-step implementers (decisions + whys); read by reviewers & sub-steps
+    pr.md              ← proposed public PR body; publication always waits for approval
+    reviews/<sha>.md   ← immutable report-only PR review, tied to an exact HEAD
+    remediations/<sha>/
+      plan.md          ← /dev-plan --review correction strategy + machine-readable steps
+      briefs/ notes/   ← isolated implementation context for that remediation
+```
+
+Notes from other agents are hints, not truth — every prompt says "verify load-bearing claims in code".
+
+## No shared memory across cycles
+
+Context is *push only*: the script hands each agent the paths it needs. There is no cross-cycle
+memory store — nothing an agent learns in one run is discoverable by an agent in the next. Durable
+knowledge belongs in the repo itself (`CLAUDE.md`, `docs/`, `.claude/rules/*.md`), where it is
+PR-reviewable and travels with git. Adding a pull-side memory channel is a possible extension
+(see "Extending"), not something the pipeline currently depends on.
+
+## The pipeline
+
+```
+/dev-spec  (optional, for large/ambiguous tasks — dialogue, repo-anchored questions)
+   → spec.md with VERIFIABLE acceptance criteria that flow through everything downstream
+
+/dev-plan "task"
+   0. TRIAGE: trivial → just do it | small → inline scout + inline plan | medium/large → pipeline
+   └─ explore-plan.js ─── background
+        Decompose (sonnet)  → 3-5 angles, merging concerns with shared evidence
+        Explore  (sonnet ×N)→ scouts write findings/<angle>.md, return compact summaries
+        Validate (sonnet ×1)→ one batched check of load-bearing headline claims
+        Synthesize (opus)   → cross-check, coherent one-agent steps (~10 files as a soft guide,
+                              executable verify), writes plan.md (+ JSON steps block)
+   └─ interrupt: open_questions → dev; checkpoint: dev approves plan
+
+/dev-implement <slug>
+   └─ implement.js ─── background
+        steps → topological waves → within a wave, disjoint-file steps in parallel
+        per dependency wave:
+          Scout (sonnet)   → adaptive only for ambiguous/oversized steps; may split recursively
+          Implement (opus) → RUNS each step's verify command, writes notes/<id>.md
+          BARRIER          → all implementations finish before review/fixes mutate files
+          review-loop      → one consolidated review over the wave's changed files
+        Check (opus)  → the SEAMS between steps; runs the suite
+   └─ interrupt: needs_user_input → dev; skill verifies end-to-end and reports
+
+/dev-review [files]      — standalone entry to the same review-loop
+   └─ review-loop.js
+        while not clean and rounds < max:
+          Review (sonnet ×2: runtime/contracts + intent/verification)
+          → one verifier semantically clusters and checks all findings in a batch
+          → critical clusters alone get one second opinion
+          → Fix confirmed (sonnet; opus for critical) → explicit post-fix re-review
+
+/dev-pr [base] [--review] [--draft] [--body-only]
+   ├─ deterministic git map: merge-base, commits, diff, upstream, dirty-tree gate
+   ├─ selectively reads matching .dev spec/plan/notes as hints
+   ├─ optional report-only review-loop (apply:false) → reviews/<reviewed-head>.md
+   ├─ writes pr.md and previews title/body
+   └─ explicit approval → push if needed → gh pr create/edit
+
+Confirmed PR findings follow a separate remediation cycle:
+
+  reviews/<sha>.md
+    → /dev-plan --review <report>
+      ├─ simple/local: inline deterministic plan
+      └─ plan-remediation.js: optional batched validation + one sonnet synthesis
+    → remediations/<sha>/plan.md
+    → /dev-implement <remediation-workspace> (baseline = reviewed HEAD)
+    → /dev-pr --review again (only current HEAD can clear the PR gate)
+```
+
+## Design rules
+
+- Agents return **structured data** (JSON Schema enforced); prose artifacts go to workspace files.
+- Findings need evidence (`file:line` + failure scenario); verification means **running** a check,
+  not reading code.
+- Recursive splitting is an escape valve (scout-triggered, depth-capped), not the default. File
+  count is a soft guide; cohesive vertical slices avoid multiplying fixed per-step agent cost.
+- Steps own disjoint `files` sets to parallelize; prefix overlap, globs and undeclared files run serial.
+- Reviews and fixes happen only after a dependency-wave barrier.
+- `clean: true` requires an explicit pass with no confirmed findings; skipped fixes and budget exits leave it false.
+- PR review artifacts are SHA-bound evidence. High/critical findings block publication; low/medium
+  require an extra confirmation. Review mode never fixes code implicitly.
+- A review report and its remediation plan have different writers and purposes: evidence remains
+  immutable; the correction strategy can be iterated before approval.
+- All workflows accept `{ dryRun: true }` (zero-cost smoke test) and normalize `args` from JSON
+  string. Named resolution requires a session restart after creating a workflow file; `scriptPath`
+  works immediately.
+
+## Distribution
+
+The pipeline is a **Claude Code plugin**. Skills, workflows and these docs live in one place and
+every project sees the same version — there are no per-repo copies to drift.
+
+**Personal use (one developer, many repos).** `claude plugin init` scaffolds at
+`~/.claude/skills/<name>/`, which auto-loads next session as `<name>@skills-dir`. No marketplace, no
+install step: edit the plugin directory and every project picks the change up on restart. Keeping
+that directory in git (or symlinking it to a normal project checkout) gives version history without
+changing how it loads.
+
+**Team use.** Publish the plugin from a git repo carrying `.claude-plugin/marketplace.json`, then
+have each project declare it in `.claude/settings.json` (`extraKnownMarketplaces` +
+`enabledPlugins`) so a teammate who clones the repo is prompted to install it. This is the one
+mechanic that genuinely changed with the plugin move: previously `.claude/` travelled inside the
+repo and a `git pull` was enough.
+
+**Per-repo setup** is what remains, and `/dev-setup` walks it: `.dev/*` in `.gitignore`, a pipeline
+pointer in `CLAUDE.md`, `"Workflow"` in the project's `permissions.allow`, and — the valuable one —
+`.claude/rules/*.md`. Under a plugin a repo cannot fork a prompt, so rules are the only place
+repo-specific knowledge can steer the agents. Treat them accordingly.
+
+Onboarding notes worth stating once:
+
+- New or renamed workflow files register on **session start** — restart after installing or
+  updating the plugin. `scriptPath` works immediately.
+- The pipeline spawns many sonnet/opus agents; token cost scales with the triage tier (see that
+  table). A "+300k"-style budget directive caps a run hard.
+- Treat the plugin's prompts as code: change them via PR against the plugin repo, informed by the
+  calibration checklist below. A change ships to every project at once — that is the point, and
+  also the risk.
+- One `/dev-implement` per clone at a time (`.dev/state.json` is per-clone, so two people on
+  separate clones are fine).
+
+## Git conventions
+
+A git repo is a **prerequisite** for `/dev-implement`, `/dev-review`, and `/dev-pr`:
+
+- `.dev/` is gitignored — workspaces are scratch, not history.
+- Before implementing, the skill captures a **baseline** (`git rev-parse HEAD`) and passes it down:
+  reviewers judge `git diff <baseline> -- <files>`, so introduced defects are distinguishable from
+  pre-existing ones. Review without a baseline reviews whole files — much weaker.
+- On the default branch, the skill branches to `dev/<slug>` first. After a completed implement it
+  makes a **phase commit** (`impl(<slug>): <title>`) — the rollback/review boundary.
+- `/dev-pr` compares `base...HEAD` from the exact merge-base. A dirty tree can produce a body draft
+  but blocks publication because those bytes are not in the proposed PR.
+- Remediation requires `HEAD == reviewed_head` **and a clean working tree** (uncommitted bytes were
+  not reviewed); after the fix commit, the prior report is historical and a fresh whole-branch PR
+  review is required.
+
+## Flow state & concurrency
+
+`.dev/state.json` registers every flow: `{ task, stage, updated, baseline, lastRunId }` with stages
+`spec → planning → plan-ready → implementing → implemented` (or `abandoned`). Written ONLY by
+skills in the main loop, at phase boundaries — workflow agents never touch it. `/dev-status` reads
+it: table of flows, PR-review SHA/outcome, staleness flags, and `clean <slug>` to delete the whole
+workspace + entry.
+
+Remediation cycles deliberately carry **no state of their own**: a remediation runs under its parent
+task's flow entry (so there is one lock, not two), and what exists on disk —
+`remediations/<sha>/plan.md`, and whether `notes/` sits beside it — is the whole record.
+`/dev-status` reads that directly. The PR-remediation path is a team-shaped extra, not a stage every
+task passes through, so it stays out of the state machine.
+
+**One implement per repo at a time** (advisory lock via state.json). The reason is not file
+collisions — it's that step verifications and the consistency check *run the test suite on the
+shared working tree*; a second concurrent flow makes every verification result unreliable. True
+parallel flows are a designed extension: one git worktree + branch per flow, merge at the end.
+Don't improvise same-tree concurrency.
+
+## Debugging & recovery
+
+- **Live progress**: `/workflows` in the CLI; each workflow launch prints its transcript dir.
+- **What did an agent actually return?** Read `journal.jsonl` in the transcript dir — one result
+  line per completed agent. Do this before diagnosing an empty/odd workflow result.
+- **Implementer has code/notes but no result**: inspect its transcript for rejected
+  `StructuredOutput` calls. Classify that as `result_serialization_failed`, distinct from
+  `implementation_failed`; do not re-run completed implementation work just to recover a report.
+- **Crashed/killed run**: `Workflow({scriptPath, resumeFromRunId: <lastRunId>, args: <same>})` —
+  completed agents replay from cache; only edited/new calls run live. `lastRunId` is in state.json.
+- **Refuted review findings** never trigger fixes; they remain in the result and journal for audit.
+- Two known knobs surfaced by budget guards: review-loop stops below ~30k remaining tokens
+  (`clean: false`), implement skips steps below ~40k (`skipped_for_budget`). A "+500k"-style budget
+  directive in the user message sets the pool.
+
+## Relation to built-in skills
+
+- One-off change without a workspace → built-in `/code-review` (cheaper). Pipeline cycle →
+  `/dev-review` (workspace context, severity-scaled verification, applies fixes in a loop).
+- `/dev-pr --review` deliberately uses that same verifier in report-only mode, persists evidence,
+  and routes fixes through plan approval instead of silently mutating code while preparing a PR.
+- The built-in `/run` complements step 7 of `/dev-implement`: launch the app and exercise the
+  changed flow end-to-end, not just tests.
+
+## First-run calibration checklist
+
+Use workflow transcripts from real cycles to tune these before adding more agents:
+
+- **Clustering ratio**: many raw titles collapsing into few semantic defects means reviewer overlap
+  is high; merge lenses before adding validators.
+- **Split rate**: every step triggering `too_big` means the synthesizer sizes badly; never
+  triggering is fine.
+- **Round convergence**: review-loop should go clean in 1–2 rounds; consistently hitting 3 means a
+  weak fixer or redundant lenses.
+- **Tokens per phase** (`subagent_tokens` in each completion notification): know where the money
+  goes before cutting. First knobs: skip planning validation, reduce angles, or disable scouts.
+
+## Authoring a bespoke workflow
+
+The canned scripts aren't sacred. When a scenario's *control flow* genuinely differs — an audit, a
+migration, a tournament/judge-panel shape, a loop over a different unit — write a one-off script
+instead of bending args. (Parameters first: custom `lenses`, `angles`, `review: false` and budgets
+already cover a lot, and sequencing canned workflows across turns covers more.) Put it in the task
+workspace as `orchestration-<name>.js` and invoke it with `Workflow({scriptPath})`.
+
+House rules — each of these exists because it bit us or the runtime requires it:
+
+- `export const meta = { name, description, phases }` — a pure literal; phase titles must match the
+  `phase()` calls.
+- Open the body by normalizing args
+  (`if (typeof args === 'string') { try { args = JSON.parse(args) } catch (e) { throw new Error('args arrived as a non-JSON string') } }`)
+  and a `dryRun` guard returning `{ok: true}`.
+- A JSON `schema` on every `agent()` call; end prompts by saying the output is raw data for an
+  orchestrator. Prose goes to workspace files — agents return compact summaries plus paths, never a
+  dump piped into the next prompt.
+- `pipeline()` by default; `parallel()` only for a true barrier. Agents that mutate files need
+  disjoint file ownership, or run serial.
+- A budget guard in every loop: `if (budget.total && budget.remaining() < 30000) break`.
+- No `Date.now()` / `Math.random()` / argless `new Date()` — the runtime throws, because they would
+  break resume. Timestamps arrive via args or from an agent running `date`.
+- **`workflow()` nests one level only.** Safe children: `explore-plan`, `plan-remediation`,
+  `review-loop`. `implement` calls `review-loop` internally, so as a child it needs `review: false`.
+- Escape backticks inside template literals — an unescaped fence is the classic parse error.
+
+Smoke-test with `args: {"dryRun": true}` (zero agents, zero cost) before the real run; on a crash or
+a mid-flight edit, `Workflow({scriptPath, resumeFromRunId})` replays completed agents from cache.
+Agent-level truth lives in the run's `journal.jsonl`. If a shape proves recurrent, harden it and
+promote it into the plugin's `workflows/` — it registers as `devkit:<name>` on the next session
+start.
+
+## Extending
+
+- Custom review lenses: pass `lenses` to `review-loop`.
+- Shared memory (removed, re-addable): a pull-side channel where scouts/implementers/reviewers
+  discover lessons, gotchas and subsystem maps from earlier cycles. It was backed by an external
+  MCP knowledge base and was stripped out with it. Re-adding it means picking a store (committed
+  markdown entries + a grep-able catalog is the simplest), a query snippet in the exploration and
+  review prompts, and a curated set of writers — a post-implementation retro agent distilling ≤3
+  lessons per cycle is the natural producer, and was removed along with the store it wrote to.
+- Design judge-panel for arch-open tasks: N independent approach proposals + judges before
+  synthesis — add as a workflow called by /dev-plan between explore and synthesize.
+- Per-agent `model`/`effort` on any `agent()` call; current split: Sonnet for decomposition,
+  scouts, validators, reviewers, remediation synthesis and ordinary fixes; Opus for main-plan
+  synthesis, implementation, critical fixes and cross-step consistency.
+- Parallel flows (designed, not built): `git worktree add` per flow, implement runs against the
+  worktree path (prompts take a `root` arg), merge + review at the end; state.json gains a
+  `worktree` field. Build only after single-flow cycles run well.
+- Status dashboard (designed, not built): an Artifact-rendered HTML view of state.json;
+  `/dev-status` covers the need until then.

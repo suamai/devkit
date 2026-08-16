@@ -1,0 +1,9 @@
+{
+  "name": "devkit",
+  "version": "0.1.0",
+  "description": "Multi-agent development pipeline: /dev-spec builds a grounded task spec, /dev-plan triages and turns it into a validated step plan, /dev-implement runs the steps in dependency waves with contract gates and cost-driven review checkpoints, /dev-review loops reviewers until clean, /dev-pr drafts and gates publication. Context is push-only and every file has one writer; verification means running a check, not reading code.",
+  "author": {
+    "name": "arstrini",
+    "email": "arstrini@gmail.com"
+  }
+}

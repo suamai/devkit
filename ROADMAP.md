@@ -1,0 +1,288 @@
+# Roadmap — open improvements
+
+What is left after two cleanup passes (doc/code drift, dead machinery) and the move to a plugin.
+
+Ordered by what I'd do first, on one criterion: **0-3 stop the pipeline from losing work** (the thing
+that actually hurts in use), **7-8 make changing a prompt stop being a bet**, and the rest is
+capability.
+
+Calibration knobs — clustering ratio, split rate, round convergence, tokens per phase — live in
+`docs/architecture.md` ("First-run calibration checklist"). Those are tuning; this is change.
+
+---
+
+## 0. Run it once
+
+**Now:** `git log` says the repo has no commits. `~/.claude/skills/` is empty, no marketplace points
+here, `.claude-plugin/marketplace.json` does not exist. **The plugin has never run in this form.**
+
+That is not a hygiene detail: four items below (#8 evals, #9 remediation's fate, the calibration
+checklist, half of the risk estimates) depend on transcripts from real cycles that do not exist yet.
+Everything else assumes this is done.
+
+**Change:** commit the repo, install it, run `/dev-setup` in a real project, run one full
+`/dev-plan → /dev-implement` cycle. Then the cheap verifications that are currently scattered as
+assumptions:
+
+- **What the command is actually called.** Plugin skills are addressed as `plugin:skill` — probably
+  `/devkit:dev-plan`, not `/dev-plan`. If so, all three docs and every inter-skill handoff ("suggest
+  `/dev-implement <slug>`") are wrong, and the name is redundant twice over. Renaming
+  `skills/dev-plan/` → `skills/plan/` gives `/devkit:plan`; it costs a `git mv` plus a sed today and
+  muscle memory plus three docs later. Decide it here, not after the habit forms.
+- **`${CLAUDE_PLUGIN_ROOT}` inside a SKILL.md body.** The official `plugin-dev/plugin-structure`
+  skill documents it as valid in component files, so it probably works — but the `scriptPath`
+  fallback in five skills rests on it. One smoke test settles it.
+- **`.claude-plugin/marketplace.json`.** Missing, which makes the project-scope declaration story
+  (`extraKnownMarketplaces` + `enabledPlugins` in a *project's* `.claude/settings.json`, documented
+  in `docs/architecture.md` "Distribution") untestable. Add it, then test that a clone actually
+  prompts a teammate to install.
+
+## 1. Close the hole in the honesty gate
+
+**Now:** `IMPL_SCHEMA.verify_run` requires only `ran` (`implement.js:85-95`), and the classification
+is:
+
+```js
+const verifyFailed = impl.verify_run && impl.verify_run.ran && impl.verify_run.passed === false
+const unverified   = !verifyFailed && (!impl.verify_run || impl.verify_run.ran !== true)
+```
+
+An implementer returning `{ran: true}` with no `command` and no `passed` is recorded as verified and
+not failed. The product's strongest claim — "a step that ran no executable check is reported
+`unverified`, never as success" — is defeated by one boolean.
+
+**Change:** `ran === true` without a `command`, or with `passed !== true`, falls through to
+unverified (or failed, when `passed === false`). Five lines in `runStep`, plus one sentence in the
+prompt saying the fields travel together.
+
+**Why first:** it is the cheapest change on the list and it defends the claim the whole pipeline is
+sold on.
+
+## 2. Kill the global `.dev/state.json`
+
+**Now:** one shared registry, written by four different skills
+(`dev-spec/SKILL.md:24`, `dev-plan/SKILL.md:63,87`, `dev-implement/SKILL.md:20,68`,
+`dev-status/SKILL.md:7,25`), each carrying prose to sustain the invariant "skills in the main loop
+are its ONLY writers", plus staleness reconciliation, untracked-flow recovery and a repo-wide
+advisory lock.
+
+**Change:** move state into each workspace — `.dev/<slug>/state.json`. One writer _by
+construction_; no shared file to corrupt. `/dev-status` becomes a glob plus a read, and the whole
+"untracked flow" concept disappears because the directory *is* the record.
+
+**Cost:** touches five skills. The advisory lock does want a global view ("is any implement running
+in this clone?") — but that is `glob .dev/*/state.json | grep implementing`, not a new file. Do not
+introduce a `.dev/lock.json`: it reintroduces the shared writer under another name. The precedent is
+already in the design and already works — remediation deliberately carries no state and
+`/dev-status` reads it off disk (`docs/architecture.md`, "Flow state & concurrency").
+
+**Why here:** it deletes a class of defensive instruction, and it is the precondition for #3, which
+is the real prize.
+
+## 3. Make resuming an implement a first-class path
+
+**Now:** `implement.js` stops early *by design* in four situations — a blocking question
+(`:524-531`), a checkpoint that did not go clean (`:614-631`), a failed step, the budget floor
+(`:360`). That design is right. But the continuation is not a path: the developer has to get Claude
+to reconstruct `Workflow({scriptPath, resumeFromRunId, args: <the same>})`, and "the same args"
+includes the whole `steps` array. Worse, after answering a blocking question the args legitimately
+change (the answer belongs in `notes`), which invalidates the resume cache exactly where reuse was
+wanted.
+
+**Change:** a `continue` mode. Persist the exact args of a run (`.dev/<slug>/last-run.json`) and
+which steps completed; re-invoke with only the pending steps plus the answer folded into `notes`.
+`resumeFromRunId` stays as the crash-recovery path — this is the *planned* stop, which is a
+different thing and deserves its own affordance.
+
+**Why:** the workflow is built to stop and hand back. Right now handing back costs the developer
+more than the work it saved. Depends on #2 for the "which steps completed" half.
+
+## 4. Invert the triage bias, and make `small` leave an artifact
+
+**Now:** `dev-plan/SKILL.md` opens with a good triage table (trivial / small / medium / large) that
+is the main thing standing between a typo and thirty agents. But it's prose, and a model under
+pressure to be thorough will reach for "medium". Separately, the `small` tier produces "a short plan
+in chat" — which evaporates.
+
+**Change:** (a) make trivial/small the default and require a stated positive reason to escalate —
+one line, in the report, naming which signal fired, chosen from a closed list. Cheap to write, and
+it makes the escalation auditable in both directions. (b) `small` still writes a five-line
+`.dev/<slug>/plan.md`: `/dev-pr` (step 2) and `/dev-review` both depend on *intent*, and a tier that
+leaves nothing behind makes the rest of the pipeline weaker for the change most likely to reach it.
+
+## 5. Model tier and effort as parameters, not constants
+
+**Now:** every tier is hardcoded — `model: 'opus'` on the implementer (`workflows/implement.js:387`)
+and the consistency check (`:660`), on the plan synthesizer (`workflows/explore-plan.js:250`);
+`'sonnet'` everywhere else. `haiku` is never used, and `effort` — available per `agent()` call — is
+never passed at all. The implementer is the single biggest cost driver in the pipeline, since it
+runs once per step.
+
+**Change:** accept a `models` arg (`{scout, impl, review, synth}`) or a coarse
+`profile: 'cheap' | 'default' | 'max'`, defaulting to today's split, and pass `effort` alongside it —
+`low` on the mechanical stages (decompose, gate, fix), higher only on verify and synthesis. The
+contract gate and the angle decomposition are haiku-shaped work being done by sonnet. The skills
+pass it through; `/dev-setup` could let a repo pin a default.
+
+**Watch:** `meta.phases` carries a `model:` label per phase and must be a pure literal, so once the
+model is a parameter those labels are cosmetic. Either drop them or accept they can lie.
+
+**Why:** a side project and a production repo do not deserve the same budget, and right now the only
+way to spend less is to disable stages wholesale.
+
+## 6. Make the `.claude/rules/` contract explicit
+
+**Now:** the pipeline reads path-scoped rules, matches them per step, and turns matching ones into a
+third review lens. Under a plugin it is the *only* way a repo specializes the pipeline, since a
+project can no longer fork a prompt. But the extraction is one long awk one-liner
+(`dev-implement/SKILL.md:54`) that scrapes any `-` item out of the first frontmatter block regardless
+of key, and matching happens in two places with two mechanisms: real glob code in `implement.js`
+(`globToRegExp`/`ruleMatchesFile`) versus prose telling the main loop to figure it out for
+`/dev-review`.
+
+**Change:** define the frontmatter contract, parse `paths:` properly rather than "any list item",
+and let one mechanism do the matching for both callers (pass `rules: [{path, globs}]` to
+`review-loop` too, as `implement.js` already does internally).
+
+**Also verify:** the comment at `implement.js:194-196` claims rules "load lazily for the main
+session". `.claude/rules/` appears in no other plugin and is not a native Claude Code convention —
+it is a devkit invention, so probably nothing loads them lazily. Either prove the claim or delete
+it. If nothing native reads these files, the `paths:` contract is yours alone to define — and it is
+worth one paragraph comparing it against nested `CLAUDE.md`, which *is* picked up natively.
+
+## 7. Eval cases, and a `dryRun` that actually runs something
+
+**Now:** prompts are tuned by reading transcripts and arguing about them. And the pure logic in the
+workflow scripts — `toWaves`, `disjoint`/`pathScope`, `globToRegExp`/`ruleMatchesFile`, and the
+finding-identity pool at `implement.js:577-613` — has real edge cases and zero tests. A bug there
+means wrong parallelization or a checkpoint silently unblocked. They can't be imported (the scripts
+are self-contained by runtime requirement), so there is no obvious harness. Meanwhile `dryRun`
+returns `{ok: true}` before any logic runs (`implement.js:28`): it tests that the file parses.
+
+**Change:** two halves that pay for each other.
+
+- (a) `claude plugin eval` over `evals/**/case.yaml`, including a no-plugin baseline arm. Scope them
+  to **decision points**, not whole pipelines: does triage pick the right tier for a typo vs. a
+  cross-cutting change; does the verifier refuse to confirm an unreachable defect; does the
+  implementer report `unverified` instead of claiming success when no check is possible.
+- (b) `dryRun` with `steps` returns the computed schedule — waves, disjoint batches, matched rules —
+  instead of a constant. That is a zero-cost plan lint `/dev-plan` can show before approval, *and*
+  it is the only harness through which that pure logic becomes testable without contorting the
+  scripts.
+
+**Why:** it turns "this prompt feels better" into evidence, and it is the only thing that makes
+tuning safe once a change ships to every project at once.
+
+## 8. Report cost per phase; stop over-promising on budget
+
+**Now:** the calibration checklist asks the developer to read `subagent_tokens` off completion
+notifications by hand. And every budget guard is `if (budget.total && ...)` — `budget.total` exists
+only when the user typed "+300k" in the message, so the 20k/30k/40k floors the docs present as
+protection (`review-loop.js:228`, `implement.js:360,459`) never fire in normal use.
+
+**Change:** (a) bracket each phase with `budget.spent()` and `log()` the delta, so the run reports
+its own calibration data — which feeds #5 (where to cut) and #7 directly. Confirm `spent()` works
+with no budget directive set. (b) Either document the floors honestly ("only active with an explicit
+budget directive") or have `/dev-setup` offer a per-repo default. Half an hour of work; today the
+docs promise more than the code delivers.
+
+## 9. Decide the fate of the PR-remediation axis
+
+**Now:** demoted out of the state machine, but still roughly 40% of the collection's conceptual
+surface. Half of that can be decided without any more evidence, because two separable things are
+bundled:
+
+- **SHA-bound review evidence that gates publication** (`reviews/<sha>.md`, the high/critical block).
+  Valuable on its own, solo included. **Keep.**
+- **A separate plan-and-implement cycle for the fixes** (`plan-remediation.js`, `/dev-plan --review`,
+  the nested `remediations/<sha>/` workspace, the HEAD-equality gates in `dev-implement` step 3, the
+  remediation branch of `dev-status`). It exists so "the review found things, someone else fixes
+  them later" survives a handoff between people. Solo, "the review found three things, fix them" is
+  already `review-loop` with `apply: true`.
+
+**Change:** collapse the second into `/dev-review --from-report <path>`, feeding the report's
+`confirmed` findings straight into the fixer + re-review. That deletes `plan-remediation.js`
+entirely, half of `dev-plan/SKILL.md`, the nested workspace, and three invariants (HEAD equality +
+clean tree + branch match). Escalation stays free: `/dev-plan "fix findings X, Y, Z"` is an ordinary
+task.
+
+**What still needs real cycles:** only the residual question — did you ever want an *approved plan*
+for a correction rather than the correction itself? Answer that after #0, not from the armchair.
+
+## 10. Give `.claude/rules/` a bootstrap and a ratchet
+
+**Now:** `/dev-setup` step 5 merely offers to draft rules. Nothing improves them afterwards, and the
+troubleshooting table's answer to "agents keep missing the same repo quirk" is "write it into
+CLAUDE.md yourself".
+
+**Change:** (a) a real bootstrap — read CLAUDE.md, the directory shape and any style guide, propose
+3-6 candidate rule files, let the developer approve each. Never invent a convention the repo hasn't
+stated. Most repos already have the raw material: a "never violate" / "invariants" section in
+CLAUDE.md is a rules file that hasn't been split by path yet. (b) the ratchet: after a cycle, one
+agent reads `notes/` plus the confirmed review findings and proposes ≤3 edits to `.claude/rules/*.md`
+or `CLAUDE.md`, which the developer approves as a diff.
+
+**Note on (b):** this is the producer that was deleted along with the MCP knowledge base (see
+"Deliberately not doing"), reattached to the store the architecture actually endorses — the repo
+itself, versioned and reviewable, with the developer as the curator. It is what turns #6 from "rules
+exist" into "rules get good".
+
+## 11. An "understand" mode, and a debug shape
+
+**Gap:** there is no way to ask "how does X work here?" without producing a plan, and the pipeline is
+feature-shaped (spec → plan → implement) while debugging has a different shape: reproduce →
+hypothesize → narrow → fix → prove the repro is dead.
+
+**Change (understand):** not a new command and not a new script — `mode: 'explain'` on
+`explore-plan.js`, swapping the synthesizer's prompt and schema. The justification is *not* "explain
+this to me" (the built-in `Explore` agent does that for a fraction of the cost); it is that
+`findings/<angle>.md` are durable validated artifacts, and a later `/dev-plan` in the same workspace
+can consume them instead of re-exploring. That makes exploration a pipeline stage rather than a
+parallel feature — and a `mode` keeps #12's duplication from growing.
+
+**Change (debug):** one skill, no workflow, first version. Fan out hypotheses **read-only** — each
+agent argues from code, none executes — then one serial step that reproduces, then hand off to the
+normal implement/review path. The reason the fan-out cannot execute is the pipeline's own: parallel
+agents running the repro contend for the shared working tree, which is exactly why one implement per
+clone is enforced (`docs/architecture.md`, "Flow state & concurrency"). The adversarial-verification
+pattern in `review-loop.js` transfers to the argue-or-refute half directly.
+
+## 12. Loosen the GitHub assumption; make prose drift detectable
+
+**GitHub:** `/dev-pr` is really two things — branch analysis + coverage map + body draft (useful
+anywhere) and publication via `gh` (GitHub-specific). Naming that split in the skill makes graceful
+degradation trivial: no remote, GitLab, or a solo repo where the "PR" is a merge you do yourself.
+`--body-only` already degrades; the rest should say what it detected instead of assuming.
+
+**Drift:** workflow scripts are self-contained (no imports), so the step contract — "hard
+dependencies only", "one-agent-sized, roughly 10 files", "verification means running a check" — is
+restated in `explore-plan.js`, `plan-remediation.js`, `implement.js` and several skills. Five copies
+drift. "Cite one canonical section" is a convention, and convention is precisely what drifts: make
+it a **test** instead — ten lines (a script or an eval case) that greps the canonical sentences
+across all copies and fails when one no longer matches.
+
+---
+
+## Dropped
+
+**Scope `allowed-tools` per skill.** Was deferred during the plugin migration; now cut. The stated
+benefit is moving the `permissions.allow` entry out of every repo's `.claude/settings.json` — but
+`/dev-setup` step 4 already does that automatically. The risk is unchanged: these skills use a wide
+tool surface, and an incomplete list degrades a skill in a way that is tedious to diagnose. Real
+cost, no remaining benefit.
+
+## Deliberately not doing
+
+**Shared cross-cycle memory.** Removed with the external MCP knowledge base it was built on. Agents
+learn nothing from previous cycles now, by design: durable knowledge belongs in the repo
+(`CLAUDE.md`, `docs/`, `.claude/rules/`) where it is reviewable and versioned. An uncurated memory
+rots and degrades every future agent's discovery. What *was* worth keeping is the producer — a retro
+agent distilling ≤3 lessons per cycle — which is now item 10(b), writing into the repo instead of
+into a store. `docs/architecture.md` ("Extending") keeps the full note.
+
+**Parallel implementation flows.** Designed, not built: one git worktree per flow, `implement`
+running against the worktree path, merge and review at the end. Only worth attempting once
+single-flow cycles run reliably — but the design note is out of date and the re-read is cheap: the
+runtime now offers `isolation: 'worktree'` per workflow agent and `EnterWorktree`/`ExitWorktree` in
+the main loop. A whole `/dev-implement` inside a worktree is far less machinery than the note
+assumes, and it attacks the actual root of the advisory lock (verifications sharing one tree).

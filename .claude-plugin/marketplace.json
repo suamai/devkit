@@ -1,0 +1,31 @@
+{
+  "$schema": "https://anthropic.com/claude-code/marketplace.schema.json",
+  "name": "devkit",
+  "owner": {
+    "name": "arstrini",
+    "email": "arstrini@gmail.com"
+  },
+  "metadata": {
+    "description": "Multi-agent development pipeline for Claude Code",
+    "version": "0.1.0"
+  },
+  "plugins": [
+    {
+      "name": "devkit",
+      "source": "./",
+      "description": "Multi-agent development pipeline: /dev-spec builds a grounded task spec, /dev-plan triages and turns it into a validated step plan, /dev-implement runs the steps in dependency waves with contract gates and cost-driven review checkpoints, /dev-review loops reviewers until clean, /dev-pr drafts and gates publication.",
+      "version": "0.1.0",
+      "author": {
+        "name": "arstrini"
+      },
+      "category": "development",
+      "keywords": [
+        "workflow",
+        "multi-agent",
+        "code-review",
+        "planning",
+        "pull-request"
+      ]
+    }
+  ]
+}
