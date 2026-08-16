@@ -73,10 +73,13 @@ You orchestrate the implementation phase of a planned dev task. The heavy liftin
      guess. Ask these first (AskUserQuestion, include the recorded `assumption` as context). If the
      answer matches the assumption, resume the remaining waves; if it does not, the step needs rework
      before anything downstream runs. Non-blocking questions are informational — resolve them inline.
-   - `unverifiedSteps` non-empty → those steps ran no executable check (`reason` says why). Their
+   - `unverifiedSteps` non-empty → those steps have no substantiated executable check. Their
      behavior rests on the checkpoint reviews and the suite. Verify them yourself now — that is step 7
-     — and never report them as verified. A missing `reason` is itself worth reporting: it means the
-     implementer skipped verification without justifying it.
+     — and never report them as verified. `reason` distinguishes two different failures, and they are
+     worth reporting differently: an honest one (the implementer set `ran: false` and explained why no
+     check was possible) versus a claimed-but-unevidenced one ("claimed ran=true without naming the
+     command it ran" / "…without reporting whether the check passed"). The second means an implementer
+     asserted verification it did not substantiate — mention it, it is a prompt-calibration signal.
    - `concerns` non-empty → the implementers' own doubts. The checkpoint reviewers received them as
      priority targets and the final check was asked to settle them, so treat anything still listed
      here as unresolved and either check it or surface it in your report.
@@ -110,7 +113,8 @@ You orchestrate the implementation phase of a planned dev task. The heavy liftin
    `implementation_failed`, `result_serialization_failed`, and `agent_failed_unknown` distinctly.
    Then, per checkpoint, which waves it covered and its rounds/fixes (`checkpointReviews[].reason`
    says why it fired); contract gates that found breaks; consistency check, commit hash, and
-   concerns. State `unverifiedSteps` explicitly — "N steps ran no check of their own" — and
+   concerns. State `unverifiedSteps` explicitly — "N steps have no substantiated check of their
+   own", with the honest/unevidenced split from step 6 — and
    if `stoppedEarly`, lead with `stopReason` rather than burying it under the per-step detail.
    After remediation, always require a fresh `/dev-pr --review`: the old report remains evidence but
    cannot clear a different `HEAD`.

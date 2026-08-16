@@ -22,8 +22,9 @@ Fan-out is the cheap part. The parts that carry their weight:
 - **Context discipline** — every workspace file has exactly one writer, and agents exchange *paths*,
   never dumps. Scouts write full reports and return compact summaries; readers open the file only
   when a decision hinges on the detail.
-- **Honesty gates** — a step that ran no executable check is reported `unverified`, never as
-  success. A review is `clean` only after an explicit post-fix pass finds nothing. Confirmed
+- **Honesty gates** — a step is verified only when it names the command it ran *and* reports that the
+  command passed; a bare claim degrades to `unverified`, never to success.
+  A review is `clean` only after an explicit post-fix pass finds nothing. Confirmed
   findings are reconciled against the fixer by identity, not by count, and the match fails closed.
 - **Proportional cost** — triage decides the machinery (trivial work never touches the pipeline);
   review checkpoints accumulate waves instead of paying a full loop per wave, with one cheap

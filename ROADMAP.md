@@ -57,7 +57,7 @@ all four workflows pass `dryRun` (0 agents, 0 tokens), plugin loads. What each v
   four scripts parse and their `meta` blocks load — nothing about `toWaves`, `disjoint`,
   `globToRegExp` or the finding-identity pool. That is item 7(b), and this is the evidence for it.
 
-## 1. Close the hole in the honesty gate
+## 1. Close the hole in the honesty gate — ✅ done
 
 **Now:** `IMPL_SCHEMA.verify_run` requires only `ran` (`wf-implement.js:85-95`), and the classification
 is:
@@ -77,6 +77,18 @@ prompt saying the fields travel together.
 
 **Why first:** it is the cheapest change on the list and it defends the claim the whole pipeline is
 sold on.
+
+**Done:** verified now means all three fields — `ran === true`, a non-blank `command`, and
+`passed === true`. Anything less degrades to `unverified` carrying a `reason` that distinguishes the
+honest case (`ran: false` plus `not_ran_reason`) from the unevidenced claim ("claimed ran=true
+without naming the command it ran"). That reason travels to the checkpoint reviewer's priority
+list, the final consistency check and the skill's report, so an implementer asserting verification
+it did not substantiate is now visible rather than silently counted as success.
+
+`tests/verify-gate.test.js` locks the truth table — 9 cases including the hole itself. It runs the
+*shipped* lines: it reads `wf-implement.js` off disk and extracts the classification block by its
+anchors rather than copying it, and throws if the anchors move (fail-closed, never a silent pass).
+That anchor trick is a stopgap; 7(b) replaces it with a `dryRun` that returns real computed output.
 
 ## 2. Kill the global `.dev/state.json`
 

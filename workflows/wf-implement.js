@@ -85,9 +85,9 @@ const IMPL_SCHEMA = {
     verify_run: {
       type: 'object', required: ['ran'],
       properties: {
-        ran: { type: 'boolean', description: 'false only if no executable check was possible' },
-        command: { type: 'string' },
-        passed: { type: 'boolean' },
+        ran: { type: 'boolean', description: 'false only if no executable check was possible. These fields travel together: ran=true without `command` and `passed` is treated exactly like ran=false, because a bare boolean is not evidence.' },
+        command: { type: 'string', description: 'REQUIRED when ran=true: the exact command you executed' },
+        passed: { type: 'boolean', description: 'REQUIRED when ran=true: whether that command actually succeeded' },
         output_summary: { type: 'string' },
         not_ran_reason: { type: 'string', description: 'required when ran=false: why no executable check was possible. An unverified step is reviewed with extra scrutiny, so "no time" or "looked correct" is not a reason.' },
       },
@@ -327,6 +327,7 @@ ${others.length ? '\nOther steps run CONCURRENTLY and own these files — do NOT
 - If the plan is wrong about something, prefer the smallest correct deviation and record what/why.
 - Ambiguity only the developer can resolve: make the safest reversible choice, then record the question in needs_user_input with your assumption. Set blocking=true when a different answer would invalidate this step's approach rather than just adjust it — later steps must not be built on the guess, so a blocking question stops the run at the next checkpoint. Use it when it is true and not otherwise: a false blocking halts work that could have continued, a missed one gets built upon.
 - VERIFY by actually running the step's check (${s.verify || 'infer the cheapest concrete check: targeted test, build/typecheck, or a quick runtime probe'}) and report the result in verify_run. Reading the code is not verification. If no executable check was genuinely possible, set ran=false AND give not_ran_reason — an unverified step is reported as such and reviewed with extra scrutiny, so silence is not the cheap path.
+- The verify_run fields travel together: ran=true is a claim, \`command\` and \`passed\` are its evidence. Reporting ran=true without both is treated exactly like ran=false — it buys nothing and loses the not_ran_reason that would have explained it.
 - Report in concerns anything you are unsure you got right, naming the file and what could be wrong. Reviewers receive these as priority targets: this is where your own doubt is worth more than their search.
 - WRITE your working notes to "${workspace}/notes/${s.id}.md": decisions taken and WHY, deviations, anything later steps or reviewers should know. Sub-steps and reviewers read this file.
 
@@ -396,17 +397,28 @@ async function runStep(s, batch, depth, ctx) {
     }
   }
 
-  const verifyFailed = impl.verify_run && impl.verify_run.ran && impl.verify_run.passed === false
   // A step that ran no check is not a failure (sometimes none is possible) but it is not verified
   // either — the earlier code let it pass as success silently, which made the pipeline's strongest
   // claim unenforceable. It travels to the reviewer and the report as unverified.
-  const unverified = !verifyFailed && (!impl.verify_run || impl.verify_run.ran !== true)
-  if (unverified) log(`step ${s.id} ran no executable check: ${(impl.verify_run && impl.verify_run.not_ran_reason) || 'no reason given'}`)
+  //
+  // `ran: true` is a CLAIM; `command` and `passed` are its evidence. Requiring only the boolean made
+  // the gate defeatable by one free-to-set field: {ran: true} with nothing else counted as verified
+  // AND as passing. Verified now means all three, so an unsubstantiated claim degrades to exactly
+  // what it is worth — the same treatment as no check at all, minus the excuse.
+  const verify = impl.verify_run || {}
+  const verifyCommand = typeof verify.command === 'string' ? verify.command.trim() : ''
+  const verifyFailed = verify.ran === true && verify.passed === false
+  const unverified = !verifyFailed && !(verify.ran === true && verifyCommand && verify.passed === true)
+  const unverifiedReason = !unverified ? null
+    : verify.ran !== true ? (verify.not_ran_reason || 'no reason given')
+    : !verifyCommand ? 'claimed ran=true without naming the command it ran'
+    : 'claimed ran=true without reporting whether the check passed'
+  if (unverified) log(`step ${s.id} has no substantiated verification: ${unverifiedReason}`)
   const blockingQuestions = (impl.needs_user_input || []).filter((q) => q && q.blocking)
   return {
     step: s.id, title: s.title, brief_path: brief.brief_path, impl,
     failed: verifyFailed, stage: verifyFailed ? 'verify' : undefined,
-    unverified,
+    unverified, unverified_reason: unverifiedReason,
     blocking_questions: blockingQuestions.length ? blockingQuestions : undefined,
   }
 }
@@ -470,7 +482,7 @@ async function reviewCheckpoint(pending, checkpointNumber) {
   const unverifiedSteps = leaves.filter((r) => r.unverified)
   const priority = [
     selfReported.length ? `The implementers flagged these as things they were unsure they got right — start here, then widen:\n${selfReported.join('\n')}` : '',
-    unverifiedSteps.length ? `These steps ran NO executable check, so nothing but this review stands between them and the developer — judge their behavior, do not assume it works:\n${unverifiedSteps.map((r) => `- ${r.step} (${(r.impl.verify_run && r.impl.verify_run.not_ran_reason) || 'no reason given'}): ${(r.impl.changed_files || []).join(', ')}`).join('\n')}` : '',
+    unverifiedSteps.length ? `These steps have NO substantiated executable check — either none ran, or the implementer claimed one without naming the command or its result. Nothing but this review stands between them and the developer: judge their behavior, do not assume it works:\n${unverifiedSteps.map((r) => `- ${r.step} (${r.unverified_reason || 'no reason given'}): ${(r.impl.changed_files || []).join(', ')}`).join('\n')}` : '',
   ].filter(Boolean).join('\n\n')
   return workflow(reviewLoopRef, {
     scope: `Files changed in implementation ${waveLabel}: ${changed.join(', ')}`,
@@ -646,9 +658,9 @@ if (!stoppedEarly) {
 Plan: "${planPath}" (read it). Workspace: "${workspace}" — per-step briefs in briefs/, implementer notes in notes/.
 
 Step reports (compact; read the notes/ files where detail matters):
-${JSON.stringify(leafReports.map((r) => ({ step: r.step, title: r.title, failed: r.failed || false, skipped_for_budget: r.skipped_for_budget || false, summary: r.impl && r.impl.summary, changed_files: r.impl && r.impl.changed_files, deviations: r.impl && r.impl.deviations, concerns: r.impl && r.impl.concerns, verify_run: r.impl && r.impl.verify_run, unverified: r.unverified || false, review_clean: r.review && r.review.clean })), null, 2)}
+${JSON.stringify(leafReports.map((r) => ({ step: r.step, title: r.title, failed: r.failed || false, skipped_for_budget: r.skipped_for_budget || false, summary: r.impl && r.impl.summary, changed_files: r.impl && r.impl.changed_files, deviations: r.impl && r.impl.deviations, concerns: r.impl && r.impl.concerns, verify_run: r.impl && r.impl.verify_run, unverified: r.unverified || false, unverified_reason: r.unverified_reason || undefined, review_clean: r.review && r.review.clean })), null, 2)}
 
-Steps marked \`unverified\` ran no executable check of their own. Their behavior rests entirely on the suite you are about to run and on the checkpoint reviews — if the suite does not actually exercise them, say so in an issue rather than reporting a clean composition. Open \`concerns\` the reviews did not resolve are also yours to settle or escalate.
+Steps marked \`unverified\` have no substantiated executable check of their own — either none ran, or one was claimed without a command or a pass/fail result. Their behavior rests entirely on the suite you are about to run and on the checkpoint reviews — if the suite does not actually exercise them, say so in an issue rather than reporting a clean composition. Open \`concerns\` the reviews did not resolve are also yours to settle or escalate.
 
 Steps were implemented by separate agents, possibly in parallel. Check the SEAMS between them: do the pieces actually compose — imports/exports, function signatures vs call sites, naming consistency, duplicated helpers that should be one, config/registration each step assumed another would do, plan requirements (and spec acceptance criteria, if the plan references a spec) no step ended up covering. Per-step verify_run covered steps individually, not the composition: run the repo's build/typecheck/test suite if available and report it in suite_run.
 
@@ -682,7 +694,7 @@ needsInput.sort((a, b) => Number(b.blocking) - Number(a.blocking))
 
 const unverifiedSteps = leafReports
   .filter((r) => r.unverified)
-  .map((r) => ({ step: r.step, reason: (r.impl.verify_run && r.impl.verify_run.not_ran_reason) || null, changed_files: r.impl.changed_files || [] }))
+  .map((r) => ({ step: r.step, reason: r.unverified_reason || null, changed_files: r.impl.changed_files || [] }))
 const openConcerns = leafReports.flatMap((r) => ((r.impl && r.impl.concerns) || []).map((c) => ({ step: r.step, concern: c })))
 
 return {
