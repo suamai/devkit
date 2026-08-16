@@ -8,6 +8,7 @@ A multi-agent development pipeline for Claude Code, packaged as a plugin.
 /dev-implement →  steps in dependency waves, contract gates, review checkpoints, phase commit
 /dev-review    →  two complementary reviewers → verify → fix → re-review until clean
                   (--from-report applies a PR review's confirmed findings)
+/dev-debug     →  repro → read-only hypothesis fan-out → refute → narrow serially → prove it dead
 /dev-pr        →  branch analysis, optional SHA-bound review, PR body, guarded publication
 /dev-status    →  what's running, what's stale, cleanup
 /dev-setup     →  configure a repo to use all of the above

@@ -29,8 +29,9 @@ Work through these, reporting each as ok / fixed / skipped-with-reason.
    ## Dev pipeline
    Medium/large tasks go through the devkit multi-agent pipeline: /dev-spec (large/ambiguous) →
    /dev-plan → /dev-implement → /dev-review → /dev-pr; /dev-status monitors flows.
-   Confirmed PR-review findings are fixed with `/dev-review --from-report`. Trivial/small changes
-   don't need the pipeline (the /dev-plan triage decides).
+   Confirmed PR-review findings are fixed with `/dev-review --from-report`. Bugs go through
+   /dev-debug (repro first, then hypotheses). Trivial/small changes don't need the pipeline
+   (the /dev-plan triage decides).
    Cost profile: default.
    ```
    Ask which cost profile this repo wants (`cheap` | `default` | `max` — the manual's Cost control

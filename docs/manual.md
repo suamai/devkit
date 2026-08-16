@@ -14,6 +14,8 @@ pipeline, read this when you want to use it.
 | `/dev-review --from-report <review.md>` | Apply the confirmed findings of a PR review | Fixes applied and explicitly re-reviewed; clean/not-clean |
 | `/dev-implement <slug>` | Plan approved | Implemented steps, executed verifications, review loops, phase commit |
 | `/dev-review [files]` | Validate changes (standalone) | Confirmed findings, applied fixes, clean/not-clean verdict |
+| `/dev-debug <symptom>` | Something is broken and you don't know why | A repro, refuted hypotheses, a cause stated as a mechanism, a dead repro |
+| `/dev-plan --explain <question>` | About to plan work in code you don't know | `.dev/<slug>/understanding.md` + validated `findings/` a later plan reuses |
 | `/dev-pr [base] [--review] [--draft] [--body-only]` | Prepare/review/publish the current branch | `pr.md`, optional SHA-bound review report, PR after approval |
 | `/dev-status` | "What's going on?" / cleanup | Table of flows and stages; `clean <slug>` deletes a workspace |
 
@@ -155,6 +157,40 @@ there. The old report cannot clear the new `HEAD` after fixes.
 When the findings need an approach decision, span several subsystems, or must be applied in a set
 order, they are ordinary work: `/dev-plan "fix the findings in <report>"` gets exploration, a plan
 you approve, and waves — the same pipeline as everything else.
+
+## Two shapes that are not the feature cycle
+
+### Understanding code — `/dev-plan --explain "how does X work here?"`
+
+Same exploration and same adversarial validation as planning, but it writes
+`.dev/<slug>/understanding.md` — the answer, how it actually works, where to start reading, what
+would surprise you, and **what is provably not true** — instead of a plan.
+
+Use it when you are about to *plan work* in unfamiliar code, not to satisfy curiosity: a bare "how
+does X work?" is what Claude's built-in exploration is for, at a fraction of the price. What you buy
+here is durability. The `findings/` reports are validated and stay on disk, and the `/dev-plan` that
+follows in the same workspace reuses them instead of re-exploring — often the difference between five
+scouts and one. Reuse never skips validation, so findings that went stale get refuted rather than
+trusted.
+
+The `Not true` section is the part nothing cheaper can give you. Any agent can describe how code
+works; only a run that put its claims through adversarial verification can tell you which plausible
+belief about your codebase is false, and show the proof.
+
+### Debugging — `/dev-debug "<symptom>"`
+
+Debugging has its own shape: **reproduce → hypothesize → refute → narrow → fix → prove the repro is
+dead**. It gets a repro first (and says loudly if it cannot), fans out 3-5 competing hypotheses
+**read-only**, then attacks each one to try to refute it before anything is executed.
+
+Two things it will do that are worth knowing about. It tells you which hypotheses were **refuted and
+why** — that is the information that stops you re-proposing the same theory in twenty minutes. And it
+refuses to call a bug fixed on the strength of the code looking right: it re-runs the recorded repro
+and shows you before and after. If it never reproduced the bug, it says so first and last, and calls
+the fix unverified.
+
+The read-only fan-out is structural, not caution: parallel agents running a repro contend for one
+working tree, which is the same reason only one `/dev-implement` runs per clone.
 
 ## Teaching the repo (`.claude/rules/`)
 

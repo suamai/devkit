@@ -1,10 +1,32 @@
 ---
 name: dev-plan
 description: Triage and plan a development task — proportional exploration, batched validation of load-bearing claims, and a plan you approve before any code is written.
-argument-hint: <task description>
+argument-hint: <task description> | --explain <question>
 ---
 
 You orchestrate the planning phase of a dev task. Fan-out work happens in the `wf-explore-plan` workflow; your job is the parts a background workflow cannot do — triage, gathering input, interrupting the developer with questions, and iterating the plan with them.
+
+## Understanding mode — `/dev-plan --explain <question>`
+
+Same exploration, same validation, different synthesizer: it writes `<workspace>/understanding.md`
+(answer, how it works, where to start reading, what would surprise you, **what is provably not
+true**) instead of `plan.md`, and returns no steps.
+
+**Route a bare question away from here.** "How does X work?" is what the built-in `Explore` agent is
+for, at a fraction of the cost, and answering it with a five-scout fan-out is the same mistake as
+triaging a typo as medium. This mode is not for answering a question — it is for **exploring a
+subsystem you are about to plan work in**, where the point is the durable artifacts:
+`findings/<angle>.md` are adversarially validated, and the `findings` array it returns lets the
+`/dev-plan` that follows skip re-exploring the same ground.
+
+So the test before using it: *will something consume these findings afterwards?* If no, use
+`Explore`. If yes, say so in one line, run it, and store the returned `findings` in
+`<workspace>/state.json` for the plan run that follows.
+
+The one thing it produces that nothing cheaper can is the `Not true` section: a lone agent can tell
+you how something works, but only a run that put its claims through adversarial validation can tell
+you which plausible belief about this code is provably false. Lead the report with that and with
+`surprises` — the confirmatory parts are the parts the developer could have gotten anywhere.
 
 ## 0. Triage first — the burden of proof is on escalation
 
@@ -79,8 +101,14 @@ signal and escalate.
 
 3. **Run the exploration.**
    ```
-   Workflow({ name: "devkit:wf-explore-plan", args: { task, scope, requirements, constraints, workspace, specPath? } })
+   Workflow({ name: "devkit:wf-explore-plan", args: { task, scope, requirements, constraints, workspace, specPath?, priorFindings? } })
    ```
+   `priorFindings`: if `<workspace>/state.json` carries a `findings` array from an earlier run here
+   (an `--explain` pass, or a plan you are redoing), pass it. Angles it already covers are not
+   re-explored — often the difference between five scouts and one. It does **not** skip validation:
+   the old findings go through the same adversarial pass, so anything that went stale gets refuted
+   rather than trusted, which is why no staleness check is needed on top.
+
    Optional: `angles` to override angle decomposition when the developer already told you what to investigate; `validate: false` skips the single batched validation pass for cost-sensitive planning; `profile`/`models`/`efforts` set the model tiers (see Cost below). If the workflow name does not resolve (the plugin has not loaded in this session yet), invoke with `scriptPath` pointing at `${CLAUDE_PLUGIN_ROOT}/workflows/wf-explore-plan.js`. Runs in background; you'll be notified. While waiting, do nothing speculative.
 
 4. **Interrupt point — open questions.** The result contains `open_questions` (decisions only the developer can make). If non-empty, surface them via AskUserQuestion (use the provided `options`). Fold answers into the plan: edit `<workspace>/plan.md` yourself — including the machine-readable JSON steps block — or, if an answer invalidates the approach, re-run the workflow with the answers appended to `constraints`.
@@ -117,7 +145,9 @@ signal and escalate.
    code must exist to compile/run/verify) rather than reading order, and propose flattening or merging
    when it isn't. The workflow logs a warning for a suspiciously deep chain — relay it if present.
 
-7. **Handoff.** On approval, set `stage: "plan-ready"` in `<workspace>/state.json` and suggest `/dev-implement <slug>` (or continue yourself if asked).
+7. **Handoff.** On approval, set `stage: "plan-ready"` in `<workspace>/state.json`, and store the
+   result's `findings` array there too — that is what makes a later run in this workspace skip
+   re-exploring. Then suggest `/dev-implement <slug>` (or continue yourself if asked).
 
 ## Cost
 

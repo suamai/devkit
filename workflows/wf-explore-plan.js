@@ -11,7 +11,12 @@ export const meta = {
 }
 
 // args: { task, workspace, specPath?, scope?, requirements?, constraints?, angles?, validate?=true,
-//         planPath?, profile?, models?, efforts?, dryRun? }
+//         planPath?, mode?='plan', docPath?, priorFindings?, profile?, models?, efforts?, dryRun? }
+//   mode: 'plan' writes plan.md with executable steps; 'explain' writes understanding.md and returns
+//         prose — same exploration and same validation, different synthesizer.
+//   priorFindings: the `findings` array a previous run in this workspace returned. Angles it already
+//         covers are not re-explored; the findings themselves still go through validation, so a
+//         claim that went stale gets refuted rather than trusted.
 //   workspace: absolute path to the task workspace (e.g. <repo>/.dev/<slug>).
 //   Context discipline (RLM-style): scouts WRITE full reports to <workspace>/findings/ and RETURN
 //   compact summaries; downstream agents receive paths and read detail only when load-bearing.
@@ -91,6 +96,16 @@ const workspace = args.workspace.replace(/\/+$/, '')
 const planPath = args.planPath || `${workspace}/plan.md`
 const findingsDir = `${workspace}/findings`
 
+// Two modes over one machine. `explain` answers "how does this work here?" and writes prose instead
+// of steps — but the reason it lives here rather than in the built-in Explore agent (which is far
+// cheaper for a throwaway answer) is that it leaves the SAME durable, adversarially validated
+// findings/ artifacts behind. A later `plan` run in this workspace passes them back as
+// `priorFindings` and skips re-exploring what is already on disk. That is what makes understanding
+// a stage of the pipeline instead of a feature beside it.
+const mode = args.mode === 'explain' ? 'explain' : 'plan'
+const docPath = args.docPath || `${workspace}/understanding.md`
+const priorFindings = (args.priorFindings || []).filter((f) => f && f.angle && f.report_path)
+
 const TASK_BRIEF = [
   '## Task', args.task,
   '## Scope', args.scope || 'Not specified — infer a reasonable scope from the repository.',
@@ -103,7 +118,8 @@ const ANGLES_SCHEMA = {
   type: 'object', required: ['angles'],
   properties: {
     angles: {
-      type: 'array', minItems: 3, maxItems: 5,
+      // Zero is a legitimate answer once prior findings cover the ground; without them it is not.
+      type: 'array', minItems: priorFindings.length ? 0 : 3, maxItems: 5,
       items: {
         type: 'object', required: ['name', 'focus', 'why'],
         properties: {
@@ -203,6 +219,58 @@ const PLAN_SCHEMA = {
   },
 }
 
+// The explain-mode counterpart. `refuted` is the section no cheaper tool can write: a lone Explore
+// agent can tell you how something works, but only a run that put its claims through adversarial
+// validation can tell you which plausible belief about this code is provably false.
+const EXPLAIN_SCHEMA = {
+  type: 'object', required: ['title', 'answer', 'entry_points', 'open_questions'],
+  properties: {
+    title: { type: 'string' },
+    answer: { type: 'string', description: 'the direct answer, 5-10 sentences, first and without preamble — what was actually asked, not a tour of the subsystem' },
+    mechanisms: {
+      type: 'array',
+      items: {
+        type: 'object', required: ['name', 'how_it_works', 'evidence'],
+        properties: {
+          name: { type: 'string' },
+          how_it_works: { type: 'string', description: 'the actual control/data flow, not the intent the naming implies' },
+          evidence: { type: 'string', description: 'file:line pointers' },
+        },
+      },
+    },
+    entry_points: {
+      type: 'array', minItems: 1,
+      items: {
+        type: 'object', required: ['path', 'why'],
+        properties: { path: { type: 'string' }, why: { type: 'string', description: 'what a reader learns by starting here' } },
+      },
+      description: 'where to start reading, in order — the single most reusable output of an exploration',
+    },
+    surprises: {
+      type: 'array',
+      items: {
+        type: 'object', required: ['what', 'evidence'],
+        properties: {
+          what: { type: 'string', description: 'a coupling, a name that does not describe its behavior, an invariant held only by convention' },
+          evidence: { type: 'string' },
+          why_it_matters: { type: 'string' },
+        },
+      },
+      description: 'things that contradict what a competent reader would assume — the part worth paying an exploration for',
+    },
+    refuted: {
+      type: 'array',
+      items: {
+        type: 'object', required: ['claim', 'evidence'],
+        properties: { claim: { type: 'string', description: 'a plausible belief about this code that is NOT true' }, evidence: { type: 'string' } },
+      },
+      description: 'plausible claims validation disproved, with proof — state these even when nobody asked',
+    },
+    open_questions: PLAN_SCHEMA.properties.open_questions,
+    doc_path: { type: 'string', description: 'path of the document you wrote' },
+  },
+}
+
 // ---- Phase 1: decompose into exploration angles (skipped if caller provides them)
 phase('Decompose')
 let angles = args.angles
@@ -212,8 +280,14 @@ if (!angles || !angles.length) {
 
 ${TASK_BRIEF}
 
-Produce 3-5 exploration angles for read-only scouts. Merge related concerns into one angle when they share entry points or evidence. Each scout works alone and cannot see the others, so angles must be self-contained and collectively cover what an implementer needs: current behavior, integrations/callers, conventions, tests, and relevant config/build/deploy touchpoints. Skip irrelevant angles and give concrete hints about where to look.
+Produce 3-5 exploration angles for read-only scouts. Merge related concerns into one angle when they share entry points or evidence. Each scout works alone and cannot see the others, so angles must be self-contained and collectively cover what ${mode === 'explain' ? 'a reader needs to understand the subject: how it actually works, its entry points, who calls it, what constrains it, and where the behavior differs from what the naming suggests' : 'an implementer needs: current behavior, integrations/callers, conventions, tests, and relevant config/build/deploy touchpoints'}. Skip irrelevant angles and give concrete hints about where to look.
+${priorFindings.length ? `
+## Already explored in this workspace
+An earlier run left these reports on disk; they will be re-validated against current code and handed to the synthesizer either way.
+${JSON.stringify(priorFindings.map((f) => ({ angle: f.angle, focus: f.focus, summary: f.summary })), null, 2)}
 
+Propose ONLY angles these do not already cover. Returning an EMPTY array is the right answer when they cover the ground — re-exploring what is already on disk buys nothing. Do not re-list an existing angle to be thorough.
+` : ''}
 Your final output is consumed by a script, not a human — return the structured data only.`,
     { label: 'decompose', ...ROLE.decompose, schema: ANGLES_SCHEMA },
   ))
@@ -258,10 +332,25 @@ Validate only HEADLINE claims that materially change the plan; do not re-check e
 Do NOT modify any files. Your final output is raw data for an orchestrator.`
 }
 
-const scoutResults = await metered('explore', () => parallel(angles.map((a) => () =>
-  agent(scoutPrompt(a), { label: `scout:${a.name}`, phase: 'Explore', ...ROLE.scout, schema: SCOUT_SCHEMA })
-)))
-const scouted = angles.map((angle, index) => ({ angle, scout: scoutResults[index] })).filter((entry) => entry.scout)
+const scoutResults = angles.length
+  ? await metered('explore', () => parallel(angles.map((a) => () =>
+      agent(scoutPrompt(a), { label: `scout:${a.name}`, phase: 'Explore', ...ROLE.scout, schema: SCOUT_SCHEMA })
+    )))
+  : []
+if (priorFindings.length) log(`reusing ${priorFindings.length} finding(s) from this workspace; ${angles.length} new angle(s) to explore`)
+
+// Reuse skips SCOUTING, never validation: prior findings go through the same adversarial pass as
+// fresh ones, so a claim that has gone stale since it was written gets refuted rather than trusted.
+// That is the whole staleness guard — no HEAD comparison, no expiry, just the check that already
+// exists doing its job on older input.
+const scouted = [
+  ...priorFindings.map((f) => ({
+    angle: { name: f.angle, focus: f.focus || 'from an earlier run in this workspace' },
+    scout: { summary: f.summary, headline_findings: f.headline_findings || [], open_questions: [], report_path: f.report_path },
+    reused: true,
+  })),
+  ...angles.map((angle, index) => ({ angle, scout: scoutResults[index] })),
+].filter((entry) => entry.scout)
 
 if (!scouted.length) throw new Error('all scouts failed — nothing to synthesize')
 
@@ -271,9 +360,10 @@ const validation = args.validate === false
   : await metered('validate', () => agent(validatePrompt(scouted), { label: 'validate:batch', phase: 'Validate', ...ROLE.validate, schema: VALIDATION_SCHEMA }))
 if (!validation) throw new Error('batched validation failed')
 
-const validated = scouted.map(({ angle, scout }) => ({
+const validated = scouted.map(({ angle, scout, reused }) => ({
   angle: angle.name,
   focus: angle.focus,
+  reused: reused || undefined,
   scout,
   validation: {
     verdicts: validation.verdicts.filter((v) => v.angle === angle.name),
@@ -285,15 +375,43 @@ const validated = scouted.map(({ angle, scout }) => ({
 // ---- Phase 4: cross-check everything and write the plan (opus)
 // The synthesizer receives compact summaries + verdicts; full reports stay on disk as paths.
 phase('Synthesize')
-const synth = await metered('synthesize', () => agent(
-  `You are the planning orchestrator for a development task. Scouts explored the repo by angle (full reports on disk), followed by one batched adversarial pass over their load-bearing claims (verdicts: confirmed / refuted / unverified, plus corrections and missed findings).
+const EVIDENCE = `Compact summaries and validation verdicts (JSON). Full scout reports are at the report_path of each entry — read them where a decision hinges on detail:
+${JSON.stringify(validated, null, 2)}
+Batched validator adjustments (included once, not duplicated per angle):
+${JSON.stringify(validation.suggested_adjustments || [], null, 2)}`
+
+const explainPrompt = `You are answering a question about how an existing codebase works. Scouts explored it by angle (full reports on disk), followed by one batched adversarial pass over their load-bearing claims (verdicts: confirmed / refuted / unverified).
 
 ${TASK_BRIEF}
 
-Compact summaries and validation verdicts (JSON). Full scout reports are at the report_path of each entry — read them where a decision hinges on detail:
-${JSON.stringify(validated, null, 2)}
-Batched validator adjustments (included once, not duplicated per angle):
-${JSON.stringify(validation.suggested_adjustments || [], null, 2)}
+${EVIDENCE}
+
+## Your job
+1. Answer the question that was asked. Not a tour of the subsystem — the answer first, then what supports it. If the exploration did not actually settle it, say so instead of padding.
+2. Cross-check across angles: reconcile conflicts, drop refuted claims, spot-check load-bearing "unverified" claims yourself (you may read the repo and the full reports).
+3. Describe what the code DOES, not what its naming suggests it does. Where those differ, that difference is the most valuable thing you can report — put it in \`surprises\`.
+4. Fill \`refuted\` with plausible beliefs about this code that are provably false, each with its evidence. A reader arrives with assumptions; this is the only place anything corrects them, and it is what this run bought over a single quick lookup.
+5. Collect open questions ONLY where a developer's answer would change the picture — not questions you could have answered by reading more.
+
+## Write the document
+Write it to "${docPath}":
+
+# <title>
+## Answer            — the direct answer, first, no preamble
+## How it works      — mechanisms with file:line evidence
+## Where to start    — entry points in reading order
+## What would surprise you
+## Not true          — plausible claims this exploration disproved, with proof
+## Open questions
+
+Return the structured data; the document is the human-facing artifact.`
+
+const synth = await metered('synthesize', () => agent(
+  mode === 'explain' ? explainPrompt : `You are the planning orchestrator for a development task. Scouts explored the repo by angle (full reports on disk), followed by one batched adversarial pass over their load-bearing claims (verdicts: confirmed / refuted / unverified, plus corrections and missed findings).
+
+${TASK_BRIEF}
+
+${EVIDENCE}
 
 ## Your job
 1. Cross-check across angles: reconcile conflicts between scouts, drop refuted claims, spot-check load-bearing "unverified" claims yourself (you may read the repo and the full reports).
@@ -315,10 +433,37 @@ Write the full plan to "${planPath}":
 A fenced \`\`\`json block containing exactly the steps array you return in your structured output.
 
 Return the structured data; the plan file is the human-facing artifact.`,
-  { label: 'synthesize', ...ROLE.synth, schema: PLAN_SCHEMA },
+  { label: 'synthesize', ...ROLE.synth, schema: mode === 'explain' ? EXPLAIN_SCHEMA : PLAN_SCHEMA },
 ))
 
 if (!synth) throw new Error('synthesis agent failed')
+
+// Everything downstream can be handed straight back as `priorFindings` — the point of explain mode.
+const reusableFindings = validated.map((v) => ({
+  angle: v.angle, focus: v.focus, report_path: v.scout.report_path,
+  summary: v.scout.summary, headline_findings: v.scout.headline_findings || [],
+})).filter((f) => f.report_path)
+
+if (mode === 'explain') {
+  log(`understanding written: ${docPath} — ${(synth.refuted || []).length} refuted claim(s), ${synth.open_questions.length} open question(s)`)
+  return {
+    mode,
+    workspace,
+    docPath: synth.doc_path || docPath,
+    title: synth.title,
+    answer: synth.answer,
+    mechanisms: synth.mechanisms || [],
+    entry_points: synth.entry_points || [],
+    surprises: synth.surprises || [],
+    refuted: synth.refuted || [],
+    open_questions: synth.open_questions,
+    // Pass these to a later run in this workspace as `priorFindings`: it re-validates them against
+    // current code and explores only what they do not cover.
+    findings: reusableFindings,
+    cost: costReport(),
+  }
+}
+
 log(`plan written: ${planPath} — ${synth.steps.length} steps, ${synth.open_questions.length} open questions`)
 
 // Wave shape drives implementation wall-clock: depth is sequential, width is parallel. Surface it
@@ -358,5 +503,6 @@ return {
   dropped_claims: synth.dropped_claims || [],
   angles: angles.map((a) => a.name),
   finding_reports: validated.map((v) => v.scout.report_path),
+  findings: reusableFindings,
   cost: costReport(),
 }

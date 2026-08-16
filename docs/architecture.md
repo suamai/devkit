@@ -17,7 +17,7 @@ Two layers, deliberately split:
 
 | Layer | Mechanism | Runs | Can talk to the dev? |
 |---|---|---|---|
-| Control plane | `skills/*/SKILL.md` (`/dev-spec`, `/dev-plan`, `/dev-implement`, `/dev-review`, `/dev-pr`, plus `/dev-status`, `/dev-setup`) | main conversation loop | yes — `AskUserQuestion`, approval |
+| Control plane | `skills/*/SKILL.md` (`/dev-spec`, `/dev-plan`, `/dev-implement`, `/dev-review`, `/dev-pr`, `/dev-debug`, plus `/dev-status`, `/dev-setup`) | main conversation loop | yes — `AskUserQuestion`, approval |
 | Data plane | `workflows/*.js`, invoked as `devkit:<name>` (Workflow tool scripts) | background, deterministic JS | no — returns structured data + `open_questions` / `needs_user_input` |
 
 Both live in the plugin. A project contributes only `.dev/` (scratch, gitignored) and, optionally,
@@ -47,6 +47,7 @@ pointer (never "read the whole workspace"):
     last-run.json      ← the implement run's args + completion map, so a stop can be continued
     spec.md            ← /dev-spec (dialogue in the main loop)
     plan.md            ← wf-explore-plan's synthesizer; then curated by the /dev-plan skill
+    understanding.md   ← same workflow in mode:'explain'; findings/ stay reusable for a later plan
     findings/<angle>.md← exploration scouts (full reports; compact summaries returned to the script)
     briefs/<id>.md     ← adaptive scouts only; inherited by sub-steps on recursive split
     notes/<id>.md      ← per-step implementers (decisions + whys); read by reviewers & sub-steps
@@ -100,6 +101,14 @@ that a rule now has to survive review by someone who can say no.
    └─ interrupt: needs_user_input → dev; skill verifies end-to-end and reports
    └─ a run that stopped early continues via `completed` (same steps; done ids stop being deps)
 
+/dev-plan --explain "question"
+   └─ wf-explore-plan.js with mode:'explain' — same Decompose/Explore/Validate, different
+      synthesizer: writes understanding.md and returns `findings` a later plan run passes back
+      as `priorFindings` (re-validated, never re-scouted)
+
+/dev-debug "<symptom>"   — no workflow: repro → read-only hypothesis fan-out → adversarial
+   refutation → serial narrowing in the main loop → fix via the normal path → prove the repro dead
+
 /dev-review [files]      — standalone entry to the same wf-review-loop
    └─ wf-review-loop.js
         while not clean and rounds < max:
@@ -142,6 +151,32 @@ or a repo, shifts them.
 - All workflows accept `{ dryRun: true }` (zero-cost smoke test) and normalize `args` from JSON
   string. Named resolution requires a session restart after creating a workflow file; `scriptPath`
   works immediately.
+
+## Two shapes the feature cycle does not fit
+
+**Understanding** is `mode: 'explain'` on `wf-explore-plan`, not a new script and not a new command.
+The synthesizer's prompt and schema swap; everything before it is identical. The justification is
+deliberately *not* "explain this to me" — the built-in `Explore` agent does that far more cheaply,
+and `/dev-plan`'s prose says to route bare questions there. What this buys is that `findings/<angle>.md`
+are durable and adversarially validated, and the run returns a `findings` array a later `/dev-plan`
+in the same workspace passes back as `priorFindings`. Angles already covered are not re-scouted; the
+findings still go through validation, so a claim that went stale is refuted rather than trusted —
+that is the entire staleness guard, and it is the check that already existed doing its job on older
+input. Understanding becomes a *stage*, not a feature beside the pipeline.
+
+**Debugging** is one skill and no workflow, because its two halves want opposite things. The
+hypothesis half is embarrassingly parallel and must be **read-only**: parallel agents running a repro
+contend for one working tree, which is the same constraint that limits the repo to one
+`/dev-implement` at a time, and an agent that edits a file to test a theory corrupts every other
+agent's evidence. The narrowing half is inherently serial, executes, and talks to the developer —
+main-loop work by definition. A workflow script could host the first and not the second.
+
+The pattern that transfers is `wf-review-loop`'s: generate candidates cheaply, then spend a second
+pass trying to **refute** each one, defaulting to refuted under uncertainty. A plausible cause is easy
+to generate and feels like progress; the cost lands later, when someone instruments and rebuilds
+around a theory nobody checked. And the honesty gate is the same shape as `verify_run`'s: a repro that
+was never re-run cannot close a bug, and an unreproduced bug yields an explicitly *unverified* fix
+rather than a quiet success.
 
 ## Repo rules — a native convention the subagents could not see
 
@@ -249,6 +284,7 @@ copies of them.
 | `tests/policy.test.js` | model/effort resolution, plus `policy()` drift across the four scripts |
 | `tests/rules.test.js` | `paths:` frontmatter parsing, glob matching, matcher drift |
 | `tests/seeded-review.test.js` | `--from-report`: that no finder runs, and that `clean` still needs a post-fix pass |
+| `tests/explore-modes.test.js` | plan vs explain mode, and that reused findings skip scouting but not validation |
 
 Run them with `node tests/<name>.test.js`; each prints a PASS/FAIL line per case and exits non-zero
 on failure. Where a test cannot reach through `dryRun` it extracts the shipped block by an anchor

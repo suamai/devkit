@@ -531,7 +531,7 @@ Four things the plan didn't say, each of which decides whether the feature is us
 The agent proposes, never writes. That is not caution about file safety — it is the reason this
 store was chosen over an agent-writable one, so the approval step *is* the feature.
 
-## 11. An "understand" mode, and a debug shape
+## 11. An "understand" mode, and a debug shape — ✅ done
 
 **Gap:** there is no way to ask "how does X work here?" without producing a plan, and the pipeline is
 feature-shaped (spec → plan → implement) while debugging has a different shape: reproduce →
@@ -550,6 +550,38 @@ normal implement/review path. The reason the fan-out cannot execute is the pipel
 agents running the repro contend for the shared working tree, which is exactly why one implement per
 clone is enforced (`docs/architecture.md`, "Flow state & concurrency"). The adversarial-verification
 pattern in `wf-review-loop.js` transfers to the argue-or-refute half directly.
+
+**Done.** `mode: 'explain'` on `wf-explore-plan` (reached as `/dev-plan --explain`), and
+`skills/dev-debug/` — one skill, no workflow, as specified. `tests/explore-modes.test.js` covers the
+workflow half with 15 cases.
+
+- **The stated justification had to be built, not just asserted.** "The findings are durable and a
+  later plan consumes them" is only true if something consumes them, so explain mode was not done
+  until `priorFindings` existed: the run returns a `findings` array, `/dev-plan` stores it in
+  `state.json`, and a later run in that workspace re-explores only the angles it does not cover.
+  Without that half, explain mode is "explain this to me" at five-scout prices — which the item
+  itself says is the wrong reason to build it. `/dev-plan`'s prose now routes bare questions to the
+  built-in `Explore` agent explicitly.
+- **Reuse skips scouting, never validation — and that IS the staleness guard.** The obvious design
+  is a HEAD comparison or an expiry on old findings. Neither is needed: prior findings go through
+  the same adversarial pass as fresh ones, so anything that went stale comes back refuted rather than
+  trusted. The check that already existed does the job on older input, and there is no second
+  freshness concept to keep correct.
+- **Explain mode earns a section nothing cheaper can write.** `refuted` — plausible beliefs about
+  this code that are provably false, with evidence. Any agent can describe how something works; only
+  a run that put its claims through adversarial validation can tell you what is *not* true. Both the
+  schema and the skill's report lead with that and with `surprises`, because the confirmatory parts
+  are the parts a developer could have gotten anywhere.
+- **Debug is one skill because its halves want opposite things.** The hypothesis half is
+  embarrassingly parallel and read-only; the narrowing half is serial, executes, and talks to the
+  developer. A workflow script could host the first and not the second. Read-only is structural, not
+  caution: parallel agents running a repro contend for one working tree — the same constraint behind
+  one `/dev-implement` per clone — and an agent that edits a file to test a theory corrupts every
+  other agent's evidence.
+- **Its honesty gate is `verify_run`'s, in a different costume.** A repro that was never re-run
+  cannot close a bug, and a bug that was never reproduced yields a fix labelled *unverified* rather
+  than a quiet success. The skill also reports which hypotheses were **refuted and why**, because
+  that is precisely the theory someone re-proposes twenty minutes later.
 
 ## 12. Loosen the GitHub assumption; make prose drift detectable
 
