@@ -258,7 +258,10 @@ function handle(line,   F, O, C, CO, B, BO, FI, FO, VE, VO, phase, tier, profile
       tok_n++
       if (conc != "false") tok_conc++
       push("ph", phase, tot)
-      if (tier != "") push("ti", tier, tot)
+      # Keyed by phase too, not tier alone: plan-phase and implement-phase costs sit at wholly
+      # different magnitudes, and both now carry `tier` — a bare tier= bucket would blend them into
+      # a median that represents neither population.
+      if (tier != "") push("ti", phase ":" tier, tot)
       push("pr", profile, tot)
     }
     if (C["by_phase"] != "") {
@@ -309,13 +312,18 @@ function norow(label) { printf "%-29s n=0 — no data\n", label }
 function row(label, n, text) { if (n == 0) norow(label); else printf "%-29s n=%-4d %s\n", label, n, text }
 function cont(n, text) { if (n == "") printf "%-29s       %s\n", "", text; else printf "%-29s n=%-4d %s\n", "", n, text }
 
-function tokens(   i, k) {
+function tokens(   i, k, c) {
   if (tok_n == 0) { norow("6. Tokens per phase"); return }
   printf "%s\n", "6. Tokens per phase — median cost.total, output tokens"
-  for (i = 1; i <= nord["ph"]; i++) { k = ord["ph", i]; printf "     %-24s n=%-4d %s\n", "phase=" k, cnt["ph", k], kfmt(med("ph", k)) }
-  for (i = 1; i <= nord["ti"]; i++) { k = ord["ti", i]; printf "     %-24s n=%-4d %s\n", "tier=" k, cnt["ti", k], kfmt(med("ti", k)) }
-  for (i = 1; i <= nord["pr"]; i++) { k = ord["pr", i]; printf "     %-24s n=%-4d %s\n", "profile=" k, cnt["pr", k], kfmt(med("pr", k)) }
-  for (i = 1; i <= nord["bp"]; i++) { k = ord["bp", i]; printf "     %-24s n=%-4d %s\n", "by_phase=" k, cnt["bp", k], kfmt(med("bp", k)) }
+  # One shared field width across every row kind in this block, sized to the worst-case composite
+  # label below ("phase=implement tier=trivial" = 28 chars) — not a per-kind width, or the n=
+  # column drifts between row kinds even though they all belong to the same visual block.
+  for (i = 1; i <= nord["ph"]; i++) { k = ord["ph", i]; printf "     %-32s n=%-4d %s\n", "phase=" k, cnt["ph", k], kfmt(med("ph", k)) }
+  # k is "<phase>:<tier>" (see push("ti", ...) in handle()) so a tier bucket never loses which
+  # phase it came from — phase and tier are both closed enums with no ":" in either.
+  for (i = 1; i <= nord["ti"]; i++) { k = ord["ti", i]; c = index(k, ":"); printf "     %-32s n=%-4d %s\n", "phase=" substr(k, 1, c - 1) " tier=" substr(k, c + 1), cnt["ti", k], kfmt(med("ti", k)) }
+  for (i = 1; i <= nord["pr"]; i++) { k = ord["pr", i]; printf "     %-32s n=%-4d %s\n", "profile=" k, cnt["pr", k], kfmt(med("pr", k)) }
+  for (i = 1; i <= nord["bp"]; i++) { k = ord["bp", i]; printf "     %-32s n=%-4d %s\n", "by_phase=" k, cnt["bp", k], kfmt(med("bp", k)) }
 }
 
 function agentsrow(   np, nf) {

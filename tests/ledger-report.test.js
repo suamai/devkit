@@ -37,12 +37,15 @@ const PLAN = [
   { phase: 'plan', slug: 'd', tier: 'trivial', concurrent: false, cost: { by_phase: { explore: 2000 }, total: 2000, budget_total: null, floors_active: false } },
 ]
 const IMPLEMENT = [
-  { phase: 'implement', slug: 'a', waves: 3, steps_leaf: 10, splits: 1, scouts_ran: 2, gates: 2, gate_breaks: 1, checkpoints: 1, agents_projected: 18, concurrent: false, findings: { raw_titles: 12, clusters: 5, confirmed: 4, refuted: 1, applied: 4, skipped: 0 }, verification: { steps: 10, passed: 9, unverified_honest: 1, unverified_unevidenced: 0, unverified_infra: 0, weak_evidence: 2, kind_missing: 0 }, cost: { by_phase: { steps: 30000, gate: 0, review: 12000 }, total: 42000, budget_total: null, floors_active: false } },
+  // 'a' and 'd' carry tier: 'medium' — the same tier as two PLAN lines below, but at a wholly
+  // different cost magnitude. That is what proves phase=implement tier=medium and phase=plan
+  // tier=medium are kept as separate buckets rather than blended into one median.
+  { phase: 'implement', slug: 'a', tier: 'medium', waves: 3, steps_leaf: 10, splits: 1, scouts_ran: 2, gates: 2, gate_breaks: 1, checkpoints: 1, agents_projected: 18, concurrent: false, findings: { raw_titles: 12, clusters: 5, confirmed: 4, refuted: 1, applied: 4, skipped: 0 }, verification: { steps: 10, passed: 9, unverified_honest: 1, unverified_unevidenced: 0, unverified_infra: 0, weak_evidence: 2, kind_missing: 0 }, cost: { by_phase: { steps: 30000, gate: 0, review: 12000 }, total: 42000, budget_total: null, floors_active: false } },
   // A stop reason is free text with a comma and parentheses in it — the reader must not lose the
   // fields after it, which is exactly what a naive "up to the next comma" split would do.
   { phase: 'implement', slug: 'b', steps_leaf: 6, splits: 0, scouts_ran: 1, gates: 1, checkpoints: 1, agents_projected: 12, concurrent: true, stopped: true, stop_reason: 'a blocking question was raised, see the report (s3)', findings: { raw_titles: 8, clusters: 4, confirmed: 3, refuted: 1, applied: 3, skipped: 0 }, verification: { steps: 6, passed: 5, unverified_honest: 0, unverified_unevidenced: 1, unverified_infra: 0, weak_evidence: 0, kind_missing: 0 }, cost: { by_phase: { steps: 20000, review: 10000 }, total: 30000, budget_total: null, floors_active: false } },
   { phase: 'implement', slug: 'c', steps_leaf: 4, splits: 1, scouts_ran: 0, gates: 1, checkpoints: 0, agents_projected: 8, concurrent: 'unknown', verification: { steps: 4, passed: 3, unverified_honest: 0, unverified_unevidenced: 0, unverified_infra: 1, weak_evidence: 0, kind_missing: 1 }, cost: { by_phase: { steps: 50000 }, total: 50000, budget_total: null, floors_active: false } },
-  { phase: 'implement', slug: 'd', steps_leaf: 4, splits: 0, scouts_ran: 1, gates: 1, checkpoints: 1, agents_projected: 10, concurrent: false, findings: { raw_titles: 6, clusters: 2, confirmed: 1, refuted: 1, applied: 1, skipped: 0 }, verification: { steps: 3, passed: 3, unverified_honest: 0, unverified_unevidenced: 0, unverified_infra: 0, weak_evidence: 0, kind_missing: 0 }, cost: { by_phase: { steps: 16000, review: 6000 }, total: 22000, budget_total: null, floors_active: false } },
+  { phase: 'implement', slug: 'd', tier: 'medium', steps_leaf: 4, splits: 0, scouts_ran: 1, gates: 1, checkpoints: 1, agents_projected: 10, concurrent: false, findings: { raw_titles: 6, clusters: 2, confirmed: 1, refuted: 1, applied: 1, skipped: 0 }, verification: { steps: 3, passed: 3, unverified_honest: 0, unverified_unevidenced: 0, unverified_infra: 0, weak_evidence: 0, kind_missing: 0 }, cost: { by_phase: { steps: 16000, review: 6000 }, total: 22000, budget_total: null, floors_active: false } },
 ]
 const REVIEW = [
   { phase: 'review', rounds: 1, clean: true, rounds_end: 'clean', profile: 'cheap', findings: { raw_titles: 6, clusters: 3, confirmed: 2, refuted: 1, applied: 2, skipped: 0 }, cost: { by_phase: { review: 8000 }, total: 8000, budget_total: null, floors_active: false } },
@@ -98,7 +101,10 @@ check('unverified split three ways', row(report.out, '5. Unverified steps'), '5.
 // too, so plan (2k 10k 26k 30k → median 18k, mean 17k) is the row that proves which one ran.
 check('median cost.total by phase', row(report.out, 'phase=implement'), 'phase=implement n=4 36k')
 check('a median, not a mean', row(report.out, 'phase=plan'), 'phase=plan n=4 18k')
-check('median by tier', row(report.out, 'tier=medium'), 'tier=medium n=2 28k')
+// tier=medium is scoped by phase: plan's 26k/30k (28k median) must not blend with implement's
+// 42k/22k (32k median) — the two populations sit at wholly different magnitudes.
+check('median by tier is scoped to plan', row(report.out, 'phase=plan tier=medium'), 'phase=plan tier=medium n=2 28k')
+check('median by tier is scoped to implement, not blended with plan', row(report.out, 'phase=implement tier=medium'), 'phase=implement tier=medium n=2 32k')
 // An omitted `profile` is the shipped default, so 11 of the 12 lines land here and only the one
 // explicit "cheap" review does not.
 check('an omitted profile counts as default', row(report.out, 'profile=default'), 'profile=default n=11 22k')

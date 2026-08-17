@@ -201,16 +201,17 @@ phase.
    beside the quote and before you stop: run `ledger-report.sh --quote` once,
 
    ```bash
-   sh "${CLAUDE_PLUGIN_ROOT}/scripts/ledger-report.sh" --quote --phase implement --profile <profile>
+   sh "${CLAUDE_PLUGIN_ROOT}/scripts/ledger-report.sh" --quote --phase implement --tier <tier> --profile <profile>
    ```
 
    and paste its single line verbatim under the label `Historically (your ledger, not a promise):`.
-   `--phase implement` because that is the run being quoted; no `--tier` here — the `implement`
-   ledger line never records one (only `plan` and `debug` lines do, `docs/architecture.md` → "The run
-   ledger"), so filtering on it would silently zero every match. `--profile` is the profile the
-   implement run will use, which is `default` when nothing was overridden (a ledger line records
-   `profile` only when it was). Leaving an argument off widens the query rather than filtering on
-   absence. If the script answers `n=0 comparable runs` or
+   `--phase implement` because that is the run being quoted; `--tier <tier>` is the tier §0 triaged
+   this plan at — implement lines *do* carry `tier`, carried over from the plan that triaged them
+   specifically so this quote can filter on it (`docs/architecture.md` → "The run ledger"), and
+   comparability is phase + tier + profile: leaving `--tier` off would blend runs of an unrelated tier
+   into the median. `--profile` is the profile the implement run will use, which is `default` when
+   nothing was overridden (a ledger line records `profile` only when it was). Leaving an argument off
+   widens the query rather than filtering on absence. If the script answers `n=0 comparable runs` or
    `n=<count> — sample too small to quote (need 3)`, print **that** — an absent history is a result,
    and a range extrapolated from two runs is exactly the confidently weak number this whole quote
    exists to avoid. Keep it in its own paragraph: the block above is arithmetic on *this* plan, this

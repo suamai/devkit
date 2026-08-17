@@ -594,7 +594,8 @@ inside a top-level string, is a row that gets mis-read quietly. Omit any field y
   `verification`. `tier` is the tier the plan was triaged at, carried over so the quote
   `--phase implement --tier <t>` can match: comparability is phase + tier + profile, and a line
   missing the field it is filtered on never matches. Read it from the workspace's own `runs` array
-  (the latest `plan` entry) or the small tier's `**Tier:**` line, and omit it if neither says.
+  (the latest `plan` entry — every tier writes one, small included), and omit it if that entry has
+  none.
 - review: `seeded`, `rounds`, `clean`, `rounds_end` (`clean|max-rounds|blocked|budget`), `findings`
 - pr: `reviewed`, `outcome` (`clean|needs-attention|blocked`), `rounds`, `findings`, `published`
 - debug: `hypotheses`, `refuted`, `repro` (`"yes"|"no"`), `tier`, `signal`
@@ -638,8 +639,11 @@ rather than printing a number. Read them as calibration input, never as a target
   is high; merge lenses before adding validators.
 - **Split rate**: every step triggering `too_big` means the synthesizer sizes badly; never
   triggering is fine.
-- **Round convergence**: wf-review-loop should go clean in 1–2 rounds; consistently hitting 3 means a
-  weak fixer or redundant lenses.
+- **Round convergence**: standalone `/dev-review` runs only — `clean` is a boolean only the review
+  phase's ledger line carries; `/dev-implement`'s checkpoints roll up into `review_rounds`, a sum with
+  no per-checkpoint clean flag, and `/dev-pr --review` records `outcome` instead. Within that
+  population, wf-review-loop should go clean in 1–2 rounds; consistently hitting 3 means a weak fixer
+  or redundant lenses.
 - **Escalation rate**: how often triage went past `small`, and which signal it named each time. If
   one signal fires almost always, it is doing no discriminating work; if `medium` is the norm, the
   bias in `/dev-plan` §0 is not holding and the prose needs sharpening, not the thresholds.

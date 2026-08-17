@@ -248,11 +248,12 @@ JSON
    ledger"; every number below comes off *this* run's result, and anything you do not have is omitted
    rather than guessed:
    - `tier` = the tier the plan was triaged at, not a judgement you make here: read it from the
-     workspace's own `runs` array (the latest `plan` entry) or, for a small-tier plan, its
-     `**Tier:**` line. It is carried over because comparability is phase + tier + profile, and
-     `/dev-plan`'s quote (`--phase implement --tier <t>`) matches strictly — a line missing the field
-     it is filtered on never matches, so dropping `tier` here would leave that quote reading `n=0`
-     forever. If neither source says, omit it, like any other field you do not have.
+     workspace's own `runs` array (the latest `plan` entry — every tier writes one, small included, so
+     this is the only source step 9 ever needs). It is carried over because comparability is phase +
+     tier + profile, and `/dev-plan`'s quote (`--phase implement --tier <t>`) matches strictly — a
+     line missing the field it is filtered on never matches, so dropping `tier` here would leave that
+     quote reading `n=0` forever. If the workspace has no `runs` entry for this plan, omit it, like any
+     other field you do not have.
    - `waves` = `result.waves.length`; `parallel_groups` = the groups of more than one step in step 4's
      lint (`schedule.waves[].parallel_groups`); `agents_projected` = that same lint's `agents_min`
    - `steps_leaf` = the leaf reports (a `split: true` report is the parent of its `substeps` — count
