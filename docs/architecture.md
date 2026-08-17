@@ -94,7 +94,11 @@ that a rule now has to survive review by someone who can say no.
         steps → topological waves → within a wave, disjoint-file steps in parallel
         per dependency wave:
           Scout (sonnet)   → adaptive only for ambiguous/oversized steps; may split recursively
-          Implement (opus) → RUNS each step's verify command, writes notes/<id>.md
+          Implement (opus) → RUNS each step's verify command, writes notes/<id>.md; the outcome is
+                             typed: `status: passed | failed | not-run | infra-error`
+          Verify (sonnet)  → ONE re-run, and only for an evidenced infra-error — the check could not
+                             run for reasons unrelated to the code. Not a defect: the step does not
+                             fail and the dependent waves still run
           BARRIER          → all implementations finish before review/fixes mutate files
           wf-review-loop      → one consolidated review over the wave's changed files, handed the
                                 covered steps' own verify commands (deduped, joined with &&) to run
@@ -159,6 +163,17 @@ or a repo, shifts them.
   `verify_run` degrades a step to `unverified`. The one repair attempt a failed check buys may never
   revert a confirmed fix or weaken a test, an assertion or a type to reach green; its files join the
   next re-review's scope, so the repair is itself reviewed rather than trusted.
+- A step's verification outcome is **typed**, because "did it pass" flattens four different answers
+  into one: `status: passed | failed | not-run | infra-error`. `infra-error` is the only one an
+  implementer may *claim* — no reply shape reveals that a registry was down — so it is honored only
+  when the claim names both the command and the failure observed, buys exactly one cheap re-run, and
+  is not treated as a defect: the step does not fail and the dependent waves still run. An unevidenced
+  claim *that says the check ran* is read as a failure, which is what keeps the exit from being free;
+  one that honestly says `ran: false` keeps its reason and stays `not-run`. A pass also declares
+  `kind: new-test | existing-suite | manual`, and `existing-suite` — a check that was already green
+  before the step — stays **verified** while being reported as weak evidence. Degrading it is an
+  explicit non-goal: a refactor's evidence *is* the still-green suite, and the reviewer, not a lint,
+  is who can tell that case from a step whose goal was to add behavior.
 - PR review artifacts are SHA-bound evidence. High/critical findings block publication; low/medium
   require an extra confirmation. Review mode never fixes code implicitly.
 - All workflows accept `{ dryRun: true }` (zero-cost smoke test) and normalize `args` from JSON
@@ -292,7 +307,8 @@ copies of them.
 | File | Covers |
 |---|---|
 | `tests/schedule.test.js` | the whole scheduler, via the `dryRun` projection (real entry point) |
-| `tests/verify-gate.test.js` | the verified/unverified/failed truth table — in both places it exists (a step's `verify_run` and the review loop's post-fix check), plus that the two copies are byte-identical |
+| `tests/verify-gate.test.js` | the verified/unverified/failed truth table — in both places it exists (a step's `verify_run` and the review loop's post-fix check), plus that the two copies are byte-identical; and, from `wf-implement.js` alone, the typed table above it (`status`, `kind`, weak evidence) extracted from its fenced block |
+| `tests/verify-contract.test.js` | the same contract at run level, through the real entry point: an evidenced infra-error buys one re-run and the next wave still runs, an unevidenced one does not, and weak-evidence steps and deviations reach the checkpoint's `priority` block |
 | `tests/fix-verify.test.js` | the post-fix check: skip reasons that spawn no agent, the classified `fix_verify`, the bounded repair attempt, and that a repair's files reach the next re-review |
 | `tests/lens-composition.test.js` | which reviewers a run gets: the two defaults, custom `lenses`, the appended rule lens, `ruleLens: false` and the four-rule cap |
 | `tests/continuation.test.js` | dependency surgery when a stopped run continues |
@@ -302,6 +318,14 @@ copies of them.
 | `tests/explore-modes.test.js` | plan vs explain mode, reused findings skipping scouting but not validation, and that `language` reaches both synthesizer prompts |
 | `tests/dryrun-smoke.test.js` | that every shipped workflow answers `dryRun: true` with `{ok: true}` and a resolved policy, spawning nothing — the promise `/dev-setup` step 6 makes to every new repo |
 | `tests/contract-drift.test.js` | that the prose still states the values the scripts use, that every name it points at resolves, and that both manifests and `CHANGELOG.md` agree on the version |
+
+Those two rows describe a deliberate asymmetry, so it does not later read as accidental drift. The
+classification itself — the eight lines that turn a `verify_run` into verified/unverified/failed — is
+byte-identical in `wf-implement.js` and `wf-review-loop.js`, and the test compares them as text, which
+is why nothing may be edited *between* its anchors. The typed layer sits strictly **above** that block
+and exists in `wf-implement.js` only, because a plan step and a post-fix check are not the same
+question: only a step has a goal that a `kind` can be weak evidence for. That is a scope boundary, not
+a copy someone forgot to update.
 
 Run one with `node tests/<name>.test.js` or all of them with `sh tests/run-all.sh`; each prints a
 PASS/FAIL line per case and exits non-zero on failure, and the runner reports every failing file in

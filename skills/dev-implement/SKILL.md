@@ -35,9 +35,12 @@ You orchestrate the implementation phase of a planned dev task. The heavy liftin
    `Workflow({ name: "devkit:wf-implement", args: { dryRun: true, steps, rules } })` returns the
    schedule this run would follow (waves, real parallel groups, scouts, matched rules, projected
    checkpoints) plus `warnings` and an `agents_min` floor. A chain of mostly single steps, steps
-   with overlapping files and no dependency, or a step with no `verify` all show up there; depth is
-   the main driver of wall-clock, so offer to flatten before running. Fix obvious gaps in the plan
-   file; ask only for judgment calls. If the plan wasn't approved in this conversation, show a one-paragraph summary
+   with overlapping files and no dependency, a step with no `verify`, or several steps declaring the
+   **same** `verify` string all show up there; depth is the main driver of wall-clock, so offer to
+   flatten before running. The last of those is about evidence rather than scheduling: one shared
+   command was already green before every step that named it but the first, so the rest come back
+   `weak_evidence` (step 6) — a step whose goal *adds* behavior needs a check of its own.
+   Fix obvious gaps in the plan file; ask only for judgment calls. If the plan wasn't approved in this conversation, show a one-paragraph summary
    and get explicit go-ahead — this phase edits many files.
 
 5. **Update state and run.** Set `stage: "implementing"` with `baseline` and `updated` in the
@@ -88,13 +91,46 @@ You orchestrate the implementation phase of a planned dev task. The heavy liftin
      guess. Ask these first (AskUserQuestion, include the recorded `assumption` as context). If the
      answer matches the assumption, continue the run (see below); if it does not, the step needs rework
      before anything downstream runs. Non-blocking questions are informational — resolve them inline.
+   - Every step report carries a **typed** verification outcome the script derived — not a boolean:
+     `status: passed | failed | not-run | infra-error`, plus `kind: new-test | existing-suite | manual`
+     when a check ran, `attempts` (2 when an infrastructure failure bought its one re-run) and
+     `verify_command`. `ran`/`command`/`passed` are still what the implementer reports and still the
+     arbiter; `infra-error` is the one thing the reply's shape cannot reveal, so it is *claimed* — and
+     only honored when the claim names both the command and the failure it observed. The four bullets
+     below are the run-level counts of that type.
    - `unverifiedSteps` non-empty → those steps have no substantiated executable check. Their
      behavior rests on the checkpoint reviews and the suite. Verify them yourself now — that is step 7
-     — and never report them as verified. `reason` distinguishes two different failures, and they are
-     worth reporting differently: an honest one (the implementer set `ran: false` and explained why no
-     check was possible) versus a claimed-but-unevidenced one ("claimed ran=true without naming the
-     command it ran" / "…without reporting whether the check passed"). The second means an implementer
-     asserted verification it did not substantiate — mention it, it is a prompt-calibration signal.
+     — and never report them as verified. `reason` distinguishes three different situations, and they
+     are worth reporting differently: an honest one (the implementer set `ran: false` and explained why
+     no check was possible); a claimed-but-unevidenced one ("claimed ran=true without naming the
+     command it ran" / "…without reporting whether the check passed"); and an infrastructure one ("the
+     check could not run (infrastructure): …", the next bullet). The second means an implementer
+     asserted verification it did not substantiate — mention it, it is a prompt-calibration signal the
+     register expects to be zero. The third is nobody's defect.
+   - `infraErrors` non-empty → the check could not run for reasons unrelated to the code: a missing
+     toolchain, a registry outage, a service that would not start. Each was retried **once** (`attempts`
+     is 2 once that re-run was paid for, even if the agent came back empty and the first claim stands —
+     the same counting `wf-review-loop`'s `fix_verify.attempts` uses), and an infrastructure failure is
+     **not** a defect — it did not
+     fail the step and it did not stop the dependent waves. Those steps are unverified all the same, so
+     they are exactly the ones to give a real check in step 7. A step that claimed `infra-error` without
+     naming the command *and* the failure it observed is deliberately reported as a **failed** step
+     instead: the one claim the script cannot check is the one that has to come with evidence. Report
+     what the retry did: it may re-run the environment step the first attempt named (`npm ci`, starting
+     a service, restoring a dependency) and it names every such command, so a reader can see that the
+     environment moved under later steps — it may never edit tracked files, because a fix that needs a
+     source change is a defect, not a blip.
+   - `weakEvidenceSteps` non-empty → those steps passed, and are verified, but only by a check that was
+     **already green** before them (`kind: existing-suite`). They stay verified on purpose: a
+     refactor's whole point is that the suite still passes, and degrading that to unverified would make
+     the one honest answer the most expensive one to give. They are a red flag exactly when the step's
+     goal was to *add* behavior — then the command proves it broke nothing and nothing more. The
+     checkpoint reviewer already received them as priority targets; read the goal before deciding which
+     case each one is.
+   - `kindMissing` non-empty → steps that passed but declared no `kind` at all. Not a defect, not weak
+     evidence, and never a gate: `kind` fails open on purpose. It is the calibration signal for a new
+     field, expected to trend to zero the way the unevidenced-claim count is — a number to watch, not
+     something to act on.
    - `concerns` non-empty → the implementers' own doubts. The checkpoint reviewers received them as
      priority targets and the final check was asked to settle them, so treat anything still listed
      here as unresolved and either check it or surface it in your report.
@@ -123,14 +159,26 @@ You orchestrate the implementation phase of a planned dev task. The heavy liftin
      low/medium ones were informational and the checkpoint review should have covered them — if one
      survived into `finalCheck.issues`, mention it, it means the gate is more accurate than the review.
    - `finalCheck.issues` high/critical with `fixed: false` → fix inline or run `wf-review-loop` scoped to the affected files (pass the same `baseline`).
+   - `stoppedEarly: true` → **run the repo's own check yourself, here, before you report.** A stopped
+     run leaves real code in the tree that nothing has executed as a whole, and "we stopped" is not an
+     answer to "does what you left me still build?". One Bash call, zero agents. Take the command from
+     what the repo itself documents — `CLAUDE.md`, the README, the runner it ships — and do not invent
+     one or assemble a plausible-looking command out of `package.json`; that is the same rule
+     `/dev-review` states for its `verifyCommand`. If the repo documents no check, say *that* — an
+     honest "this repo documents no suite" is a result; a guess is not. `finalCheck.suite_run` does not
+     substitute for this: on a stopped run the script fabricated it with nothing behind it, so restating
+     it as a result would be reporting a check that never happened.
 
 7. **Verify end-to-end.** Per-step `verify_run` and `suite_run` already executed checks; re-run
    anything that failed after your fixes, and exercise the changed flow if the project has a runtime
    surface (the built-in `/run` skill launches it). Give `unverifiedSteps` an actual check here — they
-   are the only steps whose behavior nothing has executed. A checkpoint's `fix_verify` narrows this but
+   are the only steps whose behavior nothing has executed, and `infraErrors` are among them — their
+   check never ran, and a re-run that hit the same outage did not change that. A checkpoint's
+   `fix_verify` narrows this but
    does not replace it: it ran the commands of the steps that checkpoint reviewed, on the tree as it
    stood then — never the composition, and never the waves a later checkpoint covered. The whole change
-   is still `suite_run`'s job, and yours here when the run stopped before reaching it.
+   is still `suite_run`'s job — and when the run stopped before reaching it, step 6's `stoppedEarly`
+   bullet is where that check already happened, so what is left here is the per-step gap, not the tree.
 
 8. **Phase commit.** `impl(<slug>): <plan title>`, with the standard co-author trailer; using this
    skill opts into phase commits unless the developer said otherwise. Then set `stage: "implemented"`
@@ -145,8 +193,12 @@ You orchestrate the implementation phase of a planned dev task. The heavy liftin
    Then, per checkpoint, which waves it covered and its rounds/fixes (`checkpointReviews[].reason`
    says why it fired); contract gates that found breaks; consistency check, commit hash, and
    concerns. State `unverifiedSteps` explicitly — "N steps have no substantiated check of their
-   own", with the honest/unevidenced split from step 6 — and
-   if `stoppedEarly`, lead with `stopReason` rather than burying it under the per-step detail.
+   own", with the honest/unevidenced/infrastructure split from step 6 — and state `weakEvidenceSteps`,
+   `infraErrors` and `kindMissing` as their own counts beside it, because none of the three is the same
+   claim: verified-but-only-by-an-already-green-check, could-not-run-and-is-not-a-defect, and a
+   calibration number nobody acts on. If `stoppedEarly`, lead with `stopReason` rather than burying it
+   under the per-step detail, and put step 6's suite result right next to it — whether the tree this run
+   leaves behind still builds, or the honest reason that could not be established.
    If the run stopped early, do **not** phase-commit and report as done — say what stopped it and
    offer the continuation below.
 

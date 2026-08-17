@@ -120,16 +120,40 @@ function proseSet(text, name) {
   const m = text.match(new RegExp('`' + name + ': ([^`]+)`'))
   return m ? m[1].split('|').map((v) => v.trim().replace(/"/g, '')) : null
 }
-const proseDrift = []
-for (const [name, expected] of [['risk', enumOf('workflows/wf-implement.js', 'risk')]]) {
-  for (const { p, text } of PROSE) {
+// The sets a document is allowed to restate, and where the truth lives. `status` and `kind` type a
+// step's `verify_run`: the status the script DERIVES from ran/command/passed, and the kind of check
+// the implementer declares — the field that decides whether a pass is weak evidence. Both are
+// restated in the skill and in the docs, which is exactly where a renamed member rots unnoticed.
+const OPTION_SETS = [
+  ['risk', enumOf('workflows/wf-implement.js', 'risk')],
+  ['status', enumOf('workflows/wf-implement.js', 'status')],
+  ['kind', enumOf('workflows/wf-implement.js', 'kind')],
+]
+// Pure over text, so the mutation proof below is just a second call on a COPY rather than a rewrite
+// of something the repo owns.
+function proseSetDrift(files, name, expected) {
+  return files.flatMap(({ p, text }) => {
     const stated = proseSet(text, name)
-    if (stated && JSON.stringify(stated) !== JSON.stringify(expected)) {
-      proseDrift.push(`${p}: ${name} documented as ${stated.join('|')}, schema says ${expected.join('|')}`)
-    }
-  }
+    return !stated || JSON.stringify(stated) === JSON.stringify(expected)
+      ? []
+      : [`${p}: ${name} documented as ${stated.join('|')}, schema says ${expected.join('|')}`]
+  })
 }
-check('prose option sets match the schema', proseDrift, [])
+check('prose option sets match the schema',
+  OPTION_SETS.flatMap(([name, expected]) => proseSetDrift(PROSE, name, expected)), [])
+// Fail closed, the same shape as "a caller passing custom lenses exists" below: a set that no
+// document states passes the check above by giving it nothing to compare, and an enum whose prose
+// was deleted is precisely the drift this is here to catch.
+check('and every option set is stated in some document',
+  OPTION_SETS.filter(([name]) => !PROSE.some(({ text }) => proseSet(text, name))).map(([name]) => name), [])
+// And it bites: rename one member and every set must come back as drift. The rename happens on an
+// in-memory copy — a check that rewrites a tracked file and restores it afterwards corrupts the tree
+// if it dies in between, which is worse than the drift it guards.
+const renamedMember = (text, member) => text.split(member).join('renamed-away')
+check('and it fails when a member drifts',
+  OPTION_SETS.filter(([name, expected]) =>
+    proseSetDrift(PROSE.map(({ p, text }) => ({ p, text: renamedMember(text, expected[expected.length - 1]) })),
+      name, expected).length === 0).map(([name]) => name), [])
 
 // scoutMode has no schema — the script branches on the strings, so those branches ARE the enum.
 const scoutModes = [...read('workflows/wf-implement.js').matchAll(/scoutMode === '(\w+)'/g)].map((m) => m[1]).sort()

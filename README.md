@@ -26,7 +26,10 @@ Fan-out is the cheap part. The parts that carry their weight:
   never dumps. Scouts write full reports and return compact summaries; readers open the file only
   when a decision hinges on the detail.
 - **Honesty gates** — a step is verified only when it names the command it ran *and* reports that the
-  command passed; a bare claim degrades to `unverified`, never to success.
+  command passed; a bare claim degrades to `unverified`, never to success. The outcome is typed
+  (`status: passed | failed | not-run | infra-error`), so a check that went red because the toolchain
+  did is not counted as a defect — but claiming that without naming the command and the failure
+  observed is one, and gets read as the failure it was dressed up to avoid.
   A review is `clean` only after an explicit post-fix pass finds nothing *and* — when it applied
   fixes — after the repo's own check ran on the result, judged by that same gate. Confirmed
   findings are reconciled against the fixer by identity, not by count, and the match fails closed.

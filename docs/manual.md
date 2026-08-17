@@ -118,7 +118,13 @@ that make everything downstream (plan verification, reviews, final check) measur
 Preflight: requires git; branches to `dev/<slug>` if you're on the default branch; captures the
 baseline SHA; refuses to run if another implement is active in this clone. Then the workflow runs
 in the background: ambiguous/oversized steps get a scout; implementers write code and **run each
-step's verification**; up to five disjoint steps run in parallel by default.
+step's verification**; up to five disjoint steps run in parallel by default. What that verification
+was worth is reported, not flattened into a checkmark: the implementer states which sort of check it
+ran (`kind: new-test | existing-suite | manual`), and a step backed only by an `existing-suite` check
+— one that was already green before it — counts as **weak evidence**. Still verified, and named as
+such, so a step whose goal was to *add* behavior cannot hide behind "the suite still passes". A check that fell over for reasons unrelated to your code — a registry outage, a
+missing toolchain — gets one automatic re-run and is reported as infrastructure rather than as a
+defect (`status: passed | failed | not-run | infra-error`), so the run does not stop on it.
 
 Review is **not** per wave. Waves are sequential (that's what `depends_on` buys), but a full review
 loop costs 7-9 agents, so waves accumulate until a review is worth paying for — and a wider scope
@@ -133,6 +139,10 @@ then audits the seams across all of it and runs the test suite.
 - The run ends with a **phase commit** and a report: per-step changes, verification results,
   deviations from the plan, review outcomes, remaining concerns. Read the deviations — that's
   where surprises live.
+- If the run **stops early** — a blocking question, an unclean checkpoint, a failed step — there is no
+  phase commit, and the report tells you whether the tree it left behind still builds: your repo's own
+  check is run before you are handed the result, rather than leaving you to guess what state the
+  working copy is in.
 
 ### 3. Review anytime — `/dev-review` or `/dev-review src/api/ --no-apply`
 

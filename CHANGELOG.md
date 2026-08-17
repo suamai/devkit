@@ -9,6 +9,48 @@ different artifact, a new gate — and never on prose that restates behavior alr
 `.claude-plugin/plugin.json` and `.claude-plugin/marketplace.json` state it (the latter twice);
 `tests/contract-drift.test.js` fails if they disagree, or if the shipped version has no entry here.
 
+## 0.4.0 — 2026-08-17
+
+### Added
+- **A typed `verify_run` on `wf-implement`.** A step's verification outcome stops being a boolean and
+  becomes `status: passed | failed | not-run | infra-error`, derived by the script from the
+  `ran`/`command`/`passed` the implementer still reports — those remain the arbiter, and the eight
+  lines that classify them stay byte-identical with `wf-review-loop.js`. A step report now also
+  carries `kind`, `attempts`, `verify_command`, `weak_evidence`, `infra_error` and `kind_missing`, and
+  the run returns `weakEvidenceSteps`, `infraErrors` and `kindMissing` next to `unverifiedSteps`.
+- **`infra-error` is not a defect, and it buys one cheap re-run.** It is the one status no reply shape
+  can reveal, so an implementer *claims* it — and the claim is honored only when it names both the
+  command it tried and the failure it observed. An evidenced one spawns a single `verify:<id>` agent
+  (new `verify` role, sonnet) that re-runs the command; the step does not fail and the dependent waves
+  still run, though it is reported as unverified with a distinct third reason string. That agent may
+  also re-run the environment step the first attempt named (`npm ci`, starting a service, restoring a
+  dependency) and must name every command it ran, so the mutation is visible to the reviewer and to
+  later steps that inherit the environment; it may **not** edit tracked files, because a fix that needs
+  a source change is a defect and gets reported as one. An unevidenced claim that says the check *ran*
+  degrades to `failed` and buys no agent; one that honestly says `ran: false` keeps its
+  `not_ran_reason` and stays `not-run`.
+- **`kind: new-test | existing-suite | manual`, and the weak-evidence mark it produces.** A pass whose
+  only check was already green before the step (`existing-suite`) stays **verified** — a refactor's
+  evidence *is* the still-green suite — but is reported as weak evidence and reaches the checkpoint
+  reviewer as a priority target, next to the implementer's `deviations`, which now travel there too.
+  `kind` fails open: a pass declaring none is not weak evidence, it is counted in `kindMissing` as a
+  calibration signal and never gates anything.
+- **A duplicate-`verify` lint in the `dryRun` schedule.** Two or more steps declaring the same `verify`
+  string produce one warning naming them, because a single shared command cannot be per-step evidence
+  for each of them — every step after the first comes back `weak_evidence`.
+- **`tests/verify-contract.test.js`**, which drives the whole contract through the real entry point
+  with stubbed agents, and a second table in `tests/verify-gate.test.js` for the typed layer extracted
+  from `wf-implement.js`'s fenced block. `tests/contract-drift.test.js` now also compares the `status`
+  and `kind` enums against every document that restates them, with a fail-closed guard and an
+  in-memory mutation proof.
+
+### Changed
+- **`/dev-implement` runs the repo's own check in the main loop before reporting a run that stopped
+  early.** One Bash call, zero agents, and the command comes from what the repo documents rather than
+  from a guess — the same rule `/dev-review` states for `verifyCommand`. A stopped run's
+  `finalCheck.suite_run` no longer asserts a suite outcome: it says outright that it is a placeholder
+  the workflow fabricated with nothing behind it, so the two cannot contradict each other.
+
 ## 0.3.0 — 2026-08-17
 
 ### Added

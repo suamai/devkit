@@ -156,6 +156,20 @@ async function main() {
   ] })
   check('trimmed, deduped, blank and absent dropped', mixed.schedule.waves[0].checkpoint.verify_command, 'npm test')
 
+  // The same collapse the line above is happy about is a plan smell one level up: `a` and `d` are two
+  // steps standing on ONE check, so whichever runs first makes it green and the other's "verified" is
+  // a suite that was already passing. The dedupe cannot see that; the lint says it out loud, before
+  // any agent is spawned. Grouped on the trimmed string, which is why ' npm test ' counts.
+  check('steps sharing one verify command are flagged',
+    mixed.schedule.warnings.some((w) => w.includes('a, d') && w.includes('same verify command')), true)
+  // ...and it stays a lint about SHARING, not a lint about every plan with two steps.
+  const distinctVerify = await run({ dryRun: true, steps: [
+    { id: 'a', goal: 'a', files: ['a.ts'], depends_on: [], verify: 'npm test -- a' },
+    { id: 'b', goal: 'b', files: ['b.ts'], depends_on: [], verify: 'npm test -- b' },
+  ] })
+  check('distinct commands are not',
+    distinctVerify.schedule.warnings.some((w) => w.includes('same verify command')), false)
+
   // Plan lints.
   const sloppy = await run({ dryRun: true, steps: [{ id: 'a', goal: 'x', depends_on: [] }] })
   check('no files and no verify are both flagged', sloppy.schedule.warnings.length, 2)

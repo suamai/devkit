@@ -81,6 +81,7 @@ const ROLE = policy({
   impl: { model: 'opus' }, // runs once per step — the pipeline's largest single cost driver
   gate: { model: 'sonnet' },
   check: { model: 'opus' },
+  verify: { model: 'sonnet' }, // the one re-run an evidenced infrastructure failure buys — it runs a command, it does not write code
 })
 
 // >>> shared: per-phase cost — byte-identical across workflows (tests/policy.test.js)
@@ -192,6 +193,8 @@ const IMPL_SCHEMA = {
         passed: { type: 'boolean', description: 'REQUIRED when ran=true: whether that command actually succeeded' },
         output_summary: { type: 'string' },
         not_ran_reason: { type: 'string', description: 'required when ran=false: why no executable check was possible. An unverified step is reviewed with extra scrutiny, so "no time" or "looked correct" is not a reason.' },
+        status: { type: 'string', enum: ['passed', 'failed', 'not-run', 'infra-error'], description: 'the script DERIVES the status from ran/command/passed, so the only claim worth making here is `infra-error`: the check could not run for a reason unrelated to your change (missing toolchain, registry outage, a service that would not start). It requires BOTH the `command` you tried AND the failure you observed, in `output_summary` or `not_ran_reason`. An unevidenced infra claim that says the check RAN is read as a plain failure; one that honestly says ran=false keeps its not_ran_reason and stays not-run.' },
+        kind: { type: 'string', enum: ['new-test', 'existing-suite', 'manual'], description: 'REQUIRED when ran=true (the convention `command` and `passed` already use): new-test = a check that could not have passed before this step, existing-suite = a check that was already green before it (a refactor is the legitimate case), manual = behavior you observed by hand. Omitting it does not make a pass weak evidence, but it is counted.' },
       },
       description: 'result of ACTUALLY RUNNING the step verification — reading the code does not count',
     },
@@ -445,6 +448,8 @@ ${others.length ? '\nOther steps run CONCURRENTLY and own these files — do NOT
 - Ambiguity only the developer can resolve: make the safest reversible choice, then record the question in needs_user_input with your assumption. Set blocking=true when a different answer would invalidate this step's approach rather than just adjust it — later steps must not be built on the guess, so a blocking question stops the run at the next checkpoint. Use it when it is true and not otherwise: a false blocking halts work that could have continued, a missed one gets built upon.
 - VERIFY by actually running the step's check (${s.verify || 'infer the cheapest concrete check: targeted test, build/typecheck, or a quick runtime probe'}) and report the result in verify_run. Reading the code is not verification. If no executable check was genuinely possible, set ran=false AND give not_ran_reason — an unverified step is reported as such and reviewed with extra scrutiny, so silence is not the cheap path.
 - The verify_run fields travel together: ran=true is a claim, \`command\` and \`passed\` are its evidence. Reporting ran=true without both is treated exactly like ran=false — it buys nothing and loses the not_ran_reason that would have explained it.
+- Before you report a pass, answer this: would this command have failed at the baseline, before your change? If yes, it is real evidence for this step — \`kind: "new-test"\`. If the honest answer is no, the command was already green and \`kind: "existing-suite"\` is the answer: the step stays VERIFIED, but it is recorded as weak evidence and handed to the reviewer, because a suite that already passed proves your change broke nothing and says nothing about behavior it was supposed to add. For a refactor that is exactly the right answer, so say so rather than reaching for a stronger word. Behavior you checked by hand is \`kind: "manual"\`.
+- If the check could not run for a reason unrelated to your code (missing toolchain, registry outage, a service that would not start), set \`status: "infra-error"\` AND name both the exact \`command\` you tried and the failure you observed. Evidenced, that claim buys one cheap re-run instead of stopping the run; unevidenced, an infra claim that still says the check RAN is read as a plain failure. If no check was possible at all, \`ran: false\` with a concrete not_ran_reason is the honest answer and stays exactly that.
 - Report in concerns anything you are unsure you got right, naming the file and what could be wrong. Reviewers receive these as priority targets: this is where your own doubt is worth more than their search.
 - WRITE your working notes to "${workspace}/notes/${s.id}.md": decisions taken and WHY, deviations, anything later steps or reviewers should know. Sub-steps and reviewers read this file.
 
@@ -459,6 +464,8 @@ At the end, call StructuredOutput with one NATIVE JSON OBJECT whose top-level pr
     "ran": true,
     "command": "the command actually run",
     "passed": true,
+    "status": "passed",
+    "kind": "new-test",
     "output_summary": "compact observed result"
   },
   "deviations": [],
@@ -472,6 +479,62 @@ STRICT SERIALIZATION RULES:
 - Do NOT wrap the object in "input", "structured_output", "result", or any other property.
 - The required top-level properties are summary, changed_files, notes_path, and verify_run.
 - Keep the return compact; the notes file carries the full narrative.`
+}
+
+// `infra-error` is the one thing a reply's SHAPE can never reveal: from the outside, "the registry
+// was down" and "my change broke the build" are the same red command. So the agent CLAIMS it, and the
+// claim carries evidence — the command it tried AND the failure it observed. These two helpers are
+// the single definition of that rule; the retry gate below and the typed status in runStep both read
+// them, so there is one place to change and not two that can disagree.
+const infraClaim = (v) => (typeof v.status === 'string' ? v.status.trim() : '') === 'infra-error'
+const infraShown = (v) => !!String(v.command || '').trim() && !!(String(v.output_summary || '').trim() || String(v.not_ran_reason || '').trim())
+
+// The re-run an evidenced infra-error buys. It is deliberately NOT an implementer: its whole job is
+// to run a command and report what happened, at a cheap tier, once.
+//
+// It MAY move the environment — re-running `npm ci`, starting the service, restoring a dependency is
+// usually the only thing that clears a transient failure, and a retry that just re-runs the same
+// command mostly re-reports the same error. That mutation outlives the step: later waves inherit the
+// environment, so the agent has to NAME what it ran. It may never touch a tracked file: a check that
+// only goes green after the source changed is a defect, and repairing it here would launder that
+// defect into a run that reports itself verified.
+function verifyRetryPrompt(s, verify) {
+  const command = (verify.command || '').trim() || (s.verify || '').trim()
+  return `A step's verification check reported an INFRASTRUCTURE failure: the check could not run for reasons unrelated to the code. You get one attempt to establish what is actually true.
+
+## The command — run it from the repository root, exactly as written
+\`\`\`
+${command || 'No command was named. Determine the step\'s own check from the plan if you can; if you cannot run anything, return ran: false with a concrete reason.'}
+\`\`\`
+
+## What the first attempt reported
+${verify.output_summary || verify.not_ran_reason || 'No summary was reported — run the command and read the failure yourself.'}
+
+## Step being checked
+${s.id}: ${s.goal || s.title || ''}
+
+## What you may and may not do
+- Re-run the command and report what it did. \`passed\` is its exit status and nothing else — never a judgement of whether the code looks right.
+- You MAY re-run the environment step the first attempt named — \`npm ci\`, starting a service, restoring a dependency, refreshing a cache — because a transient infrastructure failure usually needs that to clear.
+- You may NOT edit any tracked file: not source, not tests, not config, not a lockfile. If the only way to make the check pass is a source change, that is a DEFECT and not an infrastructure blip: leave it, report \`passed: false\`, and say so in \`output_summary\`.
+- NAME every environment command you ran in \`output_summary\`. Later steps inherit this environment and the reviewer has to be able to see that it moved.
+- Claim \`status: "infra-error"\` again ONLY if the same infrastructure failure recurred, and name it. If the command runs now, report its real result instead.
+
+Return only the verify_run object: raw data for an orchestrator, not prose for a human.`
+}
+
+// Steps in the same batch run concurrently (parallel(), up to maxParallelSteps) because their FILES
+// are disjoint — that guarantee says nothing about infra. If two siblings each hit an evidenced
+// infra-error on their first attempt (one registry outage does this to every step that needs it),
+// both retries above are independently licensed to mutate the same environment — two concurrent
+// `npm ci`s against the same node_modules. Route every retry through one chain so only one is ever
+// mutating the environment at a time; it queues just the retry call, not the rest of runStep, so the
+// other steps in the batch keep implementing in parallel while a retry waits its turn.
+let envRetryChain = Promise.resolve()
+function runEnvRetry(fn) {
+  const settled = envRetryChain.then(fn)
+  envRetryChain = settled.catch(() => {}) // one retry's failure must not jam the queue for the next
+  return settled
 }
 
 async function runStep(s, batch, depth, ctx) {
@@ -502,7 +565,7 @@ async function runStep(s, batch, depth, ctx) {
   }
   if (brief.too_big && depth >= MAX_SPLIT_DEPTH) log(`step ${s.id} flagged too_big at max split depth — implementing as-is`)
 
-  const impl = await agent(implPrompt(s, brief, batch, ctx), { label: `impl:${s.id}`, phase: 'Implement', ...ROLE.impl, schema: IMPL_SCHEMA })
+  let impl = await agent(implPrompt(s, brief, batch, ctx), { label: `impl:${s.id}`, phase: 'Implement', ...ROLE.impl, schema: IMPL_SCHEMA })
   if (!impl) {
     return {
       step: s.id,
@@ -511,6 +574,33 @@ async function runStep(s, batch, depth, ctx) {
       stage: 'implement-result-unavailable',
       expected_notes_path: `${workspace}/notes/${s.id}.md`,
       failure_kind: 'requires-journal-classification',
+    }
+  }
+
+  // An EVIDENCED infra-error buys exactly one cheap re-run, because "the toolchain fell over" is the
+  // one failure a second attempt can genuinely resolve, and treating it as a defect stops dependent
+  // waves over nothing. An UNEVIDENCED claim buys no agent at all — mirroring the review loop, where a
+  // degraded claim buys no repair attempt: spawning work against a failure nobody named is how a
+  // pipeline invents cost out of a free-to-set string.
+  //
+  // `attempts` is script-counted, never asked of the agent: two sources for one count is a
+  // contradiction waiting to be reported. It reaches 2 as soon as the second attempt was PAID FOR —
+  // an agent that came back empty still cost a spawn, and the first claim then stands unchanged.
+  let attempts = 1
+  const firstVerify = impl.verify_run || {}
+  if (infraClaim(firstVerify)) {
+    if (!infraShown(firstVerify)) {
+      log(`step ${s.id} claimed infra-error without naming both the command and the failure it observed — no retry, the claim is judged on its own shape`)
+    } else if (budget.total && budget.remaining() < 20000) {
+      log(`token budget floor reached — not re-running step ${s.id}'s infrastructure failure`)
+    } else {
+      log(`step ${s.id} reported an infrastructure failure — one cheap re-run: ${firstVerify.output_summary || firstVerify.not_ran_reason || 'no summary given'}`)
+      const retry = await runEnvRetry(() => agent(verifyRetryPrompt(s, firstVerify), {
+        label: `verify:${s.id}`, phase: 'Implement', ...ROLE.verify, schema: IMPL_SCHEMA.properties.verify_run,
+      }))
+      attempts = 2
+      if (retry) impl = { ...impl, verify_run: retry }
+      else log(`step ${s.id}'s verification re-run agent was unavailable — keeping the first attempt's claim`)
     }
   }
 
@@ -531,11 +621,57 @@ async function runStep(s, batch, depth, ctx) {
     : !verifyCommand ? 'claimed ran=true without naming the command it ran'
     : 'claimed ran=true without reporting whether the check passed'
   if (unverified) log(`step ${s.id} has no substantiated verification: ${unverifiedReason}`)
+  // >>> typed: verification status — one table, derived from the one above (tests/verify-gate.test.js)
+  // Everything here is a function of the three lines above plus what the agent CLAIMED, and nothing
+  // else, so the block can be lifted out and run on its own.
+  //
+  // `infra-error` is the one claim the reply's shape cannot reveal, so it is evidenced or it is not an
+  // infra-error: the command tried AND the failure observed.
+  const infraError = infraClaim(verify) && infraShown(verify)
+  const status = infraError ? 'infra-error'
+    // The degrade is gated on `verify.ran === true` ON PURPOSE. That is the shape where the escape
+    // hatch would actually pay off — "it ran, it went red, but that was the toolchain" — so that is
+    // where it is closed. An honest { ran: false, not_ran_reason: 'docker is not installed',
+    // status: 'infra-error' } keeps its reason and stays not-run instead of becoming a run-stopping
+    // failure. Do not "simplify" this conjunct away: without it the gate punishes the exact honesty
+    // it is built on.
+    : verifyFailed || (infraClaim(verify) && verify.ran === true) ? 'failed'
+    : unverified ? 'not-run'
+    : 'passed'
+  const kind = typeof verify.kind === 'string' ? verify.kind.trim() : null
+  // A refactor's evidence IS the already-green suite, so this stays VERIFIED and is only marked weak.
+  // Degrading it to unverified is an explicit non-goal: it would make the one honest answer for a
+  // refactor the most expensive one to give.
+  const weakEvidence = status === 'passed' && kind === 'existing-suite'
+  // <<< typed: verification status
+  if (infraError) log(`step ${s.id} could not run its check for infrastructure reasons after ${attempts} attempt(s): ${verify.output_summary || verify.not_ran_reason || 'no summary given'}`)
+  else if (infraClaim(verify) && status === 'failed') log(`step ${s.id} claimed infra-error while saying the check ran, and named no evidence — reading it as a failure`)
+  if (weakEvidence) log(`step ${s.id} is verified only by a check that was already green (kind: existing-suite) — verified, but weak evidence, and the reviewer is told`)
   const blockingQuestions = (impl.needs_user_input || []).filter((q) => q && q.blocking)
   return {
     step: s.id, title: s.title, brief_path: brief.brief_path, impl,
-    failed: verifyFailed, stage: verifyFailed ? 'verify' : undefined,
-    unverified, unverified_reason: unverifiedReason,
+    failed: status === 'failed', stage: status === 'failed' ? 'verify' : undefined,
+    status, kind: kind || undefined, attempts,
+    verify_command: verifyCommand || undefined,
+    weak_evidence: weakEvidence || undefined,
+    infra_error: infraError || undefined,
+    // A COUNT, never a gate: `kind` fails open, so a pass that declared none is not weak evidence and
+    // this must not touch `failed`, `unverified` or the checkpoint priority block. It is the new
+    // field's calibration signal — without counting it there is no way to tell whether the prompt
+    // landed or the field is silently dead.
+    kind_missing: (status === 'passed' && !kind) || undefined,
+    // An infra-error step is honestly unverified — it just is not a defect. Its reason is a THIRD,
+    // distinct string, so the honest "no check was possible" and the unevidenced "claimed ran=true
+    // without naming the command" stay the two calibration signals the register reads them as.
+    //
+    // Derived from `status`, not from the pre-typed `unverified` local above: that local doesn't know
+    // about the unevidenced-infra-bluff path, where the typed layer degrades `status` to 'failed' but
+    // the untyped table still saw a bare `ran=true` and called it unverified too. A step is either
+    // failed or unverified, never both — `status` is the one field that already resolved that.
+    unverified: status === 'not-run' || infraError,
+    unverified_reason: infraError
+      ? `the check could not run (infrastructure): ${verify.output_summary || verify.not_ran_reason || 'no summary given'}`
+      : unverifiedReason,
     blocking_questions: blockingQuestions.length ? blockingQuestions : undefined,
   }
 }
@@ -558,6 +694,9 @@ const inheritedReports = completed
     notes_paths: c.notes_paths || (c.notes_path ? [c.notes_path] : []),
     unverified: c.unverified === true,
     unverified_reason: c.unverified === true ? (c.unverified_reason || 'inherited unverified from an earlier run') : null,
+    // Carried across the continuation boundary so a step that was only ever backed by an already-green
+    // check keeps that mark into the checkpoint that finally reviews it.
+    weak_evidence: c.weak_evidence === true || undefined,
     impl: {
       summary: 'implemented by an earlier run of this plan; carried into this run for review',
       changed_files: c.changed_files || (stepsById.get(c.id) || {}).files || [],
@@ -637,10 +776,19 @@ async function reviewCheckpoint(pending, checkpointNumber) {
   // The implementers' own doubt is the cheapest review lead available: it points at code the author
   // could not convince themselves about. Same for steps no executable check covered.
   const selfReported = leaves.flatMap((r) => ((r.impl.concerns || []).map((c) => `- ${r.step}: ${c}`)))
+  // A deviation is the plan the developer approved not being what landed. The implementer already
+  // judged it worth doing and said why; nobody else has looked at it yet, and the reviewer is the only
+  // one who sees it next to the code.
+  const deviations = leaves.flatMap((r) => ((r.impl.deviations || [])
+    .filter((d) => d && (d.what || d.why))
+    .map((d) => `- ${r.step}: ${d.what || 'unstated'} — ${d.why || 'no reason given'}`)))
   const unverifiedSteps = leaves.filter((r) => r.unverified)
+  const weakSteps = leaves.filter((r) => r.weak_evidence)
   const priority = [
     selfReported.length ? `The implementers flagged these as things they were unsure they got right — start here, then widen:\n${selfReported.join('\n')}` : '',
+    deviations.length ? `These steps did NOT implement the plan as written — the implementer deviated and gave a reason. The plan is what the developer approved, so judge each one on its merits AND on whether anything else in this change still assumes the original:\n${deviations.join('\n')}` : '',
     unverifiedSteps.length ? `These steps have NO substantiated executable check — either none ran, or the implementer claimed one without naming the command or its result. Nothing but this review stands between them and the developer: judge their behavior, do not assume it works:\n${unverifiedSteps.map((r) => `- ${r.step} (${r.unverified_reason || 'no reason given'}): ${(r.impl.changed_files || []).join(', ')}`).join('\n')}` : '',
+    weakSteps.length ? `These steps are verified only by a check that was ALREADY GREEN before them (kind: existing-suite). The command proves the step broke nothing and nothing more: if the step's goal was to ADD behavior, nothing here is evidence that it works — judge that behavior directly. A refactor is the case where an already-green check legitimately IS the evidence, so read the goal before you decide which one this is:\n${weakSteps.map((r) => `- ${r.step} (ran ${r.verify_command || 'no command reported'}): ${(r.impl.changed_files || []).join(', ')}`).join('\n')}` : '',
   ].filter(Boolean).join('\n\n')
   return metered('review', () => workflow(reviewLoopRef, {
     scope: `Files changed in implementation ${waveLabel}: ${changed.join(', ')}`,
@@ -748,6 +896,21 @@ function projectSchedule() {
     if (!(s.files || []).length) warnings.push(`${s.id} declares no files: it can never run in parallel, and rule matching has nothing to match`)
     if (!s.verify) warnings.push(`${s.id} has no verify command: it can only ever come back unverified`)
   }
+  // One command shared by several steps cannot be per-step evidence for each of them: whichever step
+  // runs first makes it green, and every later step's "verified" is then a suite that was already
+  // passing. Appended after the loops above so warnings[0] stays the chain warning.
+  const byVerifyCommand = new Map()
+  for (const s of todoSteps) {
+    const command = typeof s.verify === 'string' ? s.verify.trim() : ''
+    if (!command) continue
+    if (!byVerifyCommand.has(command)) byVerifyCommand.set(command, [])
+    byVerifyCommand.get(command).push(s.id)
+  }
+  for (const [command, ids] of byVerifyCommand) {
+    // A lone step sharing a command with nobody is the normal case, not a lint.
+    if (ids.length < 2) continue
+    warnings.push(`${ids.join(', ')} declare the same verify command ("${command}"): one shared check cannot be per-step evidence for each of them — a step whose goal adds behavior comes back weak_evidence, since that command already passed before it.`)
+  }
 
   return {
     waves: out,
@@ -755,7 +918,7 @@ function projectSchedule() {
     // A floor, and labelled as one: gates that find breaks, blocking questions and extra review
     // rounds all add agents, and nothing here removes any.
     agents_min: scouts + todoSteps.length + gates + checkpoints * 4 + 1,
-    agents_min_note: 'floor: scouts + one implementer per step + gates + ~4 per review checkpoint + the final consistency check. Gate breaks, blocking questions and extra review rounds only add.',
+    agents_min_note: 'floor: scouts + one implementer per step + gates + ~4 per review checkpoint + the final consistency check. Gate breaks, blocking questions, extra review rounds and the one cheap re-run an evidenced infra-error buys only add.',
   }
 }
 
@@ -936,9 +1099,11 @@ if (!stoppedEarly) {
 Plan: "${planPath}" (read it). Workspace: "${workspace}" — per-step briefs in briefs/, implementer notes in notes/.
 
 Step reports (compact; read the notes/ files where detail matters):
-${JSON.stringify(leafReports.map((r) => ({ step: r.step, title: r.title, failed: r.failed || false, skipped_for_budget: r.skipped_for_budget || false, summary: r.impl && r.impl.summary, changed_files: r.impl && r.impl.changed_files, deviations: r.impl && r.impl.deviations, concerns: r.impl && r.impl.concerns, verify_run: r.impl && r.impl.verify_run, unverified: r.unverified || false, unverified_reason: r.unverified_reason || undefined, review_clean: r.review && r.review.clean })), null, 2)}
+${JSON.stringify(leafReports.map((r) => ({ step: r.step, title: r.title, failed: r.failed || false, skipped_for_budget: r.skipped_for_budget || false, summary: r.impl && r.impl.summary, changed_files: r.impl && r.impl.changed_files, deviations: r.impl && r.impl.deviations, concerns: r.impl && r.impl.concerns, verify_run: r.impl && r.impl.verify_run, status: r.status, kind: r.kind, attempts: r.attempts, weak_evidence: r.weak_evidence || false, unverified: r.unverified || false, unverified_reason: r.unverified_reason || undefined, review_clean: r.review && r.review.clean })), null, 2)}
 
 Steps marked \`unverified\` have no substantiated executable check of their own — either none ran, or one was claimed without a command or a pass/fail result. Their behavior rests entirely on the suite you are about to run and on the checkpoint reviews — if the suite does not actually exercise them, say so in an issue rather than reporting a clean composition. Open \`concerns\` the reviews did not resolve are also yours to settle or escalate.
+
+Steps marked \`weak_evidence\` passed a check that was already green BEFORE them (\`kind: existing-suite\`), so their command proves they broke nothing and nothing more: where such a step's goal was to add behavior, the suite you run is the first thing that could exercise it — check that it does, and raise an issue if it does not. Steps with \`status: "infra-error"\` never had their check run at all (the toolchain, not the code, failed, and one re-run did not clear it); nothing has executed them, so whatever you can establish about them here is all the evidence that exists.
 
 Steps were implemented by separate agents, possibly in parallel. Check the SEAMS between them: do the pieces actually compose — imports/exports, function signatures vs call sites, naming consistency, duplicated helpers that should be one, config/registration each step assumed another would do, plan requirements (and spec acceptance criteria, if the plan references a spec) no step ended up covering. Per-step verify_run covered steps individually, not the composition: run the repo's build/typecheck/test suite if available and report it in suite_run.
 
@@ -953,7 +1118,12 @@ Return the structured report.`,
   finalCheck = {
     consistent: false,
     issues: [{ description: 'Implementation stopped before all dependency waves completed.', severity: 'high', fixed: false }],
-    suite_run: { ran: false, passed: false, output_summary: 'Skipped because implementation or review did not reach a clean checkpoint.' },
+    // NOT a result: nothing ran, and nothing here judged anything. The run stopped before the
+    // consistency check, which is the only agent in this workflow that executes a suite — so this
+    // field is a placeholder the script fabricated, and stating it as an outcome would contradict the
+    // real one. /dev-implement runs the repository's own documented check in its main loop before it
+    // reports a stopped run, and THAT result is the one to state.
+    suite_run: { ran: false, passed: false, output_summary: 'No suite was run and nothing here executed anything: the workflow stopped before the consistency check. This field is a placeholder with nothing behind it — /dev-implement runs the repository suite in the main loop and reports that result instead.' },
   }
   if (unreviewedWaves.length) {
     finalCheck.issues.push({ description: `Wave(s) ${unreviewedWaves.join(', ')} were implemented but never reached a review checkpoint.`, severity: 'high', fixed: false })
@@ -973,6 +1143,20 @@ needsInput.sort((a, b) => Number(b.blocking) - Number(a.blocking))
 const unverifiedSteps = leafReports
   .filter((r) => r.unverified)
   .map((r) => ({ step: r.step, reason: r.unverified_reason || null, changed_files: r.impl.changed_files || [] }))
+// Verified, and deliberately still verified — but only by a command that was already green before the
+// step ran. Reported separately so a developer can see the difference between "a test proves this" and
+// "nothing broke", which the boolean alone flattens.
+const weakEvidenceSteps = leafReports
+  .filter((r) => r.weak_evidence)
+  .map((r) => ({ step: r.step, command: r.verify_command || null, changed_files: (r.impl && r.impl.changed_files) || [] }))
+// Not defects: the check could not run for reasons unrelated to the code, and it was retried once.
+// They did not stop dependent waves, and they are unverified all the same.
+const infraErrors = leafReports
+  .filter((r) => r.infra_error)
+  .map((r) => ({ step: r.step, command: r.verify_command || null, reason: r.unverified_reason || null, attempts: r.attempts || 1 }))
+// The calibration signal for `kind`, which fails open: passes that declared none. Ids rather than a
+// count, so the report can name them; expected to trend to zero, and never a gate.
+const kindMissing = leafReports.filter((r) => r.kind_missing).map((r) => r.step)
 const openConcerns = leafReports.flatMap((r) => ((r.impl && r.impl.concerns) || []).map((c) => ({ step: r.step, concern: c })))
 
 // What a follow-up run needs in order to skip this one's work. Built here rather than left to the
@@ -991,6 +1175,7 @@ function continuationEntry(r) {
     brief_path: r.brief_path,
     unverified: Boolean(firstUnverified),
     unverified_reason: firstUnverified ? firstUnverified.unverified_reason || undefined : undefined,
+    weak_evidence: leaves.some((x) => x.weak_evidence === true),
     reviewed: reviewedStepIds.has(r.step),
   }
 }
@@ -1006,6 +1191,9 @@ return {
   contractGates: gateResults,
   unreviewedWaves,
   unverifiedSteps,
+  weakEvidenceSteps,
+  infraErrors,
+  kindMissing,
   concerns: openConcerns,
   finalCheck,
   stoppedEarly,
