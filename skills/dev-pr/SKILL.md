@@ -36,7 +36,9 @@ never going to happen. `--body-only` forces the sections-1-4 lane regardless of 
    ref (normally `origin/dev`).
 3. Offer to fetch the base branch before analysis. Record the exact merge-base and `HEAD` SHA; all
    claims and review findings refer to `comparison-ref...HEAD`, not branch tips independently.
-4. Inspect status, upstream, ahead/behind counts, commits, name-status, stat, and diff. A dirty tree
+4. Inspect status, upstream, ahead/behind counts, commits, name-status, stat, and diff. Keep the
+   name-status paths — that list **is** the `files` argument the review in section 3 passes, and the
+   repo-conventions lens cannot match a rule without concrete paths. A dirty tree
    may produce `--body-only` artifacts, but blocks push/PR publication because it is not represented
    by `HEAD`. Say exactly which changes are excluded.
 5. In the GitHub lane, detect an existing PR for the branch: existing PR → preview an edit, never
@@ -63,7 +65,7 @@ Run `wf-review-loop` with:
 
 ```
 Workflow({ name: "devkit:wf-review-loop", args: {
-  scope, intent, baseline: mergeBase, contextPaths,
+  scope, intent, baseline: mergeBase, contextPaths, rules, files,
   apply: false, maxRounds: 1,
   lenses: [
     { key: "runtime-contracts", focus: "logic/error-path bugs, broken invariants, callers/callees, registrations, migrations and regressions" },
@@ -71,6 +73,19 @@ Workflow({ name: "devkit:wf-review-loop", args: {
   ]
 } })
 ```
+
+`rules` is the repo's rule manifest, from `sh "${CLAUDE_PLUGIN_ROOT}/scripts/rules-manifest.sh"`
+(it outputs `[]` when the repo has none), passed **unmatched** — the workflow matches the globs
+itself, with the same code `/dev-implement` uses. `files` is the changed-file list from the section-1
+git map: `scope` is prose for the reviewers, and rule matching needs the concrete paths. Matching
+rules **append** a third `repo-conventions` reviewer to the two lenses above rather than replacing
+them, so the last gate before publication also reads the change against the repo's own checklists —
+one extra agent, and only when a rule actually matches the diff. `ruleLens: false` (or `rules: []`)
+opts out.
+
+**No `verifyCommand` belongs here.** `apply: false` means nothing was fixed, so there is nothing to
+check, and a read-only gate that runs a suite is no longer read-only. This review stays side-effect
+free by construction.
 
 If the workflow name does not resolve, use `${CLAUDE_PLUGIN_ROOT}/workflows/wf-review-loop.js` as `scriptPath`.
 This review never applies fixes. Save its evidence to `<workspace>/reviews/<head-short-sha>.md` with

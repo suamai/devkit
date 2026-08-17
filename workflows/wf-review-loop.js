@@ -6,11 +6,13 @@ export const meta = {
     { title: 'Review', detail: 'two complementary lenses over the change; later rounds re-review only what the fixes touched' },
     { title: 'Verify', detail: 'cluster and verify all findings in one batch; critical findings get one second opinion' },
     { title: 'Fix', detail: 'apply confirmed fixes; critical defects escalate one model tier' },
+    { title: 'Check', detail: "run the repo's own executable check on the fixed tree; a failed check buys one bounded repair attempt, itself re-reviewed" },
   ],
 }
 
 // args: { scope, intent?, baseline?, contextPaths?, priority?, rules?, priorRefuted?, apply?=true,
-//         maxRounds?=3, lenses?, fixModel?, files?, seedFindings?, profile?, models?, efforts?, dryRun? }
+//         maxRounds?=3, lenses?, ruleLens?=true, verifyCommand?, fixModel?, files?, seedFindings?,
+//         profile?, models?, efforts?, dryRun? }
 //   scope:        what to review — files/paths/diff description. Reviewers only look here.
 //   intent:       what the change was supposed to accomplish (plan step, spec criteria).
 //   baseline:     git SHA before the change — reviewers judge the DIFF since it, not whole files.
@@ -19,7 +21,8 @@ export const meta = {
 //                 A head start, never a scope restriction.
 //   rules:        [{path, globs}] from scripts/rules-manifest.sh — the repo's path-scoped rule
 //                 files. Matched here against `files`; the ones that apply add one extra
-//                 "repo-conventions" lens. Ignored when `lenses` is passed explicitly.
+//                 "repo-conventions" lens, APPENDED to whatever `lenses` resolves to.
+//   ruleLens:     false suppresses that appended lens even when rules match (so does `rules: []`).
 //   files:        the concrete paths under review. `scope` is prose for the reviewers; this is the
 //                 machine-readable list, and rule matching needs it.
 //   priorRefuted: findings dismissed by an earlier review of the same run, with their reasoning —
@@ -31,6 +34,24 @@ export const meta = {
 //                 report's reviewed_head; without that the findings describe code that no longer
 //                 exists. The post-fix re-review is unchanged, so `clean` still means a pass found
 //                 nothing.
+//   verifyCommand: the repo's own executable check (e.g. "sh tests/run-all.sh"). After a round
+//                 APPLIES fixes, one agent runs it and reports the result; this script has no shell,
+//                 so that claim is classified here exactly as wf-implement classifies an
+//                 implementer's `verify_run`. `false` opts out entirely; omitting it is the same
+//                 thing, said less explicitly.
+//
+// returns: { rounds, clean, confirmed, refuted, applied, skipped, fix_verify?, repairs?, cost }
+//   fix_verify:   the classified post-fix check — {ran, command, passed, output_summary,
+//                 not_ran_reason, failed, unverified, attempts, repaired?}. ABSENT when no fix round
+//                 ran (including the very common "round 1 found nothing" exit) and never present
+//                 under apply:false, where nothing was changed and there is nothing to check.
+//                 `clean: true` now requires either no fix round, a substantiated pass, or an honest
+//                 reason the check never ran — an unsubstantiated `ran: true` blocks it.
+//                 `repaired: true` means this round BROKE the check and then applied a repair, which
+//                 was re-reviewed like any other change — read `passed` for whether it worked. A
+//                 `clean: true` reached that way says so rather than hiding it.
+//   repairs:      one entry per accepted repair attempt {round, summary, changed_files} — absent
+//                 when no check ever failed.
 if (typeof args === 'string') { try { args = JSON.parse(args) } catch (e) { throw new Error('args arrived as a non-JSON string') } }
 
 // ---- Model/effort policy (roles, not phases — a policy passes intact into nested workflows).
@@ -77,6 +98,7 @@ const ROLE = policy({
   review: { model: 'sonnet' },
   verify: { model: 'sonnet' },
   fix: { model: 'sonnet' },
+  check: { model: 'sonnet' },
 })
 
 // >>> shared: per-phase cost — byte-identical across workflows (tests/policy.test.js)
@@ -109,6 +131,9 @@ const intent = args.intent || 'Not provided — judge the code on its own terms.
 const seedFindings = (args.seedFindings || []).filter((f) => f && (f.title || f.id))
 const apply = args.apply !== false
 const maxRounds = args.maxRounds || 3
+// The command one agent runs after a round applies fixes. `false` is an explicit opt-out and a blank
+// string is no command at all; both mean no check agent is ever spawned.
+const CHECK_COMMAND = typeof args.verifyCommand === 'string' ? args.verifyCommand.trim() : ''
 const contextPaths = args.contextPaths || []
 const CONTEXT_NOTE = contextPaths.length
   ? `\nBackground documents from earlier agents (read as needed; treat as hints and verify in code, not as ground truth):\n${contextPaths.map((p) => '- ' + p).join('\n')}\n`
@@ -214,15 +239,20 @@ function rulesFor(files) {
 
 // A third lens only when the repo itself says this area has specific concerns. One aggregated lens,
 // never one per rule — lens count is agent count. Capped, because a repo-wide rule (e.g. **/*.ts)
-// matches almost any change and would crowd out the specific ones. An explicit `lenses` argument
-// overrides everything, including this.
-const ruleLens = rulesFor((args.files || []).filter(Boolean)).slice(0, 4)
-const LENSES = args.lenses || [
+// matches almost any change and would crowd out the specific ones. It is APPENDED to whatever
+// `lenses` resolves to: a caller that passes custom lenses (/dev-pr --review passes two) is asking
+// for a different pair of general lenses, not for the repo's own checklists to be dropped. Opt out
+// with `ruleLens: false` (or by passing no `rules`).
+const ruleLensPaths = rulesFor((args.files || []).filter(Boolean)).slice(0, 4)
+const DEFAULT_LENSES = [
   { key: 'runtime-contracts', focus: 'logic and error-path bugs, broken invariants, concurrency, callers/callees, contracts, registrations, migrations and regressions' },
   { key: 'intent-verification', focus: 'intent and acceptance criteria, test coverage of behavior, missing requirements, scope creep and silent behavior changes' },
-  ...(ruleLens.length ? [{
+]
+const LENSES = [
+  ...(args.lenses || DEFAULT_LENSES),
+  ...(args.ruleLens !== false && ruleLensPaths.length ? [{
     key: 'repo-conventions',
-    focus: `compliance with this repository's own path-scoped rules for the area being changed. READ these rule files first — they are the repo's curated checklists and they name the canonical doc when you need detail:\n${ruleLens.map((p) => '- ' + p).join('\n')}\nReport violations as defects only where breaking the rule causes a real problem (wrong error surface, a contract other code relies on, a missing registration, a convention that later code will trip over). A cosmetic deviation from a rule is not a defect — say nothing rather than padding the round.`,
+    focus: `compliance with this repository's own path-scoped rules for the area being changed. READ these rule files first — they are the repo's curated checklists and they name the canonical doc when you need detail:\n${ruleLensPaths.map((p) => '- ' + p).join('\n')}\nReport violations as defects only where breaking the rule causes a real problem (wrong error surface, a contract other code relies on, a missing registration, a convention that later code will trip over). A cosmetic deviation from a rule is not a defect — say nothing rather than padding the round.`,
   }] : []),
 ]
 
@@ -288,6 +318,30 @@ const FIX_SCHEMA = {
   properties: {
     applied: { type: 'array', items: { type: 'object', required: ['id', 'title', 'file', 'what'], properties: { id: { type: 'string', description: "the originating finding's `id`, echoed VERBATIM — this is what the caller's gate matches on" }, title: { type: 'string' }, file: { type: 'string' }, what: { type: 'string' } } } },
     skipped: { type: 'array', items: { type: 'object', required: ['id', 'title', 'reason'], properties: { id: { type: 'string', description: "the originating finding's `id`, echoed VERBATIM — this is what the caller's gate matches on" }, title: { type: 'string' }, reason: { type: 'string' } } } },
+  },
+}
+
+// The post-fix check reports the same shape wf-implement asks an implementer for, because it is the
+// same claim and it is judged by the same truth table (classifyCheck below).
+const FIX_VERIFY_SCHEMA = {
+  type: 'object', required: ['ran'],
+  properties: {
+    ran: { type: 'boolean', description: 'false only if no executable check was possible. These fields travel together: ran=true without `command` and `passed` is treated exactly like ran=false, because a bare boolean is not evidence.' },
+    command: { type: 'string', description: 'REQUIRED when ran=true: the exact command you executed' },
+    passed: { type: 'boolean', description: 'REQUIRED when ran=true: whether that command actually succeeded' },
+    output_summary: { type: 'string', description: 'on failure: the failing target and the essential error line, plus whether it looks caused by the applied fixes or pre-existing. No logs.' },
+    not_ran_reason: { type: 'string', description: 'required when ran=false: why no executable check was possible. A round whose check never ran cannot be reported clean, so "no time" or "it looked correct" is not a reason.' },
+  },
+  description: 'result of ACTUALLY RUNNING the check — reading the code does not count',
+}
+
+const REPAIR_SCHEMA = {
+  type: 'object', required: ['repaired'],
+  properties: {
+    repaired: { type: 'boolean', description: 'true ONLY if you ran the command again yourself and it passed, without reverting a fix or weakening any check' },
+    summary: { type: 'string', description: 'what was actually wrong and what you changed' },
+    changed_files: { type: 'array', items: { type: 'string' }, description: 'every repository path you modified — the next review round reads exactly these' },
+    abandoned_because: { type: 'string', description: 'required when repaired=false: the conflict that made green impossible without abandoning a confirmed fix or weakening a check' },
   },
 }
 
@@ -385,6 +439,118 @@ For each canonical finding, apply the minimal correct fix, following the surroun
 Return the structured report. The next round explicitly re-reviews the result.`
 }
 
+// The round changed code. Reading it again is what the re-review does; this agent's whole job is to
+// RUN something and report what happened, because "every finding was applied" and "the tree still
+// works" are different claims and only one of them was ever checked.
+function checkPrompt(round, command, fix) {
+  return `You are running one executable check after review round ${round} applied fixes. You are not reviewing the code: you run a command and report what it did.
+
+## The command — run it from the repository root, exactly as written
+\`\`\`
+${command}
+\`\`\`
+
+## What the fixer just changed (context for the failure, not something to re-judge)
+${JSON.stringify((fix.applied || []).map((a) => ({ id: a.id, title: a.title, file: a.file, what: a.what })), null, 2)}
+
+## Rules
+- \`passed\` is the command's exit status and nothing else — never a judgement of whether the code looks right. A command that exits 0 passed even if you dislike what you saw; one that exits non-zero failed even if you believe the failure is unfair.
+- Do NOT modify any file: not the code, not a test, not a config, not a lockfile. A check that repairs what it found launders the exact failure this check exists to surface. Report it and stop.
+- If the command cannot run as written (missing tool, no such script, wrong working directory), you MAY instead run the repository's own documented build/test command from its README, CLAUDE.md or package manifest — and you MUST report THAT exact command in \`command\`. If you can run no check at all, return \`ran: false\` with a concrete reason naming what stopped you.
+- On failure, name the failing target in \`output_summary\` — the failing test/file/rule plus the essential error line — and say whether it looks caused by the applied fixes or pre-existing. Do not paste logs.
+
+Your final output is raw data for an orchestrator, not prose for a human.`
+}
+
+// The most dangerous prompt in this file. An agent told to make a red command green will revert the
+// fix, or delete the assertion that failed, unless it is forbidden BY NAME — and from the outside
+// that is indistinguishable from a repair. Declining is a first-class answer here for that reason,
+// and whatever it does touch joins the next re-review's scope.
+function repairPrompt(round, command, fix, fixVerify) {
+  return `Round ${round} of a code review applied fixes for independently confirmed defects, and then this command FAILED. Make the command pass WITHOUT abandoning those fixes. You get one attempt.
+
+## The command that must pass
+\`\`\`
+${command}
+\`\`\`
+
+## How it failed
+${fixVerify.output_summary || 'No summary was reported — run the command yourself and read the failure.'}
+
+## The fixes that must survive
+${JSON.stringify((fix.applied || []).map((a) => ({ id: a.id, title: a.title, file: a.file, what: a.what })), null, 2)}
+
+## Hard constraints — a repair that breaks one of these is worse than no repair
+- Do NOT revert, neuter or partially undo any fix listed above. Those are confirmed defects; putting a bug back to get a green command is not a repair, it is a regression with a passing suite.
+- Do NOT delete, skip, comment out, mark as expected-to-fail, or weaken any test, assertion, expectation, type or lint rule so the command goes green. Loosening what detects the problem is not fixing the problem.
+- Do NOT loosen the command itself, its configuration, or any threshold it enforces.
+- No unrelated cleanup. Change the least code that makes the command pass.
+
+Run the command first and read the actual failure. Usually a fix was incomplete rather than wrong: a caller it did not update, a test that encodes the behavior the fix deliberately changed (correct it to the new behavior — do not delete it), a type or signature that needs updating at its definition.
+
+If the only route to green is to abandon a confirmed fix or weaken a check, STOP: change nothing, return \`repaired: false\`, and say exactly what the conflict is in \`abandoned_because\`. That is a correct and expected answer — the loop then reports the failure instead of hiding it, which is the entire point of running the check.
+
+List every file you touched in \`changed_files\`: the next review round reads them, so a repair is reviewed like any other change. Your final output is raw data for an orchestrator.`
+}
+
+// The check agent's reply is a CLAIM. The five statements below are a byte-identical copy of the
+// truth table wf-implement.js applies to a step's `verify_run` — same identifiers, same reason
+// strings — which is why this takes an impl-shaped wrapper instead of the reply directly.
+// tests/verify-gate.test.js runs both copies through the same nine rows and fails if they drift.
+function classifyCheck(impl, attempt = 1) {
+  const verify = impl.verify_run || {}
+  const verifyCommand = typeof verify.command === 'string' ? verify.command.trim() : ''
+  const verifyFailed = verify.ran === true && verify.passed === false
+  const unverified = !verifyFailed && !(verify.ran === true && verifyCommand && verify.passed === true)
+  const unverifiedReason = !unverified ? null
+    : verify.ran !== true ? (verify.not_ran_reason || 'no reason given')
+    : !verifyCommand ? 'claimed ran=true without naming the command it ran'
+    : 'claimed ran=true without reporting whether the check passed'
+  return {
+    ran: verify.ran === true,
+    command: verifyCommand || undefined,
+    passed: typeof verify.passed === 'boolean' ? verify.passed : undefined,
+    output_summary: verify.output_summary || undefined,
+    // The derived reason lands here: there is no sibling `unverified_reason` field in this shape, and
+    // the gate below needs the honest "it never ran" admission to be readable by a caller.
+    not_ran_reason: unverifiedReason || undefined,
+    failed: verifyFailed,
+    unverified,
+    attempts: attempt,
+  }
+}
+
+// What may unlock `clean` after a round applied fixes: no fix round at all, a substantiated pass, or
+// an admission that nothing ran. A CLAIM to have run that named no command or no result is worth
+// exactly as much as no check, minus the honesty — so it blocks.
+function clearsClean(fv) {
+  if (!fv) return true
+  if (fv.ran === true) return fv.unverified !== true && fv.passed === true
+  return Boolean(fv.not_ran_reason)
+}
+
+// Skipping spawns NOTHING: a caller with no command must not pay for an agent that can only report
+// that it had nothing to run. `command` defaults to CHECK_COMMAND but the post-repair retry overrides
+// it with whatever the first check actually substituted (checkPrompt lets an agent run the repo's own
+// documented command when CHECK_COMMAND "cannot run as written") — the repair was validated against
+// that substituted command, so the recheck must re-run the same one, not silently fall back to the
+// original.
+async function runFixCheck(round, fix, attempt = 1, command = CHECK_COMMAND) {
+  const skip = args.verifyCommand === false ? 'the caller opted out of the post-fix check (verifyCommand: false)'
+    : !command ? 'no verifyCommand was passed, so this run has no executable check to run'
+    : !fix ? 'the fixer did not report, so there is nothing to check'
+    : !(fix.applied || []).length ? 'the fixer applied nothing, so the tree is unchanged'
+    : budget.total && budget.remaining() < 20000 ? 'token budget floor reached before the check could run'
+    : null
+  if (skip) return classifyCheck({ verify_run: { ran: false, not_ran_reason: skip } }, attempt)
+  const reply = await metered('check', () => agent(checkPrompt(round, command, fix), {
+    label: attempt === 1 ? `check r${round}` : `check r${round} (retry)`,
+    phase: 'Check', ...ROLE.check, schema: FIX_VERIFY_SCHEMA,
+  }))
+  if (!reply) return classifyCheck({ verify_run: { ran: false, not_ran_reason: 'the check agent was unavailable' } }, attempt)
+  return classifyCheck({ verify_run: reply }, attempt)
+}
+
 const allConfirmed = []
 const allRefuted = []
 const allApplied = []
@@ -392,6 +558,8 @@ const allSkipped = []
 let round = 0
 let clean = false
 let lastRound = null // previous round's confirmed findings + fixer report, for the targeted re-review
+let fixVerify = null // the last fix round's classified check — null until a round applies fixes
+const repairs = []
 
 while (round < maxRounds) {
   if (budget.total && budget.remaining() < 30000) { log(`token budget floor reached after ${round} round(s) — stopping`); break }
@@ -464,6 +632,64 @@ while (round < maxRounds) {
     allSkipped.push(...fix.skipped)
   }
   lastRound = { confirmed, applied: (fix && fix.applied) || [], skipped: (fix && fix.skipped) || [] }
+
+  // The fixes changed code, so the only honest way to know the tree still works is to run something.
+  // This script has no shell: it hands the command to one agent and gates that agent's claim exactly
+  // as wf-implement gates an implementer's.
+  fixVerify = await runFixCheck(round, fix)
+  log(`round ${round}: check ${fixVerify.ran
+    ? `ran (${fixVerify.command || 'command not reported'}) — ${fixVerify.passed === true ? 'passed' : fixVerify.passed === false ? 'FAILED' : 'no result reported'}`
+    : `did not run — ${fixVerify.not_ran_reason}`}`)
+
+  // A command that ran and failed is the one review outcome this round can still act on, so it buys
+  // exactly one repair attempt. A degraded `ran: true` claim buys none — there is no reported failure
+  // to repair, only an unsubstantiated claim, and the gate below already refuses it.
+  if (fixVerify.failed === true && !(budget.total && budget.remaining() < 20000)) {
+    const repair = await metered('fix', () => agent(repairPrompt(round, fixVerify.command || CHECK_COMMAND, fix, fixVerify), {
+      label: `repair r${round}`, phase: 'Check', ...ROLE.fix, schema: REPAIR_SCHEMA,
+    }))
+    const repaired = repair && repair.repaired ? (repair.changed_files || []).filter(Boolean) : []
+    if (repair && repair.repaired && repaired.length) {
+      repairs.push({ round, summary: repair.summary, changed_files: repaired })
+      // Load-bearing, not bookkeeping: the targeted re-review reads `applied`, so without this append
+      // the repair would be the only code in the run that nobody reviewed — trading one hole for
+      // another. It goes into lastRound only; the returned `applied` stays the fixer's own report.
+      lastRound.applied = [...lastRound.applied, ...repaired.map((f) => ({
+        id: `repair-r${round}`, title: 'repair of the post-fix check', file: f,
+        what: repair.summary || 'changed to make the post-fix check pass',
+      }))]
+      // Re-verify the exact command the repair was told to satisfy, not a fresh rediscovery of it —
+      // see runFixCheck's `command` param.
+      const recheck = await runFixCheck(round, fix, 2, fixVerify.command || CHECK_COMMAND)
+      // A recheck that could not RUN is not permission to forget that the command failed. "No check
+      // ran, because X" clears `clean` on its own — so letting a skipped recheck replace a red verdict
+      // would launder the failure through the budget floor or an unavailable agent. Only a check that
+      // actually ran can overturn one.
+      fixVerify = recheck.ran === true ? recheck : {
+        ...fixVerify,
+        attempts: recheck.attempts,
+        output_summary: `${fixVerify.output_summary || 'the check failed'} | a repair was applied but the recheck never ran: ${recheck.not_ran_reason}`,
+      }
+      fixVerify.repaired = true
+      log(`round ${round}: repaired ${repaired.length} file(s) after the failed check — recheck ${fixVerify.passed === true ? 'passed' : 'still not green'}`)
+    } else if (repair && repair.repaired) {
+      // Claimed repaired:true but named no file it touched: unreviewable, since the next round's
+      // targeted re-review reads exactly `applied`/`repairs`. Whatever it actually edited would land
+      // outside anyone's scope, so this is treated as untrustworthy rather than accepted — the
+      // original failure stands and the gate below breaks the round on it.
+      log(`round ${round}: the repair agent claimed repaired=true but named no changed_files — not accepted`)
+    } else {
+      log(`round ${round}: the check failed and was not repaired — ${(repair && repair.abandoned_because) || 'the repair agent was unavailable'}`)
+    }
+  }
+
+  // A repair that worked leaves passed:true here, so the round proceeds to its re-review; one that
+  // did not breaks out with the failure intact, saving a re-review whose empty result could only
+  // mislead.
+  if (fixVerify.ran === true && !clearsClean(fixVerify)) {
+    log(`round ${round}: the post-fix check did not clear (${fixVerify.not_ran_reason || 'it failed'}) — cannot declare clean`)
+    break
+  }
   if (!fix || fix.skipped.length) {
     log(`round ${round}: ${fix ? fix.skipped.length : confirmed.length} fixes unresolved — cannot declare clean`)
     break
@@ -471,12 +697,20 @@ while (round < maxRounds) {
   // Never suppress across rounds: the next pass must report the same defect if the fix failed.
 }
 
+// The check's verdict cannot be applied where it is produced: both `clean = true` sites above fire in
+// a round that ran no fixer at all, so it persists in `fixVerify` and is applied once, here.
+const checkClears = clearsClean(fixVerify)
+if (clean && !checkClears) {
+  log(`a pass found no defects, but the post-fix check did not clear (${fixVerify.not_ran_reason || 'it failed'}) — reporting clean: false`)
+}
 return {
   rounds: round,
-  clean, // true only after an explicit pass with no confirmed defects
+  clean: clean && checkClears, // an explicit pass with no confirmed defects AND a check that cleared
   confirmed: allConfirmed,
   refuted: allRefuted,
   applied: allApplied,
   skipped: allSkipped,
+  fix_verify: fixVerify || undefined, // absent when no round ever applied fixes
+  repairs: repairs.length ? repairs : undefined,
   cost: costReport(),
 }

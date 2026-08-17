@@ -9,6 +9,50 @@ different artifact, a new gate — and never on prose that restates behavior alr
 `.claude-plugin/plugin.json` and `.claude-plugin/marketplace.json` state it (the latter twice);
 `tests/contract-drift.test.js` fails if they disagree, or if the shipped version has no entry here.
 
+## 0.3.0 — 2026-08-17
+
+### Added
+- **`verifyCommand` on `wf-review-loop`, and a `Check` phase that uses it.** After a round *applies*
+  fixes, one agent runs the repo's own executable check and reports what happened; the script has no
+  shell, so that claim is classified by the same truth table `wf-implement` applies to an
+  implementer's `verify_run` — byte-identical code, asserted as such by `tests/verify-gate.test.js`.
+  The result travels back as `fix_verify` (`ran`, `command`, `passed`, `output_summary`,
+  `not_ran_reason`, `failed`, `unverified`, `attempts`, `repaired?`) and the phase shows up in
+  `cost.by_phase` as `check`. Passing nothing, or `verifyCommand: false`, spawns no agent at all:
+  a caller with no command must not pay for one that can only report having nothing to run.
+- **One bounded repair attempt per round when the check fails.** `check → repair → re-check`, once,
+  never a second round of finding. The repair may not revert a confirmed fix or weaken a test to reach
+  green, and its files are appended to what the next re-review reads, so a repair is reviewed like any
+  other change rather than trusted. Accepted attempts are returned in `repairs`
+  (`{round, summary, changed_files}`); `fix_verify.attempts` counts the checks and
+  `fix_verify.repaired` marks a round that broke its own check and then patched it.
+- **`ruleLens`.** `false` suppresses the `repo-conventions` reviewer even when a rule matches, for a
+  caller that wants exactly the lenses it named.
+- **Two drift gates.** A code block that hands `wf-review-loop` custom `lenses` must also pass `rules`
+  and `files` (with a fail-closed companion, so it cannot pass by finding no such block), and
+  `skills/dev-review/SKILL.md` must document the knobs it tells Claude to pass.
+
+### Changed
+- **The `repo-conventions` rule lens is appended to whatever `lenses` resolves to** instead of being
+  one entry in the default array. A caller passing custom lenses is asking for a different pair of
+  general lenses, not for the repo's own checklists to be dropped — and `/dev-pr --review`, which
+  passes two custom lenses at the last gate before publication, had been silently losing that
+  reviewer. It now also passes `rules` and `files`, without which there is nothing to match.
+- **A review checkpoint inside `/dev-implement` hands the covered steps' own `verify` commands down**
+  as the loop's `verifyCommand` — deduplicated, joined with `&&` — so a checkpoint's fixes are
+  executed and not merely re-read. A check that **did not clear** now blocks the run: "every finding was
+  applied" and "the tree still builds" are different claims, and only the second one was missing. The
+  gate mirrors the loop's own (`ran === true` without a substantiated pass), so a claim to have run that
+  substantiates nothing blocks too — it proved nothing *and* cost the round its re-review. Not running
+  at all (`verifyCommand: false`, no command, budget floor) stays an honest opt-out and does not block.
+- **`clean: true` requires more than a quiet re-review.** When a round applied fixes it also needs a
+  post-fix check that passed, or an honest statement that none ran. A claim to have run one that names
+  no command or no result blocks `clean`, exactly as a bare `verify_run` degrades a step to
+  `unverified`.
+- **`models`/`efforts` reach one more agent.** The review loop's check runs as the existing `check`
+  role, so `models: { check: … }` and `profile` now retier it too — consistent with the documented
+  semantics, and worth knowing before a `cheap` run puts haiku on the gate.
+
 ## 0.2.0 — 2026-08-17
 
 ### Added

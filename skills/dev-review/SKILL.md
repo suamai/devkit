@@ -30,13 +30,16 @@ one, which silently drops a defect.
      baseline: <the report's merge-base>,
      seedFindings: <the report's confirmed array, verbatim>,
      priorRefuted: <the report's refuted array>,
-     apply: true, maxRounds: 2
+     apply: true, maxRounds: 2, verifyCommand: <the repo's own check, or false>
    } })
    ```
    `seedFindings` makes round 1 skip finding and verifying and go straight to the fixer; the explicit
    post-fix re-review is unchanged, so `clean: true` still means a pass that found nothing.
    `priorRefuted` stops that re-review re-litigating what the report already dismissed. `intent`:
-   what the branch was supposed to do, from the PR body or the plan.
+   what the branch was supposed to do, from the PR body or the plan. `verifyCommand` (step 3 below
+   says what to pass, and when to pass `false`) matters most on this path: this is the run that edits
+   code minutes before a fresh `/dev-pr --review` looks at it, so it is the worst place to learn later
+   that the fixes stopped the suite.
 
 4. **Report and re-gate.** Say which findings were fixed, which were skipped and why, and the
    clean/not-clean verdict. Then require a fresh `/dev-pr --review`: the old report stays as
@@ -59,18 +62,32 @@ There is no dedicated remediation machinery to reach for; that is deliberate.
 
 3. **Run it.**
    ```
-   Workflow({ name: "devkit:wf-review-loop", args: { scope, intent, files, baseline?, contextPaths?, rules?, apply, maxRounds, profile?, models?, efforts? } })
+   Workflow({ name: "devkit:wf-review-loop", args: { scope, intent, files, baseline?, contextPaths?, rules?, verifyCommand?, apply, maxRounds, profile?, models?, efforts? } })
    ```
 
    `rules`: the repo's rule manifest, from `sh "${CLAUDE_PLUGIN_ROOT}/scripts/rules-manifest.sh"`
    (outputs `[]` when the repo has none). Pass it **unmatched**, together with `files` — the concrete
    paths under review — and the workflow matches globs against files with the same code
    `wf-implement` uses. Do not pre-filter it yourself: eyeballing globs in the main loop is the same
-   job done a second time, less reliably. Matching rules add a third `repo-conventions` lens grounded
-   in this repo's own checklists instead of generic judgement, at one extra agent per round — worth
-   it for domain code (data layer, auth, error surfaces), skip it (`rules: []`) for a purely
-   mechanical change.
-   `maxRounds` default 3. Custom `lenses` when the developer asks for a specific focus (e.g. security-only). If the workflow name does not resolve (the plugin has not loaded in this session yet), invoke with `scriptPath` pointing at `${CLAUDE_PLUGIN_ROOT}/workflows/wf-review-loop.js`.
+   job done a second time, less reliably. Matching rules **append** a third `repo-conventions` lens
+   grounded in this repo's own checklists instead of generic judgement, at one extra agent per round —
+   worth it for domain code (data layer, auth, error surfaces). It is appended to whatever `lenses`
+   resolves to, so a custom focus does not silently drop it; `ruleLens: false` drops it deliberately,
+   and `rules: []` opts out by giving it nothing to match — the right call for a purely mechanical
+   change.
+
+   `verifyCommand`: the repo's own executable check — in this repository, `sh tests/run-all.sh`. After
+   a round applies fixes, one agent runs it and reports what happened, and the loop classifies that
+   claim exactly as `/dev-implement` classifies an implementer's, so `clean: true` then requires either
+   a substantiated pass or an honest statement that the check never ran. Pass what the repo itself
+   documents (`CLAUDE.md`, the README, the runner it ships) — do not invent one, and do not assemble a
+   plausible-looking command out of `package.json`. `verifyCommand: false` opts out: the right answer
+   for a suite too expensive to run once per round, and for a repo whose suite is already red, where
+   every round would otherwise report a failure the fixes did not cause — the same call when the
+   developer says something like "skip the suite" or "don't run it each round." Omitting it is the same
+   opt-out said less explicitly — honest rather than silent, because the result then says no check ran
+   and why.
+   `maxRounds` default 3. Custom `lenses` when the developer asks for a specific focus (e.g. security-only) — they replace the two general lenses, never the appended `repo-conventions` one. If the workflow name does not resolve (the plugin has not loaded in this session yet), invoke with `scriptPath` pointing at `${CLAUDE_PLUGIN_ROOT}/workflows/wf-review-loop.js`.
 
    Round 1 is the wide two-lens sweep; rounds 2+ are one targeted agent that only asks whether the
    fixes held and whether they broke anything. So a higher `maxRounds` is much cheaper than it looks —
@@ -78,11 +95,25 @@ There is no dedicated remediation machinery to reach for; that is deliberate.
 
 4. **Report.** Lead with the outcome: clean or not, in how many rounds. Then canonical confirmed findings (including merged reviewer titles), fixes applied, fixes skipped and why, and whether the loop ended `clean: true` (an explicit post-fix pass found nothing) or hit `maxRounds` (fixes applied but final state not re-verified; offer one more round).
 
+   Report `fix_verify` in one line as well: whether a check ran, which command it ran, and whether it
+   passed — or, when it did not run, the reason the result gives. No `fix_verify` at all means no round
+   ever applied a fix, so there was nothing to check; that is not a check that passed, and saying which
+   one it was costs one clause. If `fix_verify.repaired` is set **or `repairs` is non-empty** — the field
+   reflects only the last round, so a run that broke its check in round 1 and applied further fixes in
+   round 2 carries the evidence in `repairs` alone — the round's own fixes broke the check
+   and the loop spent one bounded repair attempt on it, whose changes joined what the next re-review
+   reads — read `passed` for whether the attempt reached green, and `repairs` for what it touched. Say so
+   at report time: a `clean: true` reached that way is still a run that broke the tree once, and the
+   developer should not have to find that in the diff.
+
 ## Notes
 
 - One verifier clusters and checks all findings against evidence, reachability and prior handling. Critical findings alone receive a second independent opinion.
-- Skipped fixes and budget exits always leave `clean: false`; findings are never suppressed between rounds.
-- The result carries `cost`: `by_phase` (review / verify / fix) and `total`. Report it — a review
+- Skipped fixes and budget exits always leave `clean: false`; findings are never suppressed between
+  rounds. A post-fix check that failed does the same, and so does one that claimed to have run without
+  naming its command or its result — an unsubstantiated claim is worth what no check is worth, minus
+  the honesty.
+- The result carries `cost`: `by_phase` (review / verify / fix / check) and `total`. Report it — a review
   loop is the pipeline's most repeatable spend, so its per-phase split is the most useful number the
   developer gets. `floors_active: false` means the budget guards were inert (no target in the
   developer's message); mention it rather than implying the run was bounded.

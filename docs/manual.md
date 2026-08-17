@@ -138,7 +138,17 @@ then audits the seams across all of it and runs the test suite.
 
 Standalone entry to the same review machinery, for changes made with or without the pipeline.
 Default applies confirmed fixes and re-reviews until clean; `--no-apply` reports only. Ask for a
-focus ("security only") to swap the lenses.
+focus ("security only") to swap the **two default lenses** — the repo-conventions lens is appended to
+whatever you ask for rather than replaced by it, so a focused review still reads the change against
+the repo's own rules.
+
+A review that applies fixes now also runs your repo's own check on the result — the command your
+README or `CLAUDE.md` documents, `sh tests/run-all.sh` in devkit's own case — and will not report clean
+over a failing one: it reports the failure instead, after spending one bounded attempt at repairing it,
+and whatever that attempt changed is added to what the next re-review reads rather than trusted. A
+check that only *claimed* to have run, without naming its command or its result, counts as no check at
+all and leaves the review not clean. Tell Claude to skip it ("don't run the suite each round") when the
+suite is expensive or already red.
 
 ### 4. Prepare and publish — `/dev-pr --review --draft`
 
@@ -146,8 +156,10 @@ focus ("security only") to swap the lenses.
 baseline/commits/file overlap, and writes a concise `pr.md`. It shows the title/body before doing
 anything external. A dirty tree may produce the draft but blocks publication.
 
-`--review` adds a report-only review: two complementary reviewers plus batched verification, with no
-implicit code edits. The report is saved as `reviews/<reviewed-head>.md`:
+`--review` adds a report-only review: two complementary reviewers — plus a third, repo-conventions
+reviewer whenever one of the repo's own path-scoped rules matches the diff — and batched verification,
+with no implicit code edits. Nothing is fixed here, so nothing is executed either: the check above
+belongs to the modes that change code. The report is saved as `reviews/<reviewed-head>.md`:
 
 - high/critical confirmed finding: PR publication is blocked;
 - low/medium only: publication needs one extra explicit confirmation;
@@ -319,7 +331,8 @@ money go" is answered by the run, not by arithmetic on notifications.
 
 PR drafting without `--review` uses no review agents. `/dev-review --from-report` skips the find and
 verify phases entirely — those were already paid for when the report was written — so it costs one
-fixer plus one re-review.
+fixer, one re-review, and the post-fix check when the repo has a command worth running (plus, only if
+that check fails, one repair and one re-check).
 
 ## Installing, updating, and versions
 

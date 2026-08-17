@@ -47,7 +47,7 @@ Work through these, reporting each as ok / fixed / skipped-with-reason.
    /dev-debug (repro first, then hypotheses). Trivial/small changes don't need the pipeline
    (the /dev-plan triage decides).
    Cost profile: default.
-   Configured against devkit 0.2.0.
+   Configured against devkit 0.3.0.
    ```
    Ask which cost profile this repo wants (`cheap` | `default` | `max` — the manual's Cost control
    explains the ladder); a side project and a production repo do not deserve the same budget.

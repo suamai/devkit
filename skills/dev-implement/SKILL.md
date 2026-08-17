@@ -65,6 +65,14 @@ You orchestrate the implementation phase of a planned dev task. The heavy liftin
    `context_confidence` decides, heuristic as fallback), `maxParallelSteps` (default 5), `gate: false`,
    `checkpointFileThreshold` (default 20), `checkpointMaxWaves` (default 3); `profile`/`models`/`efforts` (see Cost below — `impl` runs once per step and is the pipeline's largest single cost).
 
+   A review checkpoint applies fixes, so it also hands the review loop the `verify` commands of the
+   steps it covers — deduplicated, joined with `&&` — as that loop's `verifyCommand`. The fixes a
+   checkpoint applies are therefore **executed**, not merely re-read: the loop cannot report clean over
+   a tree whose own steps' checks stopped passing, and a failure blocks the run (step 6). Steps that
+   declare no `verify` hand down nothing to run, which is one more reason step 4's lint matters. Nobody
+   passes this arg: it comes from the plan, and `dryRun: true` shows the exact command each projected
+   checkpoint would use.
+
    Waves stay sequential (that's `depends_on`), but review is **not** per wave: waves accumulate into
    a review checkpoint, and each wave in between gets one cheap contract gate. To restore per-wave
    review — the developer asks for it, or the work is unusually contract-heavy — pass
@@ -102,6 +110,15 @@ You orchestrate the implementation phase of a planned dev task. The heavy liftin
      back as `continuation.completed` entries with `reviewed: false` and are folded into the next
      checkpoint. Only if the developer abandons the flow do you review them separately with
      `wf-review-loop` scoped to their files.
+   - `checkpointReviews[].review.fix_verify` → that checkpoint's post-fix check: the command it ran,
+     whether it passed, or the honest reason it did not run. A check that **ran and did not clear** is a
+     **different** stop cause from an unaddressed finding, and worth reporting as such: every finding may
+     have been fixed and the tree still stopped working under those fixes, so the run blocked there.
+     Two shapes reach that: `failed: true` (the command came back red) and a claim to have run that
+     substantiated no pass (`unverified`) — report which, because the second proved nothing *and* cost
+     the round its re-review, so nothing judged that tree. `ran: false` with a reason is the opt-out and
+     does not block. Absent means the checkpoint's review never applied a fix, so there was nothing to
+     check — not that a check passed.
    - `contractGates[].breaks` → gates that fired. High/critical ones already forced a checkpoint;
      low/medium ones were informational and the checkpoint review should have covered them — if one
      survived into `finalCheck.issues`, mention it, it means the gate is more accurate than the review.
@@ -110,7 +127,10 @@ You orchestrate the implementation phase of a planned dev task. The heavy liftin
 7. **Verify end-to-end.** Per-step `verify_run` and `suite_run` already executed checks; re-run
    anything that failed after your fixes, and exercise the changed flow if the project has a runtime
    surface (the built-in `/run` skill launches it). Give `unverifiedSteps` an actual check here — they
-   are the only steps whose behavior nothing has executed.
+   are the only steps whose behavior nothing has executed. A checkpoint's `fix_verify` narrows this but
+   does not replace it: it ran the commands of the steps that checkpoint reviewed, on the tree as it
+   stood then — never the composition, and never the waves a later checkpoint covered. The whole change
+   is still `suite_run`'s job, and yours here when the run stopped before reaching it.
 
 8. **Phase commit.** `impl(<slug>): <plan title>`, with the standard co-author trailer; using this
    skill opts into phase commits unless the developer said otherwise. Then set `stage: "implemented"`

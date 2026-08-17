@@ -96,7 +96,9 @@ that a rule now has to survive review by someone who can say no.
           Scout (sonnet)   → adaptive only for ambiguous/oversized steps; may split recursively
           Implement (opus) → RUNS each step's verify command, writes notes/<id>.md
           BARRIER          → all implementations finish before review/fixes mutate files
-          wf-review-loop      → one consolidated review over the wave's changed files
+          wf-review-loop      → one consolidated review over the wave's changed files, handed the
+                                covered steps' own verify commands (deduped, joined with &&) to run
+                                after its fixes; a failed check blocks the run
         Check (opus)  → the SEAMS between steps; runs the suite
    └─ interrupt: needs_user_input → dev; skill verifies end-to-end and reports
    └─ a run that stopped early continues via `completed` (same steps; done ids stop being deps)
@@ -112,10 +114,15 @@ that a rule now has to survive review by someone who can say no.
 /dev-review [files]      — standalone entry to the same wf-review-loop
    └─ wf-review-loop.js
         while not clean and rounds < max:
-          Review (sonnet ×2: runtime/contracts + intent/verification)
+          Review (sonnet ×2: runtime/contracts + intent/verification; +repo-conventions when a
+                  path-scoped rule matches the files — APPENDED to custom lenses, not replaced by them)
           → one verifier semantically clusters and checks all findings in a batch
           → critical clusters alone get one second opinion
-          → Fix confirmed (fix tier; critical escalates one rung) → explicit post-fix re-review
+          → Fix confirmed (fix tier; critical escalates one rung)
+          → Check (sonnet): verifyCommand → classified fix_verify, gating clean the way a step's
+            verify_run gates a step; a failed check buys one repair + one re-check, and whatever the
+            repair touched joins the re-review's scope
+          → explicit post-fix re-review
 
 /dev-pr [base] [--review] [--draft] [--body-only]
    ├─ deterministic git map: merge-base, commits, diff, upstream, dirty-tree gate
@@ -146,7 +153,12 @@ or a repo, shifts them.
   count is a soft guide; cohesive vertical slices avoid multiplying fixed per-step agent cost.
 - Steps own disjoint `files` sets to parallelize; prefix overlap, globs and undeclared files run serial.
 - Reviews and fixes happen only after a dependency-wave barrier.
-- `clean: true` requires an explicit pass with no confirmed findings; skipped fixes and budget exits leave it false.
+- `clean: true` requires an explicit pass with no confirmed findings; skipped fixes and budget exits
+  leave it false. When a round applied fixes it also requires a post-fix check that passed, or an
+  honest statement that none ran — a bare claim to have run one blocks `clean` exactly as a bare
+  `verify_run` degrades a step to `unverified`. The one repair attempt a failed check buys may never
+  revert a confirmed fix or weaken a test, an assertion or a type to reach green; its files join the
+  next re-review's scope, so the repair is itself reviewed rather than trusted.
 - PR review artifacts are SHA-bound evidence. High/critical findings block publication; low/medium
   require an extra confirmation. Review mode never fixes code implicitly.
 - All workflows accept `{ dryRun: true }` (zero-cost smoke test) and normalize `args` from JSON
@@ -280,7 +292,9 @@ copies of them.
 | File | Covers |
 |---|---|
 | `tests/schedule.test.js` | the whole scheduler, via the `dryRun` projection (real entry point) |
-| `tests/verify-gate.test.js` | the verified/unverified/failed truth table |
+| `tests/verify-gate.test.js` | the verified/unverified/failed truth table — in both places it exists (a step's `verify_run` and the review loop's post-fix check), plus that the two copies are byte-identical |
+| `tests/fix-verify.test.js` | the post-fix check: skip reasons that spawn no agent, the classified `fix_verify`, the bounded repair attempt, and that a repair's files reach the next re-review |
+| `tests/lens-composition.test.js` | which reviewers a run gets: the two defaults, custom `lenses`, the appended rule lens, `ruleLens: false` and the four-rule cap |
 | `tests/continuation.test.js` | dependency surgery when a stopped run continues |
 | `tests/policy.test.js` | model/effort resolution, plus `policy()`/`metered()` drift across the scripts |
 | `tests/rules.test.js` | `paths:` frontmatter parsing, glob matching, matcher drift |
@@ -468,12 +482,13 @@ a correction rather than the correction itself — was answered from real use, n
   changed flow end-to-end, not just tests.
 - **A diff touching security-relevant surface → the built-in `/security-review`.** Neither default
   lens is a security lens: `runtime-contracts` and `intent-verification`
-  (`workflows/wf-review-loop.js`, `const LENSES`) look for logic bugs and intent gaps, and neither
-  mentions authz, injection, secrets or dependency changes. So a clean `/dev-review` is evidence
-  about correctness and intent, not about safety — run `/security-review` as well when the change
-  touches auth, HTTP handlers, SQL, CI files or lockfiles. A path-conditioned security lens inside
-  the loop is the other half of this and is not built; it needs the additive-lens mechanism the
-  `repo-conventions` lens already demonstrates.
+  (`workflows/wf-review-loop.js`, `const DEFAULT_LENSES`) look for logic bugs and intent gaps, and
+  neither mentions authz, injection, secrets or dependency changes. So a clean `/dev-review` is
+  evidence about correctness and intent, not about safety — run `/security-review` as well when the
+  change touches auth, HTTP handlers, SQL, CI files or lockfiles. A path-conditioned security lens
+  inside the loop is the other half of this and is still not shipped, but it is no longer *missing
+  machinery*: the `repo-conventions` lens is appended to whatever `lenses` resolves to, so a security
+  lens conditioned the same way is a lens definition and a matching rule, not a change to the loop.
 
 ## First-run calibration checklist
 
@@ -541,7 +556,10 @@ start.
 
 ## Extending
 
-- Custom review lenses: pass `lenses` to `wf-review-loop`.
+- Custom review lenses: pass `lenses` to `wf-review-loop`. They replace the two defaults, and the
+  `repo-conventions` rule lens is appended to whatever they resolve to unless `ruleLens: false` —
+  a caller asking for a different pair of general lenses is not asking for the repo's own checklists
+  to be dropped.
 - Shared memory, half-built on purpose. The **write** side exists: `/dev-implement` step 10 distils
   at most three lessons per cycle into `.claude/rules/*.md`, through a human. The **read** side is
   native — a `paths:`-scoped rule reaches whoever touches those files — but it is *push*: agents get

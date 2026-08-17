@@ -7,7 +7,7 @@ A multi-agent development pipeline for Claude Code, packaged as a plugin.
 /dev-plan      →  triage, then fan-out exploration → validated step plan
                   (--explain writes understanding instead, reusable by a later plan)
 /dev-implement →  steps in dependency waves, contract gates, review checkpoints, phase commit
-/dev-review    →  two complementary reviewers → verify → fix → re-review until clean
+/dev-review    →  two complementary reviewers → verify → fix → run the check → re-review until clean
                   (--from-report applies a PR review's confirmed findings)
 /dev-debug     →  repro → read-only hypothesis fan-out → refute → narrow serially → prove it dead
 /dev-pr        →  branch analysis, optional SHA-bound review, PR body, guarded publication
@@ -27,7 +27,8 @@ Fan-out is the cheap part. The parts that carry their weight:
   when a decision hinges on the detail.
 - **Honesty gates** — a step is verified only when it names the command it ran *and* reports that the
   command passed; a bare claim degrades to `unverified`, never to success.
-  A review is `clean` only after an explicit post-fix pass finds nothing. Confirmed
+  A review is `clean` only after an explicit post-fix pass finds nothing *and* — when it applied
+  fixes — after the repo's own check ran on the result, judged by that same gate. Confirmed
   findings are reconciled against the fixer by identity, not by count, and the match fails closed.
 - **Proportional cost** — triage defaults to the cheap tiers and makes the multi-agent flow argue for
   itself: escalation needs a named signal from a closed list, stated in the report;

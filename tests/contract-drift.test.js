@@ -94,6 +94,14 @@ const undocumented = ['maxParallelSteps', 'checkpointFileThreshold', 'checkpoint
   .filter((n) => !new RegExp(NAMED(n)).test(implSkill))
 check('dev-implement documents its own knobs', undocumented, [])
 
+// Same for the review loop's knobs, and for the one return field the skill has to act on:
+// `fix_verify` is what decides whether a `clean: false` means "a finding survived" or "the tree
+// stopped working", and a report that never mentions it turns that distinction into folklore.
+const reviewSkill = read('skills/dev-review/SKILL.md')
+const undocumentedReview = ['verifyCommand', 'ruleLens', 'seedFindings', 'maxRounds', 'fix_verify']
+  .filter((n) => !new RegExp(NAMED(n)).test(reviewSkill))
+check('dev-review documents its own knobs', undocumentedReview, [])
+
 // ---- 3. Option sets. An enum that gains or loses a member while the prose still lists the old set
 // is the same lie in a different shape.
 function enumOf(file, key) {
@@ -144,7 +152,50 @@ const promptGuide = read('workflows/wf-explore-plan.js').match(/roughly (\d+) fi
 const diagramGuide = read('docs/architecture.md').match(/~(\d+) files as a soft guide/)
 check('step-size guide agrees', promptGuide && promptGuide[1], diagramGuide && diagramGuide[1])
 
-// ---- 6. The version, which three places state and nothing reconciled. `plugin.json` is what
+// ---- 6. The args a caller has to pass. Here the prose is not a restatement of behavior but the
+// invocation itself: `/dev-pr --review` hands the loop two custom `lenses` at the last gate before
+// publication, and that silently dropped the repo-conventions reviewer for as long as the lens was
+// part of the default array. It is appended now — but it can still only appear if the caller passes
+// what rule matching needs: `rules` (the unmatched manifest) and `files` (the concrete paths). A block
+// that passes custom lenses and neither of those gets two reviewers and no warning, which is exactly
+// the drift that was there before.
+function fencedBlocks(text) {
+  // Track the opening fence LENGTH: skills/dev-pr/SKILL.md nests a ```json block inside a
+  // ````markdown one, and a three-backtick scanner mis-slices that pair into nonsense.
+  const blocks = []
+  let open = null
+  for (const line of text.split('\n')) {
+    const fence = line.match(/^\s*(`{3,})\s*(\S*)\s*$/)
+    if (open) {
+      if (fence && fence[1].length >= open.ticks && !fence[2]) { blocks.push(open.lines.join('\n')); open = null }
+      else open.lines.push(line)
+    } else if (fence) open = { ticks: fence[1].length, lines: [] }
+  }
+  if (open) blocks.push(open.lines.join('\n')) // an unclosed fence still gets judged, never dropped
+  return blocks
+}
+// Matches the `scriptPath` fallback too, not just the workflow name. Both skills document that
+// fallback for a session where the plugin has not loaded, so a block written that way would otherwise
+// pass custom `lenses` with no `rules`/`files` and never be looked at — the exact drift this stops.
+const passesLenses = (b) => /devkit:wf-review-loop|wf-review-loop\.js/.test(b) && /\blenses\s*:/.test(b)
+// Pure over text, so the negative case below can mutate a COPY instead of a tracked file.
+function lensBlocksMissingRulesOrFiles(text) {
+  return fencedBlocks(text).filter(passesLenses)
+    .filter((b) => !/\brules\b/.test(b) || !/\bfiles\b/.test(b))
+}
+const lensCallers = PROSE.filter(({ text }) => fencedBlocks(text).some(passesLenses))
+// Fail closed: with no such block anywhere, the check below passes by having nothing to look at.
+check('a caller passing custom lenses exists', lensCallers.length > 0, true)
+check('every custom-lens caller also passes rules and files',
+  PROSE.flatMap(({ p, text }) => lensBlocksMissingRulesOrFiles(text).map(() => `${p}: custom lenses without rules/files`)), [])
+// And it bites: the same text with those two names renamed away must come back as a violation. The
+// mutation is in memory on purpose — a check that rewrites a tracked file and restores it afterwards
+// corrupts the repo if it dies in between, which is worse than the drift it was guarding.
+const renamedAway = (t) => t.replace(/\brules\b/g, 'scope').replace(/\bfiles\b/g, 'scope')
+check('and it fails when they are missing',
+  lensCallers.length > 0 && lensCallers.every(({ text }) => lensBlocksMissingRulesOrFiles(renamedAway(text)).length > 0), true)
+
+// ---- 7. The version, which three places state and nothing reconciled. `plugin.json` is what
 // Claude Code loads; `marketplace.json` states it twice more (once as catalogue metadata, once on
 // the plugin entry) and a marketplace consumer reads THOSE. Under a plugin a repo cannot pin a
 // version, so a marketplace advertising 0.2.0 while the plugin ships 0.3.0 is not cosmetic — the

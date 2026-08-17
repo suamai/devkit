@@ -578,6 +578,21 @@ function changedFilesOf(steps, stepReports) {
   return [...new Set(reported.length ? reported : steps.flatMap((s) => s.files || []))]
 }
 
+// The executable check a checkpoint hands down to its review loop: the covered steps' own `verify`
+// commands, deduplicated and joined with ' && '. The join is the wanted semantics — the shell
+// short-circuits, so any failing command fails the whole check and the agent reports the first
+// target that broke. Most plans give every step the same command, so the dedupe usually collapses
+// this to one; the plan is what decides what "working" means here, not a guess at the repo's suite.
+//
+// Only TOP-LEVEL plan steps ever reach `pending.steps`, so a step that was split contributes its
+// parent's `verify` and never its substeps' — a known limitation, not an oversight: substep objects
+// are invented mid-run by a scout and live inside that step's report, out of the checkpoint's reach.
+function verifyCommandFor(steps) {
+  const commands = (steps || []).map((s) => (s && typeof s.verify === 'string' ? s.verify.trim() : '')).filter(Boolean)
+  const unique = [...new Set(commands)]
+  return unique.length ? unique.join(' && ') : null
+}
+
 // The gate is deliberately NOT a review: it answers one question — is the surface the pending steps
 // are about to build on coherent? Anything else is cheaper to catch at the checkpoint review.
 function gatePrompt(waveNumber, changed, dependents) {
@@ -643,6 +658,12 @@ async function reviewCheckpoint(pending, checkpointNumber) {
     priorRefuted: priorRefuted.length ? priorRefuted : undefined,
     baseline: args.baseline,
     apply: true,
+    // This loop APPLIES fixes, so it also has to prove the tree still works afterwards — otherwise a
+    // checkpoint can report every finding fixed over code that stopped building. The checkpoint is
+    // where this belongs because it is the only place with both the fixes and the steps' own commands:
+    // the cross-step consistency check is the run's only other executor, and a run that stops early
+    // never reaches it (see the `stoppedEarly` guard below).
+    verifyCommand: verifyCommandFor(pending.steps) || undefined,
     maxRounds: args.reviewRounds ?? 3,
     // The policy travels with the call: a cheap implement whose reviews run at full price is not
     // a cheap run. Role names are pipeline-wide, so review-loop reads the same object.
@@ -697,7 +718,10 @@ function projectSchedule() {
     }
     if (reason) {
       checkpoints++
-      entry.checkpoint = { number: checkpoints, reason, waves_covered: pendingWaves, files: accumulated.length }
+      // `verify_command` is what this checkpoint would hand its review loop as the post-fix check —
+      // computed here, before `pendingProjected` is reset, from the same helper the real call site
+      // uses. A plan whose steps declare no verify shows `null` and gets no check.
+      entry.checkpoint = { number: checkpoints, reason, waves_covered: pendingWaves, files: accumulated.length, verify_command: verifyCommandFor(pendingProjected) }
       pendingWaves = 0
       pendingProjected = []
     } else {
@@ -861,15 +885,31 @@ for (const wave of allWaves) {
   const unfixedSevere = confirmedFindings.filter(
     (f) => f && (f.severity === 'high' || f.severity === 'critical') && (matchedAny ? !wasApplied(f) : true),
   )
+  // "Every finding was applied" and "the tree still works" are different claims, and only the second
+  // one is about behavior. The review loop ran the covered steps' verify commands after applying its
+  // fixes, so a check that did not clear stops the run — without this, the "continuing to dependent
+  // waves" log below would print over code that no longer builds.
+  //
+  // This MIRRORS the loop's own gate (`wf-review-loop.js`: `ran === true && !clearsClean(fv)`), and it
+  // has to: a claim to have run that named no command or no result is worth as much as no check, minus
+  // the honesty — and it already cost the round its post-fix re-review, so treating it as "did not
+  // fail" would feed dependent waves a tree that NOTHING judged. `ran !== true` is the honest
+  // opt-out (`verifyCommand: false`, no command available, budget floor) and deliberately does not
+  // block; that is what keeps the brief's AC-03 reachable.
+  const fixVerify = (review && review.fix_verify) || null
+  const checkRan = !!(fixVerify && fixVerify.ran === true)
+  const checkCleared = !!(fixVerify && fixVerify.unverified !== true && fixVerify.passed === true)
+  const checkFailed = checkRan && !checkCleared
+  const checkVerdict = !checkRan ? 'did not run' : checkCleared ? 'passed' : fixVerify.failed === true ? 'FAILED' : 'UNPROVEN (claimed to run without substantiating a pass)'
   const reviewBlocked =
     args.review !== false &&
     (!review ||
-      (review.clean !== true && (review.skipped_for_budget || unaddressed.length > 0 || unfixedSevere.length > 0)))
+      (review.clean !== true && (review.skipped_for_budget || unaddressed.length > 0 || unfixedSevere.length > 0 || checkFailed)))
   if (review && review.clean !== true && !reviewBlocked) {
-    log(`checkpoint ${checkpointNumber} review not clean, but every confirmed finding was applied or skipped with a reason and no high/critical one was left unfixed — continuing to dependent waves`)
+    log(`checkpoint ${checkpointNumber} review not clean, but every confirmed finding was applied or skipped with a reason, no high/critical one was left unfixed and the post-fix check ${checkVerdict} — continuing to dependent waves`)
   }
   if (reviewBlocked && review && review.clean !== true) {
-    log(`checkpoint ${checkpointNumber} blocked: ${unaddressed.length} unaddressed finding(s), ${unfixedSevere.length} unfixed high/critical`)
+    log(`checkpoint ${checkpointNumber} blocked: ${unaddressed.length} unaddressed finding(s), ${unfixedSevere.length} unfixed high/critical, post-fix check ${checkVerdict}`)
   }
   pending = { waves: [], steps: [], reports: [] }
   if (reviewBlocked || blockingQuestions.length) {
