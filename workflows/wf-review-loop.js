@@ -40,7 +40,14 @@ export const meta = {
 //                 implementer's `verify_run`. `false` opts out entirely; omitting it is the same
 //                 thing, said less explicitly.
 //
-// returns: { rounds, clean, confirmed, refuted, applied, skipped, fix_verify?, repairs?, cost }
+// returns: { rounds, clean, raw, clustered, confirmed, refuted, applied, skipped, fix_verify?,
+//            repairs?, cost }
+//   raw:          how many findings the reviewers reported before clustering, summed over rounds.
+//   clustered:    how many semantic clusters the verifier returned for them, same summation. The
+//                 pair is the clustering ratio a calibration reader wants; both are ALWAYS present
+//                 (0 when the loop broke before a round produced findings — 0 is the truth, not a
+//                 missing field). On the seeded path they are equal by construction, so such a run
+//                 honestly reports a ratio of 1.0: no clustering happened.
 //   fix_verify:   the classified post-fix check — {ran, command, passed, output_summary,
 //                 not_ran_reason, failed, unverified, attempts, repaired?}. ABSENT when no fix round
 //                 ran (including the very common "round 1 found nothing" exit) and never present
@@ -555,6 +562,13 @@ const allConfirmed = []
 const allRefuted = []
 const allApplied = []
 const allSkipped = []
+// Findings before clustering, and the clusters they collapsed into — accumulated across rounds
+// because the ratio is a property of the whole run, not of one pass. Reported rather than derived:
+// counting `merged_titles` after the fact omits every raw finding the verifier dropped without
+// clustering. On the seeded path each seeded finding maps 1:1, so both rise by the same number and
+// the run honestly reports a ratio of 1.0 — no clustering happened, and that is worth seeing.
+let rawFindings = 0
+let clusteredFindings = 0
 let round = 0
 let clean = false
 let lastRound = null // previous round's confirmed findings + fixer report, for the targeted re-review
@@ -590,6 +604,7 @@ while (round < maxRounds) {
   }
 
   log(`round ${round}: ${found.length} raw findings`)
+  rawFindings += found.length // the logged number and the returned one are the same one, by construction
   if (!found.length) { clean = true; break }
 
   if (!preVerified && budget.total && budget.remaining() < 20000) { log('budget too low for verification — stopping without clean verdict'); break }
@@ -617,6 +632,9 @@ while (round < maxRounds) {
   }
 
   log(`round ${round}: ${confirmed.length}/${verified.findings.length} semantic clusters confirmed`)
+  // The post-verify count, which the critical second opinion above does not change: a demoted
+  // critical moves from confirmed to refuted but stays exactly one cluster, counted once.
+  clusteredFindings += verified.findings.length
   if (!confirmed.length) { clean = true; break }
   allConfirmed.push(...confirmed)
 
@@ -706,6 +724,8 @@ if (clean && !checkClears) {
 return {
   rounds: round,
   clean: clean && checkClears, // an explicit pass with no confirmed defects AND a check that cleared
+  raw: rawFindings, // always present: 0 means no round produced a finding, not "unknown"
+  clustered: clusteredFindings,
   confirmed: allConfirmed,
   refuted: allRefuted,
   applied: allApplied,

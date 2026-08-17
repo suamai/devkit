@@ -33,6 +33,12 @@ const SEED = [
 const BASE = { scope: 'src/a.ts, src/b.ts', intent: 'ship the queue change', apply: true, maxRounds: 2 }
 const FIXED_BOTH = { applied: [{ id: 'f1', what: 'guarded' }, { id: 'f2', what: 'awaited' }], skipped: [] }
 
+// The clustering ratio the run ledger reports is read off `raw`/`clustered`, never reconstructed
+// from `merged_titles`. A pure predicate over a return object, so the mutation proof below is just a
+// second call with a perturbed copy — nothing on disk is touched.
+const reportsHonestPair = (r) =>
+  typeof r.raw === 'number' && typeof r.clustered === 'number' && r.raw >= r.clustered
+
 let failed = 0
 function check(name, actual, expected) {
   const a = JSON.stringify(actual)
@@ -57,6 +63,16 @@ async function main() {
   // A critical seed does NOT buy a second opinion: it already had one when the report was written,
   // and the caller proved HEAD has not moved since.
   check('no critical second opinion on seeds', seeded.calls.some((c) => c.startsWith('verify:critical')), false)
+
+  // Seeded findings arrive already clustered, so raw and clustered must be equal — a seeded run
+  // honestly reports a clustering ratio of 1.0 rather than a flattering one.
+  check('seeded raw equals seeded clustered',
+    [seeded.result.raw, seeded.result.clustered, reportsHonestPair(seeded.result)], [SEED.length, SEED.length, true])
+  // Mutation proof: the same predicate over an IN-MEMORY copy with `clustered` pushed past `raw`
+  // must fail. Without it, the check above would keep passing if the counters silently stopped
+  // tracking the findings at all.
+  check('a perturbed copy fails the same predicate',
+    reportsHonestPair({ ...seeded.result, clustered: seeded.result.raw + 1 }), false)
 
   // --- The honesty gate is unchanged. Skipping find/verify must not skip the proof.
   const stillBroken = await run({ ...BASE, seedFindings: SEED }, {
@@ -85,11 +101,17 @@ async function main() {
     [normal.calls.filter((c) => c.startsWith('review:')).length, normal.calls.includes('verify:batch r1')], [2, true])
   check('and reaches clean the long way', normal.result.clean, true)
 
+  // The unseeded path is where clustering actually happens: every lens reported the same defect and
+  // the verifier returned one cluster for them, so raw must exceed clustered here.
+  const lensFindings = normal.calls.filter((c) => c.startsWith('review:')).length
+  check('raw counts findings, clustered counts clusters',
+    [normal.result.raw, normal.result.clustered], [lensFindings, 1])
+
   // Junk in seedFindings is dropped rather than handed to a fixer as a finding with no identity.
   const junk = await run({ ...BASE, seedFindings: [null, {}, SEED[0]] }, { 'fix r1': { applied: [{ id: 'f1' }], skipped: [] }, 're-review r2': { findings: [] } })
   check('entries with no id or title are dropped', junk.result.confirmed.length, 1)
 
-  console.log(failed ? `\n${failed} FAILED` : `\nall ${11} cases pass`)
+  console.log(failed ? `\n${failed} FAILED` : `\nall ${14} cases pass`)
   process.exit(failed ? 1 : 0)
 }
 

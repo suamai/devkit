@@ -9,6 +9,56 @@ different artifact, a new gate — and never on prose that restates behavior alr
 `.claude-plugin/plugin.json` and `.claude-plugin/marketplace.json` state it (the latter twice);
 `tests/contract-drift.test.js` fails if they disagree, or if the shipped version has no entry here.
 
+## 0.5.0 — 2026-08-17
+
+### Added
+- **A run ledger: one JSONL line per phase run, at `~/.claude/devkit/runs.jsonl`.** Every phase
+  already computed the numbers that answer *is this pipeline calibrated?* — tier, waves, splits,
+  rounds, the clustering ratio, the verification split, `cost.by_phase` — and all of it died with the
+  turn. `scripts/ledger-append.sh` now takes a one-line JSON body on stdin from the skill that owns
+  the phase, prepends an envelope it computes itself (`ts`, `plugin_version`, `plugin_commit`, `repo`,
+  `repo_sha` — omitted, never guessed, when it cannot read one) and appends the merged line with a
+  single `printf … >>`. Never a read-modify-write: that is how two concurrent sessions lose a line.
+  The store is per developer and spans repos, has no schema version and no migration path, and losing
+  it costs nothing. **No agent ever reads it**; only `scripts/ledger-report.sh`'s aggregates reach a
+  conversation, and a failed append is one sentence in the phase report, never a failed phase.
+- **`/dev-status --calibration`.** Prints the architecture doc's calibration checklist with real
+  numbers from the ledger — clustering ratio, split rate, round convergence, escalation rate,
+  unverified steps, tokens per phase, projected vs. actual agents — each row carrying its sample size,
+  medians rather than means, and `n=0 — no data` instead of a row with nothing behind it. Unreadable
+  lines are skipped *and* counted; with no ledger at all it says so and exits 0.
+- **`/dev-status archive <slug>`.** Deletes everything under `.dev/<slug>/` except `state.json`, then
+  rewrites that file keeping every key it already has except `findings`, and stamping `archived`. Not
+  a gentler `clean` — `clean` still removes the whole workspace, `state.json` included. `findings`
+  goes because its `report_path` entries are what `/dev-plan` hands a scout as `priorFindings`, and
+  after archiving those files are gone: a dangling path is worse than no prior findings.
+- **A cost quote at the `/dev-plan` approval checkpoint.** The projection is rendered as a quote block
+  built from the lint's `schedule` — the agents floor and its note, the checkpoints and why they fire,
+  the largest term in the floor *for this plan*, and what can only ever add to it — keeping both
+  honesty facts it always carried (checkpoints fire earlier, never later; `agents_min` is a floor, not
+  an estimate). Separately, and never blended into it, `scripts/ledger-report.sh --quote` contributes
+  one historical line from your own ledger. Comparable means the same phase, tier and profile across
+  every repo; fewer than three samples refuses to quote a median rather than printing a weak number
+  confidently.
+- **Three notifications, at the three moments a run stops on a person.** `/dev-plan` with non-empty
+  `open_questions`, `/dev-implement` when `stoppedEarly` is true, and `/dev-pr --review` when
+  high/critical findings block publication each call the `PushNotification` tool once
+  (`{ message, status: "proactive" }`, one line, ≤200 characters). Distinct from the completion ping a
+  background workflow already sends: that one says a run finished, these say it is blocked on you. A
+  `not sent` result means the developer is at the terminal — expected, and never retried.
+- **A `runs` array in `state.json`.** One compact entry appended per phase run — the same numbers the
+  ledger line carries, never rewritten — so `archive` can throw away the bulk of a workspace and keep
+  the evidence, and so a lost ledger does not take a flow's own history with it.
+
+### Changed
+- **`wf-review-loop` returns `raw` and `clustered`.** Two new scalars beside `rounds`/`clean`: raw
+  findings summed across rounds, and semantic clusters counted after verification. The clustering
+  ratio is now *read* from them instead of reconstructed from `merged_titles`, which silently omitted
+  every raw finding the verifier dropped without clustering and reported exactly 1.0 on seeded
+  `--from-report` runs. Both are always present (0 is the truth, not a missing field); round 1 of a
+  seeded run maps them 1:1, but a non-clean round 2 re-review still adds to both, so the ledger's
+  overall ratio is 1.0 only when round 2 also finds nothing new.
+
 ## 0.4.0 — 2026-08-17
 
 ### Added

@@ -413,9 +413,13 @@ A git repo is a **prerequisite** for `/dev-implement`, `/dev-review`, and `/dev-
 ## Flow state & concurrency
 
 Each workspace owns its state: `.dev/<slug>/state.json` holds
-`{ task, stage, updated, baseline, lastRunId, findings }` with stages
+`{ task, stage, updated, baseline, lastRunId, findings, runs }` with stages
 `spec → planning → plan-ready → implementing → implemented` (or `abandoned`), written by the skill
-that owns that phase. State sits **inside the thing it describes**, which is what makes the
+that owns that phase. `runs` is the compact per-phase summary described under "The run ledger" —
+the copy that survives `/dev-status archive <slug>`. That list is a **floor, not a schema**: every
+skill merges into whatever the previous one left, so real workspaces also carry what a phase needed
+to hand on (`plan`, `spec`, `decisions`). A reader must tolerate extra keys and a writer must never
+drop the ones it did not write. State sits **inside the thing it describes**, which is what makes the
 single-writer rule structural rather than an invariant every skill has to be told to respect: there
 is no shared file two skills could race on, and a directory that exists with no state file is a
 recoverable case (infer the stage from its artifacts) rather than a corrupt registry.
@@ -514,9 +518,121 @@ a correction rather than the correction itself — was answered from real use, n
   machinery*: the `repo-conventions` lens is appended to whatever `lenses` resolves to, so a security
   lens conditioned the same way is a lens definition and a matching rule, not a change to the loop.
 
+## The run ledger
+
+Every phase already computes the numbers that would answer *is this pipeline calibrated?* — triage
+tier, waves, splits, rounds, the clustering ratio, the verification split, `cost.by_phase` — and all
+of it used to die with the turn. The ledger is one JSONL file that keeps them: **one line per phase
+run**, appended by the skill that owns the phase.
+
+**Where, and why not the two obvious places.** `~/.claude/devkit/runs.jsonl` — per developer,
+spanning repos. Not `.dev/<slug>/`: `/dev-status clean` deletes exactly the workspaces whose runs
+went well, so a per-workspace store would be biased toward failures by construction. Not a committed
+file at the repo root: a permanent merge-conflict generator, and per-repo when the thing being
+measured is per-plugin (does *this pipeline* size steps well?), so every new repo would read n=0 for
+months.
+
+**No agent ever reads it.** This is telemetry for a human report. `scripts/ledger-report.sh`
+aggregates it and its *output* may be shown; raw lines never enter a prompt. That boundary is what
+keeps "No shared memory across cycles" true — a model reading hundreds of past runs is precisely the
+uncurated cross-cycle memory this architecture rejected, and it would be expensive and unreliable
+arithmetic on top.
+
+**Append-only, no schema version, no migration path.** Unknown fields are ignored, a line that does
+not parse is skipped and counted, and losing the whole file costs nothing — which is what keeps a
+growing store clear of the standing rule that scratch is disposable. Every write is a single
+`printf … >>`: never a read-modify-write, because that is how two concurrent sessions lose a line.
+
+**Who writes it, and how often.** The skills, from the main loop — the Workflow scripts have no
+filesystem access and cannot. One line per phase *run* and per *invocation*: a plan, an implement and
+a review sharing a slug are three lines, never one line rewritten three times, and a `--continue` run
+writes its own. `/dev-status` and `/dev-setup` write nothing, since neither is a phase. `/dev-plan`
+writes at **every** tier, trivial and small included — without the cheap lines, "escalation rate" is
+100% by construction and the row is a lie.
+
+```bash
+sh "${CLAUDE_PLUGIN_ROOT}/scripts/ledger-append.sh" <<'JSON'
+{"phase":"implement","slug":"run-ledger","waves":3,"cost":{"by_phase":{"steps":42000},"total":42000,"budget_total":null,"floors_active":false},"concurrent":false}
+JSON
+```
+
+A **quoted** heredoc is the carrier: nothing expands, apostrophes and double quotes survive, and the
+body reaches the file byte-for-byte. The script refuses anything that is not exactly one `{…}` line
+(exit 2, one stderr line, nothing written) — a corrupt line is worse than a missing one — and exits 1
+when `$HOME` is unset or unwritable. **A failed append is one sentence in the phase report, never a
+failed phase.**
+
+**The envelope is computed by the script and never typed by a model.** That is the whole reason a
+later report can be trusted; a field the script cannot read is omitted, never guessed:
+
+| field | source | when absent |
+|---|---|---|
+| `ts` | `date -u +%Y-%m-%dT%H:%M:%SZ` | never |
+| `plugin_version` | `<plugin root>/.claude-plugin/plugin.json` | omitted |
+| `plugin_commit` | `<plugin root>/FROZEN_AT` — a bare SHA a frozen install has and a working tree does not | omitted |
+| `repo` | basename of `git rev-parse --show-toplevel` | omitted |
+| `repo_sha` | `git rev-parse HEAD` | omitted |
+
+**The body is the skill's half**, and it obeys one structural rule: **every string-valued field is
+top-level, and the only nested objects are `cost`, `findings` and `verification`, whose values are
+numbers, booleans or `null`.** The two override maps `models` and `efforts` are the single exception
+— they nest short bare strings (`{"impl":"opus"}`) because they are copied verbatim from the
+workflow args, and the reader's scanner is depth- and quote-aware, so it reads them correctly. Do not
+generalise from them: nothing else may nest a string. That constraint is what lets the reader parse
+with `awk` instead of a JSON parser — the same bargain `hooks/session-start-stale-flows.sh` documents (one writer, a flat
+known shape, not good enough for arbitrary JSON). A string smuggled into a sub-object, or a `}`
+inside a top-level string, is a row that gets mis-read quietly. Omit any field you do not have.
+
+- common: `phase` (`spec|plan|implement|review|pr|debug`), `slug`, `run_id`, `baseline`,
+  `concurrent`, `cost` (the workflow's `cost` object **verbatim**), `stopped`, `stop_reason`,
+  `profile`, `models`, `efforts` — the last three only when overridden
+- plan: `tier`, `signal` (only when one fired), `open_questions`, `waves`, `parallel_groups`,
+  `scouts_projected`, `agents_projected`. A `--explain` run adds `mode: "explain"` and carries **no**
+  `tier` — nothing was triaged — which is also why the escalation row counts only lines that have one.
+- implement: `tier`, `waves`, `parallel_groups`, `steps_leaf`, `splits`, `scouts_ran`, `gates`,
+  `gate_breaks`, `checkpoints`, `review_rounds`, `agents_projected`, `unreviewed_waves`, `findings`,
+  `verification`. `tier` is the tier the plan was triaged at, carried over so the quote
+  `--phase implement --tier <t>` can match: comparability is phase + tier + profile, and a line
+  missing the field it is filtered on never matches. Read it from the workspace's own `runs` array
+  (the latest `plan` entry) or the small tier's `**Tier:**` line, and omit it if neither says.
+- review: `seeded`, `rounds`, `clean`, `rounds_end` (`clean|max-rounds|blocked|budget`), `findings`
+- pr: `reviewed`, `outcome` (`clean|needs-attention|blocked`), `rounds`, `findings`, `published`
+- debug: `hypotheses`, `refuted`, `repro` (`"yes"|"no"`), `tier`, `signal`
+- `findings` = `{ raw_titles, clusters, confirmed, refuted, applied, skipped }`, all numbers.
+  `raw_titles` and `clusters` are wf-review-loop's own `raw` / `clustered` scalars, read off the
+  return — never reconstructed from `merged_titles`, which silently omits every raw finding the
+  verifier dropped without clustering.
+- `verification` = `{ steps, passed, unverified_honest, unverified_unevidenced, unverified_infra,
+  weak_evidence, kind_missing }`, all numbers.
+
+**`concurrent` is what keeps the token numbers honest.** `budget.spent()` is the whole turn's output
+tokens, shared with the main loop and any other workflow, so overlapping runs inflate `cost.by_phase`
+and nothing inside a script can detect it (see the checklist's caveats below). The line therefore
+records what the skill actually checked: `false` **only** when it looked — TaskList, the
+`implementing` lock glob — and found nothing, `true` when it found something, `"unknown"` otherwise.
+Never a guessed `false`: a number that cannot be trusted has to say so, and the report counts the
+concurrent-or-unknown samples instead of averaging them in.
+
+**The compact half lives in the workspace.** `state.json` gains a `runs` array — one entry appended
+per phase run, earlier entries never rewritten:
+`{ phase, ts, run_id?, tier?, signal?, agents_projected?, steps_leaf?, reviewed?, outcome?, rounds?,
+confirmed?, applied?, unverified?, cost_total?, floors_active?, stopped?, stop_reason?, published?,
+baseline? }`. The duplication with the ledger
+is the point: `/dev-status archive <slug>` keeps `state.json` and deletes the bulk, so the evidence
+survives even where the ledger is lost. It stays a single-writer file — the skill that owns the phase
+appends its own entry, and no new per-workspace file appears. Runs with no workspace (`/dev-debug`
+always, `/dev-review` and `/dev-pr` sometimes) write the ledger line and nothing else.
+
+**Growth is noted, not solved.** The file is never rotated and the reporter reads all of it. At one
+developer's cycle rate that is fine for a long time; when it stops being fine, move the old lines
+aside — nothing depends on history being complete.
+
 ## First-run calibration checklist
 
-Use workflow transcripts from real cycles to tune these before adding more agents:
+`/dev-status --calibration` prints this checklist with real numbers — `scripts/ledger-report.sh`
+aggregates the run ledger described above, so these stopped being figures somebody reads off
+transcripts by hand. Each row carries its sample size, and a row with nothing behind it says `n=0`
+rather than printing a number. Read them as calibration input, never as a target:
 
 - **Clustering ratio**: many raw titles collapsing into few semantic defects means reviewer overlap
   is high; merge lenses before adding validators.
@@ -539,7 +655,15 @@ Use workflow transcripts from real cycles to tune these before adding more agent
   together: the steps in a wave run concurrently, so their agents interleave and no delta can
   attribute tokens to one or the other. And `budget.spent()` is the whole turn's output tokens,
   shared with the main loop and any other workflow — so a second workflow running at the same time
-  inflates these, and nothing in the script can detect that. Measure with one run at a time.
+  inflates these, and nothing in the script can detect that. Measure with one run at a time. The
+  ledger's `concurrent` field is what turns that caveat into a count: the report says how many token
+  samples ran concurrent-or-unknown instead of averaging them in silently.
+
+- **Projected vs. actual agents**: the `agents_min` the approval checkpoint quoted, against the same
+  floor recomputed from what the run actually did (`scouts + steps + gates + checkpoints * 4 + 1`).
+  Both sides are floors computed the same way, so the delta is not "the estimate was wrong" — it is
+  what the plan did not foresee: oversized steps that split, gate breaks forcing a checkpoint, extra
+  review rounds. A delta that is consistently large is a planning signal, not a budgeting one.
 
 ## Authoring a bespoke workflow
 

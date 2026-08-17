@@ -21,11 +21,22 @@ Spec-building is dialogue, so it happens here in the main loop — no background
    - **Constraints** — tech choices, compatibility, performance, style.
    - **Grounding** — pointers (`file:line`) to the existing code the spec talks about.
 
-5. **Register the flow.** Write `<workspace>/state.json`: `{ task, stage: "spec", updated: "<YYYY-MM-DD HH:MM>" }`. State lives inside the workspace it describes, so the file has exactly one writer by construction — there is no shared registry to reconcile.
+5. **Register the flow.** Write `<workspace>/state.json`: `{ task, stage: "spec", updated: "<YYYY-MM-DD HH:MM>", runs: [{ "phase": "spec", "ts": "<the same timestamp>" }] }`. State lives inside the workspace it describes, so the file has exactly one writer by construction — there is no shared registry to reconcile. `runs` is the compact per-phase record every later phase appends to: add this run's entry, never rewrite an entry that is already there.
 
 6. **Present and iterate.** Show a concise summary; apply the developer's adjustments to the file.
 
-7. **Handoff.** Suggest `/dev-plan` pointed at the same slug — it picks up `spec.md` from the workspace automatically.
+7. **Handoff.** Suggest `/dev-plan` pointed at the same slug — it picks up `spec.md` from the workspace automatically. Then append one `spec` line to the run ledger, once per invocation:
+
+```bash
+sh "${CLAUDE_PLUGIN_ROOT}/scripts/ledger-append.sh" <<'JSON'
+{"phase":"spec","slug":"<slug>"}
+JSON
+```
+
+The line carries the slug and nothing else, because a spec has no counts to report: it exists so the
+ledger can say how often a spec preceded a plan. The envelope — timestamp, plugin version, repo, SHA
+— is the script's job and never yours, and a failed append is one sentence in the handoff, never a
+failed phase.
 
 ## Artifact language
 

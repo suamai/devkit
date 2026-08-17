@@ -44,6 +44,13 @@ one, which silently drops a defect.
 4. **Report and re-gate.** Say which findings were fixed, which were skipped and why, and the
    clean/not-clean verdict. Then require a fresh `/dev-pr --review`: the old report stays as
    evidence, but only a review of the *current* `HEAD` can clear the publication gate.
+   Write the ledger line here too — the same `review` line step 4 of the Process describes, plus
+   `"seeded":true`. Round 1 skips finding and clustering entirely and maps every seeded finding 1:1,
+   so `raw` and `clustered` are equal by construction **for that round alone**. But `maxRounds: 2`
+   means a real, non-seeded round 2 re-review still runs whenever round 1 leaves anything to check,
+   and its own find+cluster can add unequal raw/clustered increments to the same cumulative totals —
+   so the ledger line's overall ratio reports 1.0 only when round 2 also finds nothing new. When it
+   does find something, a ratio above 1.0 is the honest number, not a bug to chase.
 
 **When this is the wrong tool.** If the findings need an approach decision, span several subsystems,
 or must be applied in a specific order, they are ordinary work — say so and offer
@@ -105,6 +112,39 @@ There is no dedicated remediation machinery to reach for; that is deliberate.
    reads — read `passed` for whether the attempt reached green, and `repairs` for what it touched. Say so
    at report time: a `clean: true` reached that way is still a run that broke the tree once, and the
    developer should not have to find that in the diff.
+
+   Then append one `review` line to the ledger — once per invocation, after the report:
+
+```bash
+sh "${CLAUDE_PLUGIN_ROOT}/scripts/ledger-append.sh" <<'JSON'
+{"phase":"review","rounds":2,"clean":true,"rounds_end":"clean","concurrent":"unknown","findings":{"raw_titles":11,"clusters":7,"confirmed":4,"refuted":3,"applied":4,"skipped":0},"cost":{"by_phase":{"review":90000,"verify":30000,"fix":40000,"check":12000},"total":172000,"budget_total":null,"floors_active":false}}
+JSON
+```
+
+   Both the command and the closing `JSON` start at column 0 on purpose: an indented terminator does
+   not close a quoted heredoc, and the script then sees a two-line body and refuses it.
+
+   All of it comes off the loop's own return — the envelope is the script's half, and the shared
+   vocabulary lives in `docs/architecture.md` → "The run ledger". `rounds` and `clean` go in verbatim.
+   `rounds_end` is *why* the loop stopped: `clean` when it went clean; otherwise `budget` when the
+   journal names a token-budget floor; otherwise `max-rounds` when `rounds` reached the round limit;
+   otherwise `blocked` (a skipped fix, or a post-fix check that did not clear). Budget is tested before
+   the round limit because a budget exit landing on the last round would otherwise be filed as
+   convergence that never happened. In `findings`, `raw_titles` is the return's `raw` and `clusters` its
+   `clustered` — the loop's own scalars — while `confirmed`/`refuted`/`applied`/`skipped` are those
+   arrays' lengths; never reconstruct the first two from `merged_titles`, which omits every raw finding
+   the verifier dropped without clustering. `cost` goes in **verbatim**; add `profile` only when the
+   developer overrode it. `concurrent` is `"unknown"` unless you actually checked (TaskList showed no
+   other workflow running) — never a guessed `false`.
+
+   Add `slug`, and a compact entry in `.dev/<slug>/state.json`'s `runs` array
+   (`{ phase: "review", ts, rounds, confirmed, applied, cost_total, floors_active }` — `ts` is plain
+   `YYYY-MM-DD HH:MM`, matching `updated` — appended, never
+   rewriting an earlier one), **only** when a `.dev/<slug>/` workspace already exists for this change —
+   a standalone review usually has none, and inventing one is not this skill's job.
+
+   The ledger is telemetry for a later report, never a gate: a failed append is one sentence in the
+   report, never a failed review, and the file is never read back.
 
 ## Notes
 

@@ -28,6 +28,13 @@ you how something works, but only a run that put its claims through adversarial 
 you which plausible belief about this code is provably false. Lead the report with that and with
 `surprises` — the confirmatory parts are the parts the developer could have gotten anywhere.
 
+This mode writes a ledger line too — it spent a full fan-out, and a phase whose cost is invisible
+makes the tokens-per-phase row understate what planning costs. Same `scripts/ledger-append.sh`
+heredoc as the two write sites below, with `{"phase":"plan","mode":"explain",…}`, the `slug`,
+`run_id` and `cost` verbatim, and **no `tier`** — nothing was triaged here, and inventing one would
+put a fabricated row into the escalation rate. That is why the reader counts only lines that carry a
+`tier`. This is the mode's own write site; it does not reach the two below, and it never writes twice.
+
 ## 0. Triage first — the burden of proof is on escalation
 
 The full flow is not the safe choice. It spends 3-5 scouts, a validator, a synthesizer and an
@@ -86,12 +93,44 @@ to reach a PR with nothing written down. So the small tier still writes two file
 **Verify:** <the command that proves it>
 ```
 
-`.dev/<slug>/state.json` — `{ task, stage: "plan-ready", updated }`, so `/dev-status` sees the flow
-at all and `/dev-pr` can find the intent. Set `stage: "implemented"` once the inline work is verified.
+`.dev/<slug>/state.json` — `{ task, stage: "plan-ready", updated }` plus one `runs` entry,
+`{ phase: "plan", ts, tier: "small" }`, so `/dev-status` sees the flow at all, `/dev-pr` can find the
+intent, and the surviving copy of the evidence covers this tier too — `runs` holds one entry per
+phase run of a workspace, and a small-tier plan is a phase run. It carries no numbers because no
+workflow produced any; that is the entry, not a stub of one. Set `stage: "implemented"` once the
+inline work is verified.
 
-Two writes, no workflow, no approval round — that is the entire ceremony. Don't let it grow: a
-small-tier `plan.md` that wants a steps block was a medium task, and the honest move is to name the
-signal and escalate.
+Two workspace files, no workflow, no approval round — that is the entire ceremony. Don't let it
+grow: a small-tier `plan.md` that wants a steps block was a medium task, and the honest move is to
+name the signal and escalate.
+
+## The ledger line — trivial and small
+
+Then record the run. Every `/dev-plan` invocation appends **exactly one** `plan` line to the run
+ledger, and the cheap tiers are the ones that matter most here: without their lines the escalation
+rate the calibration report prints is 100% by construction, and the row is a lie. So the trivial
+tier writes one too — right after you have stated the tier and made (or declined) the edit:
+
+```bash
+sh "${CLAUDE_PLUGIN_ROOT}/scripts/ledger-append.sh" <<'JSON'
+{"phase":"plan","tier":"small","slug":"retry-policy","concurrent":"unknown"}
+JSON
+```
+
+The **quoted** heredoc is the carrier: nothing expands, so quotes and apostrophes inside a value
+reach the file byte-for-byte. `tier` always. `slug` only once a workspace exists — the trivial tier
+has none, so it omits the field rather than inventing one. `signal` only when one actually fired,
+which at these tiers is never, so it is omitted too. Nothing else: no workflow ran, so there is no
+`cost`, no `run_id` and no projection, and a field you do not have is **omitted, never guessed**.
+`concurrent` is `"unknown"` unless you genuinely checked (see step 7).
+
+This is one of **exactly three** write sites in this skill, and they are mutually exclusive: an
+`--explain` run writes at the top of this file, the low tiers write here, and a medium/large run
+writes once at step 7. No invocation reaches two of them. In particular, a small tier whose inline
+scout escalates (§0) writes **nothing** here: that invocation became a medium run, and its one line
+goes out at step 7 with the tier it ended at and the signal that fired. If the append fails it prints
+one line to stderr; mention it in one sentence and carry on. A lost ledger line is never a failed
+phase.
 
 ## Process (medium/large)
 
@@ -111,7 +150,9 @@ signal and escalate.
 
    Optional: `angles` to override angle decomposition when the developer already told you what to investigate; `validate: false` skips the single batched validation pass for cost-sensitive planning; `profile`/`models`/`efforts` set the model tiers (see Cost below). If the workflow name does not resolve (the plugin has not loaded in this session yet), invoke with `scriptPath` pointing at `${CLAUDE_PLUGIN_ROOT}/workflows/wf-explore-plan.js`. Runs in background; you'll be notified. While waiting, do nothing speculative.
 
-4. **Interrupt point — open questions.** The result contains `open_questions` (decisions only the developer can make). If non-empty, surface them via AskUserQuestion (use the provided `options`). Fold answers into the plan: edit `<workspace>/plan.md` yourself — including the machine-readable JSON steps block — or, if an answer invalidates the approach, re-run the workflow with the answers appended to `constraints`.
+4. **Interrupt point — open questions.** The result contains `open_questions` (decisions only the developer can make). If non-empty, push a notification **first**, then surface them via AskUserQuestion (use the provided `options`). Fold answers into the plan: edit `<workspace>/plan.md` yourself — including the machine-readable JSON steps block — or, if an answer invalidates the approach, re-run the workflow with the answers appended to `constraints`.
+
+   The notification is the **`PushNotification`** tool, called once with `{ message, status: "proactive" }` — one line, ≤200 characters, no markdown, e.g. `plan ready for retry-policy: 3 open questions need your call`. If it is not in the current tool set, `ToolSearch` for it first. It is **not** the background-workflow completion ping step 3 mentions: that one fires by itself when the workflow returns and only says the run finished, while this one says the run is *blocked on a person* — the one thing worth pulling the developer back for. A `not sent` result means they are already at the terminal: expected, not an error, and never retried.
 
 5. **Lint the plan before presenting it.** Zero agents, zero tokens, one call:
    ```
@@ -125,13 +166,56 @@ signal and escalate.
    files and no dependency (they cost the parallelism the plan appears to have), and a step with no
    `verify` (it can only ever come back `unverified`).
 
-   The projection errs in one direction: checkpoints can fire **earlier** than shown, never later,
-   because a blocking question or a contract-gate break also forces one and neither is knowable
-   before the agents run. Same for `agents_min` — a floor, not an estimate.
+   **Render the projection as a cost quote**, and present it with the plan in step 6. The developer
+   is about to approve a number of agents, so it is stated as a bound with its escape hatches named,
+   never as an estimate:
+
+   ```
+   Cost quote — a static floor, not an estimate
+     Agents floor    : 21 (floor: scouts + one implementer per step + gates + ~4 per review
+                       checkpoint + the final consistency check)
+     Checkpoints     : 2 (contract-risk step; final wave) — they fire earlier, never later
+     Largest variable: review checkpoints — 2 × ~4 agents
+     Only ever adds  : gate breaks, blocking questions, extra review rounds, oversized-step splits
+     Profile         : default (shipped tiers)
+   ```
+
+   Every number is read off the lint's `schedule`, none of them invented: the floor and the note
+   beside it are `agents_min` and `agents_min_note` (its first sentence — the rest is the
+   `Only ever adds` line); the checkpoints and their reasons are `waves[].checkpoint.{number,reason}`;
+   scouts are `waves[].scouts`. **Largest variable** is *derived*: compare `checkpoints × 4`, the step
+   count, the scout count and the gate count, and name whichever is biggest with its count — that is
+   the term worth arguing about if the quote is too high, and the only one the plan can still change.
+
+   Both honesty facts belong inside the quote rather than in a footnote, because they are what makes
+   it a bound: checkpoints can fire **earlier** than shown and never later, since a blocking question
+   or a contract-gate break also forces one and neither is knowable before the agents run; and
+   `agents_min` is a floor — everything on the `Only ever adds` line adds agents and nothing
+   subtracts any.
 
 6. **Present the plan.** Lead with the exploration's `cost` (`by_phase`: decompose / explore /
    validate / synthesize, plus `total`) — it is the developer's calibration data and it is what makes
    the next `angles`/`validate: false` decision an informed one. Then concise prose: the approach, the step list with dependencies/parallelism, risks, and what was dropped as refuted during validation (`dropped_claims`). Full detail is in `plan.md`; scout reports in `<workspace>/findings/`. Then stop — the developer reviews; apply their adjustments to the plan file (keep the JSON block in sync).
+
+   **Historically — a separate paragraph, never a blended number.** Part of that same presentation,
+   beside the quote and before you stop: run `ledger-report.sh --quote` once,
+
+   ```bash
+   sh "${CLAUDE_PLUGIN_ROOT}/scripts/ledger-report.sh" --quote --phase implement --profile <profile>
+   ```
+
+   and paste its single line verbatim under the label `Historically (your ledger, not a promise):`.
+   `--phase implement` because that is the run being quoted; no `--tier` here — the `implement`
+   ledger line never records one (only `plan` and `debug` lines do, `docs/architecture.md` → "The run
+   ledger"), so filtering on it would silently zero every match. `--profile` is the profile the
+   implement run will use, which is `default` when nothing was overridden (a ledger line records
+   `profile` only when it was). Leaving an argument off widens the query rather than filtering on
+   absence. If the script answers `n=0 comparable runs` or
+   `n=<count> — sample too small to quote (need 3)`, print **that** — an absent history is a result,
+   and a range extrapolated from two runs is exactly the confidently weak number this whole quote
+   exists to avoid. Keep it in its own paragraph: the block above is arithmetic on *this* plan, this
+   line is what runs of the same shape actually cost you, and averaging the two produces a number
+   backed by nothing.
 
    Two per-step fields shape what implementation costs, so sanity-check them rather than passing them
    through: `risk` (`contract` earns an immediate review checkpoint) and `context_confidence`
@@ -147,7 +231,40 @@ signal and escalate.
 
 7. **Handoff.** On approval, set `stage: "plan-ready"` in `<workspace>/state.json`, and store the
    result's `findings` array there too — that is what makes a later run in this workspace skip
-   re-exploring. Then suggest `/dev-implement <slug>` (or continue yourself if asked).
+   re-exploring. In the same write, **append** one entry to that file's `runs` array —
+   `{ phase: "plan", ts, run_id, tier, signal?, agents_projected, cost_total, floors_active }` — `ts`
+   is plain `YYYY-MM-DD HH:MM`, matching `updated` (`/dev-status`'s Notes) — append only, never
+   rewriting an earlier entry: `/dev-status archive <slug>` keeps this file and
+   deletes the bulk, so it is the copy of the evidence that survives when the ledger does not. Then
+   suggest `/dev-implement <slug>` (or continue yourself if asked).
+
+   **The ledger line — the last of the three write sites.** One `plan` line per invocation, written
+   here for medium and large only. The low tiers wrote theirs already; never both. Same
+   `scripts/ledger-append.sh` heredoc as above (unindented, so the closing `JSON` starts its own
+   line), with a fuller body:
+
+   ```json
+   {"phase":"plan","slug":"retry-policy","tier":"medium","signal":"contract-change","open_questions":2,"waves":3,"parallel_groups":2,"scouts_projected":4,"agents_projected":21,"run_id":"wf-2f1c","concurrent":"unknown","cost":{"by_phase":{"decompose":900,"explore":31000,"validate":8100,"synthesize":12000},"total":52000,"budget_total":null,"floors_active":false}}
+   ```
+
+   Every value is a number, a boolean or a top-level string — the reader parses by key, so a string
+   never goes inside `cost`. `tier` always; `signal` only when one fired; `slug` whenever a workspace
+   exists. Four come from the step-5 lint's `schedule`: `waves` = `schedule.waves.length`,
+   `parallel_groups` = how many `waves[].parallel_groups` hold more than one step,
+   `scouts_projected` = the total length of `waves[].scouts`, `agents_projected` = `agents_min`.
+   `run_id` and `cost` — the whole object, **verbatim** — come from the workflow result;
+   `open_questions` is how many step 4 surfaced, a count and not the questions themselves;
+   `profile`/`models`/`efforts` only when you overrode them. Omit whatever you do not have.
+
+   `concurrent` is `false` **only** if you actually looked (TaskList showed no other workflow when
+   you launched this one), `true` if you found one, and `"unknown"` otherwise. Never a guessed
+   `false`: that field is the only thing telling the calibration report whether these token numbers
+   can be trusted, since `budget.spent()` counts the whole turn and cannot see a second workflow.
+
+   The line records the planning *run*, not the approval — so if the developer declines at the
+   checkpoint or the run ends there, write it then, once, and say so in the report. Dropping it would
+   bias every rate the report prints toward plans that happened to be approved. And as at the low
+   tiers, a failed append is one sentence in the report and never a failed phase.
 
 ## Cost
 

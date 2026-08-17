@@ -129,6 +129,17 @@ high/critical, `needs-attention` for low/medium only, otherwise `clean`.
   feeds the confirmed findings straight to the fixer without re-finding them. If the findings need
   an approach decision or span several subsystems, offer `/dev-plan "fix the findings in <report>"`
   as ordinary work instead.
+  The run has just stopped on the developer's decision at the last gate before publication, so notify
+  them once with the **`PushNotification`** tool (`{ message, status: "proactive" }`; if it is not in
+  the current tool set, `ToolSearch` for it first). One line, ≤200 characters, no markdown:
+  `PR blocked for <branch>: <n> high/critical findings — /dev-review --from-report <path>`.
+  If the branch name and report path push that past 200 characters, shorten the path to its basename
+  first, then the branch name if it is still too long — the actionable suffix (the command to run)
+  is the part that must survive.
+  Only here: not on the low/medium branch below, which asks for an acknowledgement rather than
+  stopping, and never on a `/dev-pr` run without `--review`, where nothing was gated at all. A
+  `not sent` result means the developer is already at the terminal reading this — expected, and never
+  retried.
 - Low/medium: require one explicit risk acknowledgement in addition to publication confirmation.
 - Clean: continue to the PR preview.
 
@@ -165,6 +176,37 @@ here is plain git. `--body-only` stops at this point, and so does every lane exc
 in which case say what the artifact is for (`pr.md` to paste, or the `gh` command to run once
 authenticated) rather than reporting a failure. The work is the same; only the last hop is missing.
 
+**The ledger line — exactly one `pr` line per invocation, whichever lane ran.** A run that stops here
+(`--body-only`, and every lane except the GitHub one) writes it here; a run that continues into
+section 5 writes it there instead, after publication is settled. Never both:
+
+```bash
+sh "${CLAUDE_PLUGIN_ROOT}/scripts/ledger-append.sh" <<'JSON'
+{"phase":"pr","reviewed":true,"outcome":"needs-attention","rounds":1,"findings":{"raw_titles":9,"clusters":6,"confirmed":2,"refuted":4,"applied":0,"skipped":0},"cost":{"by_phase":{"review":31000,"verify":12000},"total":43000,"budget_total":null,"floors_active":false},"published":false,"baseline":"<merge base sha>","concurrent":"unknown"}
+JSON
+```
+
+- `reviewed` is whether `--review` actually ran. Without it, omit `outcome`, `rounds`, `findings` and
+  `cost` entirely — a run that reviewed nothing has no verdict, and an invented `clean` is the one
+  way this row can lie.
+- `outcome` is section 3's own `clean | needs-attention | blocked`. `rounds`, `cost` (verbatim) and
+  `findings` come off the report-only loop's return: `raw_titles` is its `raw`, `clusters` its
+  `clustered`, and `confirmed`/`refuted`/`applied`/`skipped` are the lengths of those arrays — the
+  last two are 0 here by construction, since `apply: false` fixed nothing. If a return lacks `raw`
+  and `clustered` (an older workflow), omit both rather than reconstructing them from
+  `merged_titles`.
+- `published` is whether a PR was really created or edited — always `false` in a lane that stops
+  here. `baseline` is the merge base recorded in section 1. `concurrent` is `false` only if you
+  actually checked and found nothing, `true` if you found something, `"unknown"` otherwise — never a
+  guessed `false`.
+- Add `slug`, and a compact entry in `<workspace>/state.json`'s `runs` array —
+  `{ phase: "pr", ts, reviewed, outcome?, rounds?, confirmed?, applied?, cost_total?, floors_active?,
+  published, baseline }` (`ts` is plain `YYYY-MM-DD HH:MM`, matching `updated`; the `?` fields follow
+  `reviewed` the same way they follow it in the ledger line above — omitted when no review ran),
+  appended, never rewriting an earlier one — **only** when section 2 matched a task workspace. A
+  `.dev/pr/<sanitized-branch>/` workspace has no state file by design and must not grow one.
+- A failed append is one sentence in the report, never a failed phase.
+
 ## 5. Publish only after confirmation — GitHub lane only
 
 Ask one explicit confirmation covering the exact external actions. If needed, push with
@@ -177,3 +219,19 @@ Ask one explicit confirmation covering the exact external actions. If needed, pu
 
 Report the PR URL. Never commit, stage, push, create, edit, close, or mark ready without the
 developer's explicit approval.
+
+Then append the invocation's one `pr` line — this is the write site for every run that reached
+section 5, and section 4's is for the runs that stop there, so exactly one of the two fires:
+
+```bash
+sh "${CLAUDE_PLUGIN_ROOT}/scripts/ledger-append.sh" <<'JSON'
+{"phase":"pr","reviewed":false,"published":true,"baseline":"<merge base sha>","concurrent":false}
+JSON
+```
+
+Same body and the same rules as section 4's — that example shows a reviewed run, this one a plain
+`/dev-pr` that reviewed nothing and therefore carries no `outcome`, `rounds`, `findings` or `cost`.
+`published` records what actually happened: `true` when a PR was created or edited, `false` when the
+developer declined the confirmation. Write the line either way — a declined publication is still a
+`/dev-pr` invocation, and a run that records nothing is indistinguishable from a run that never
+happened.

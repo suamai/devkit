@@ -168,6 +168,18 @@ You orchestrate the implementation phase of a planned dev task. The heavy liftin
      honest "this repo documents no suite" is a result; a guess is not. `finalCheck.suite_run` does not
      substitute for this: on a stopped run the script fabricated it with nothing behind it, so restating
      it as a result would be reporting a check that never happened.
+     Then tell the developer, once: call the **`PushNotification`** tool
+     (`{ message, status: "proactive" }`, one line, ≤200 chars, no markdown) with
+     `implement <slug> stopped: <stopReason>`. `stopReason` can itself be long (a blocked wave joins
+     every concurrently blocked step's `id:stage`); if the composed message would run past 200
+     characters, truncate `stopReason` and keep the `<slug>` and "stopped" prefix intact — that is
+     what tells the developer where to look. It is a deferred tool — if it is not in the current tool
+     set, `ToolSearch` for it first. Key it on `stoppedEarly` **alone**: the flag is set exactly once per
+     run whichever path stopped it, and a blocking question forces the checkpoint flush before it, so
+     there is no second condition to test and no way to fire one ping per question. A `not sent` result
+     means the developer is at the terminal — expected, not an error, never retried. This is not the
+     automatic ping a finished background workflow already sends: that one says the run ended, this one
+     says it ended *early* and names what stopped it.
 
 7. **Verify end-to-end.** Per-step `verify_run` and `suite_run` already executed checks; re-run
    anything that failed after your fixes, and exercise the changed flow if the project has a runtime
@@ -182,7 +194,21 @@ You orchestrate the implementation phase of a planned dev task. The heavy liftin
 
 8. **Phase commit.** `impl(<slug>): <plan title>`, with the standard co-author trailer; using this
    skill opts into phase commits unless the developer said otherwise. Then set `stage: "implemented"`
-   in the workspace's `state.json`.
+   in the workspace's `state.json`, and **append** one compact entry to its `runs` array —
+   `{ phase: "implement", ts, run_id, agents_projected, steps_leaf, rounds, confirmed, applied,
+   unverified, cost_total, floors_active, stopped, stop_reason }` (`ts` is plain `YYYY-MM-DD HH:MM`,
+   matching `updated`), the same numbers step 9's ledger line carries (`rounds` is its
+   `review_rounds`, `unverified` is `unverifiedSteps.length`,
+   `cost_total`/`floors_active` come from `cost`). Append it; never rewrite an earlier entry, and merge
+   into whatever the earlier phases left in that file. This is the copy that survives when the ledger
+   does not — `/dev-status archive <slug>` keeps `state.json` and deletes the bulk.
+
+   **A stopped run appends this entry too.** There is no commit and `stage` stays `implementing` —
+   the flow is resumable and the SessionStart stale-flow hook depends on that stage — but the entry
+   is still written, with `stopped: true` and `stop_reason`. Those two fields exist for exactly this
+   case: the run that stopped is the one whose numbers matter most, and a `runs` array holding only
+   the runs that finished well would bias the surviving copy the same way `clean` biases the
+   workspaces. Write the entry, leave the stage alone, and say in the report that you did.
 
 9. **Report.** Lead with `cost`: `by_phase` (`steps` = scouting + implementation, which cannot be
    split further because parallel steps interleave; `gate`; `review`; `check`) and `total`. If
@@ -201,6 +227,64 @@ You orchestrate the implementation phase of a planned dev task. The heavy liftin
    leaves behind still builds, or the honest reason that could not be established.
    If the run stopped early, do **not** phase-commit and report as done — say what stopped it and
    offer the continuation below.
+
+   Then append this run to the ledger — one line, once per invocation, after the report and (when
+   there was one) the phase commit. A run that stopped early writes its line too: no phase commit
+   happened, and `stopped`/`stop_reason` below exist precisely to record that. Skipping it would make
+   the ledger a record of runs that finished well, which is the bias the store was chosen to avoid.
+   A `--continue` run is its own phase run: it writes its **own** line and never amends the
+   previous one.
+
+```bash
+sh "${CLAUDE_PLUGIN_ROOT}/scripts/ledger-append.sh" <<'JSON'
+{"phase":"implement","slug":"<slug>","tier":"medium","run_id":"<lastRunId>","baseline":"<baseline>","waves":3,"parallel_groups":1,"steps_leaf":7,"splits":0,"scouts_ran":2,"gates":2,"gate_breaks":0,"checkpoints":2,"review_rounds":3,"agents_projected":19,"unreviewed_waves":0,"stopped":false,"concurrent":false,"findings":{"raw_titles":14,"clusters":9,"confirmed":5,"refuted":4,"applied":5,"skipped":0},"verification":{"steps":7,"passed":6,"unverified_honest":1,"unverified_unevidenced":0,"unverified_infra":0,"weak_evidence":2,"kind_missing":0},"cost":{"by_phase":{"steps":180000,"gate":9000,"review":120000,"check":11000},"total":320000,"budget_total":null,"floors_active":false}}
+JSON
+```
+
+   Both the command and the closing `JSON` start at column 0 on purpose: an indented terminator does
+   not close a quoted heredoc, and the script then sees a two-line body and refuses it.
+
+   The envelope is the script's half and the shared vocabulary is in `docs/architecture.md` → "The run
+   ledger"; every number below comes off *this* run's result, and anything you do not have is omitted
+   rather than guessed:
+   - `tier` = the tier the plan was triaged at, not a judgement you make here: read it from the
+     workspace's own `runs` array (the latest `plan` entry) or, for a small-tier plan, its
+     `**Tier:**` line. It is carried over because comparability is phase + tier + profile, and
+     `/dev-plan`'s quote (`--phase implement --tier <t>`) matches strictly — a line missing the field
+     it is filtered on never matches, so dropping `tier` here would leave that quote reading `n=0`
+     forever. If neither source says, omit it, like any other field you do not have.
+   - `waves` = `result.waves.length`; `parallel_groups` = the groups of more than one step in step 4's
+     lint (`schedule.waves[].parallel_groups`); `agents_projected` = that same lint's `agents_min`
+   - `steps_leaf` = the leaf reports (a `split: true` report is the parent of its `substeps` — count
+     the substeps, not it); `splits` = the reports with `split: true`
+   - `scouts_ran` = `ls <workspace>/briefs | wc -l`: only scouts that actually ran leave a brief
+   - `gates` = `contractGates.length`; `gate_breaks` = the total of `contractGates[].breaks.length`
+   - `checkpoints` = `checkpointReviews.length`; `review_rounds` = the sum of
+     `checkpointReviews[].review.rounds`
+   - `findings` sums `checkpointReviews[].review` across checkpoints: `confirmed`/`refuted`/`applied`/
+     `skipped` are those arrays' lengths, `raw_titles` sums `review.raw` and `clusters` sums
+     `review.clustered` — the review loop's own scalars, stored verbatim under each checkpoint. Never
+     reconstruct either from `merged_titles`: that count silently omits every raw finding the verifier
+     dropped without clustering. A review object carrying neither field (an older run) omits **both**
+     rather than substituting a derivation.
+   - `verification` restates step 6's own counts: `steps` = `steps_leaf`, `passed` = the leaf reports
+     whose verification status is `passed`, and the three unverified reasons split exactly as step 6
+     splits them, partitioning `unverifiedSteps` with no overlap — `unverified_infra` =
+     `infraErrors.length` (an infra-error step is a member of `unverifiedSteps` too, since it sets
+     `unverified: true`); `unverified_unevidenced` = the *remaining* `unverifiedSteps` whose reason
+     begins "claimed ran=true…"; `unverified_honest` = whatever is left of `unverifiedSteps` after
+     removing both of those — never just "the rest" of the unevidenced split alone, or every
+     infra-error step gets counted twice. `weak_evidence` = `weakEvidenceSteps.length`, `kind_missing`
+     = `kindMissing.length`
+   - `unreviewed_waves` = `unreviewedWaves.length`; `stopped`/`stop_reason` from `stoppedEarly` and
+     `stopReason`; `cost` **verbatim**; `run_id` = the `lastRunId` you already recorded; `baseline` =
+     the one step 3 captured
+   - `concurrent`: step 2 already looked — `false` when that glob and TaskList found nothing, `true`
+     when they found a live run, `"unknown"` when the check did not happen. Never a guessed `false`:
+     overlapping runs inflate `cost.by_phase` and this field is the only thing that says so.
+
+   The ledger is telemetry for a later report, never a gate. If the append fails, say so in one
+   sentence and finish; never fail the phase over it, and never read the file back.
 
 10. **Ratchet the repo's rules — only when the run produced evidence.** Nothing carries between
     cycles by design; the repo itself is the only durable store, so this is the one moment where

@@ -86,6 +86,8 @@ A task can be promoted explicitly by saying “treat this as large”.
 | `/dev-implement <workspace-or-plan.md>` | Execute an explicitly named workspace or plan file rather than a slug. |
 | `/dev-status clean <slug>` | Preview, confirm, then delete a task workspace (its state file goes with it). |
 | `/dev-status clean pr/<branch>` | Preview, confirm, then delete one standalone PR workspace. Bare `pr` never deletes all PR workspaces. |
+| `/dev-status archive <slug>` | Preview, confirm, then delete everything in a task workspace *except* `state.json`: the bulk goes, the compact per-run summaries survive. Not offered for `pr/<branch>` workspaces — they carry no state file to keep. |
+| `/dev-status --calibration` | Print the calibration checklist from your run ledger — clustering ratio, split rate, round convergence, escalation rate, unverified steps, tokens per phase, projected vs. actual agents — each row with its sample size, medians rather than means. Says so plainly when there is no ledger yet. |
 
 Implementation tuning is supplied in the request as intent rather than relying on rigid flag
 parsing: for example “implement `<slug>` with review disabled”, “use one review round”, “never run
@@ -106,7 +108,8 @@ you can audit the choice in both directions, and override it either way ("treat 
 - Exploration runs in the background (~3-5 scout agents + one batched validator + a synthesizer; a few
   minutes). You'll see progress; you don't need to babysit.
 - **Your checkpoint #1**: open questions. Agents collect decisions only you can make; Claude asks
-  them in one batch, with options. Answer them — they reshape the plan.
+  them in one batch, with options — after pushing you a notification, since this is the run waiting
+  on a person rather than a workflow merely finishing. Answer them — they reshape the plan.
 - **Your checkpoint #2**: plan approval. Read the summary (full detail: `.dev/<slug>/plan.md`).
   Push back freely — adjustments are edits to the plan file, cheap. Nothing touches your code yet.
 
@@ -142,7 +145,8 @@ then audits the seams across all of it and runs the test suite.
 - If the run **stops early** — a blocking question, an unclean checkpoint, a failed step — there is no
   phase commit, and the report tells you whether the tree it left behind still builds: your repo's own
   check is run before you are handed the result, rather than leaving you to guess what state the
-  working copy is in.
+  working copy is in. A stopped run also pushes you a notification naming what stopped it, so it does
+  not sit there waiting to be noticed.
 
 ### 3. Review anytime — `/dev-review` or `/dev-review src/api/ --no-apply`
 
@@ -286,7 +290,7 @@ own. You are the curator; the rules are versioned, diffable repo content, and th
 | `notes/<id>.md` | The implementer's decisions and *whys* — read before questioning a choice |
 | `pr.md` | Proposed public PR body; safe to edit before publication |
 | `reviews/<sha>.md` | Confirmed/refuted review evidence for one exact branch HEAD |
-| `state.json` | This flow's own state: stage, baseline, last run id (resume) |
+| `state.json` | This flow's own state: stage, baseline, last run id (resume), and the compact per-run summaries `archive` keeps |
 
 When no task workspace matches a branch, `/dev-pr` uses `.dev/pr/<branch>/` instead. `/dev-status`
 lists these separately; they are not registered as implementation flows.
@@ -338,6 +342,16 @@ rest, roughly in order:
 The completion notification of every workflow shows its total token usage, and every workflow now
 also returns a per-phase breakdown (`cost.by_phase`) and logs it as it goes — so "where did the
 money go" is answered by the run, not by arithmetic on notifications.
+
+**The run ledger.** Those numbers no longer die with the turn: each phase appends one line to
+`~/.claude/devkit/runs.jsonl` — per developer, spanning every repo you use the pipeline in, because
+"is *this pipeline* calibrated?" is not a per-repo question. Two things read it, both through
+`scripts/ledger-report.sh`: `/dev-status --calibration` prints the whole checklist, and `/dev-plan`
+quotes one aggregated historical line beside its static cost floor at the approval checkpoint —
+labelled as your own history, never as a promise. **No agent ever reads the file itself**; aggregates
+may reach the conversation, raw lines never do. It is append-only, carries no schema version and
+nothing depends on it, so deleting it costs you nothing but the history, and a phase that fails to
+append it says so in one sentence and carries on.
 
 PR drafting without `--review` uses no review agents. `/dev-review --from-report` skips the find and
 verify phases entirely — those were already paid for when the report was written — so it costs one

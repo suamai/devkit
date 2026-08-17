@@ -96,6 +96,23 @@ Report: the repro, the cause as a mechanism, **the hypotheses that were refuted 
 and the before/after of the repro. If you never reproduced it, say that first and last, and call the
 fix unverified.
 
+Then append one `debug` line to the run ledger — once per invocation, whatever the outcome, including
+a run that never got a repro:
+
+```bash
+sh "${CLAUDE_PLUGIN_ROOT}/scripts/ledger-append.sh" <<'JSON'
+{"phase":"debug","hypotheses":4,"refuted":3,"repro":"yes"}
+JSON
+```
+
+`hypotheses` is how many step 2 actually fanned out, `refuted` how many step 3 killed, and `repro` is
+`"yes"` only when step 1 produced one that failed on demand — `--no-repro` is a `"no"`. Add `tier`
+and `signal` only when step 5 escalated into `/dev-plan`, to mark where that escalation came from;
+the plan run writes its own line with its own numbers. There is deliberately **no** `slug` and **no**
+`state.json` write here, and neither is to be added later: debugging is not a pipeline stage and has
+no workspace (see the Notes below). A failed append is one sentence in the report, never a failed
+phase.
+
 ## Notes
 
 - The read-only fan-out is a hard rule, not a default. If a hypothesis genuinely requires executing

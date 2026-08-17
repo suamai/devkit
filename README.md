@@ -12,6 +12,7 @@ A multi-agent development pipeline for Claude Code, packaged as a plugin.
 /dev-debug     →  repro → read-only hypothesis fan-out → refute → narrow serially → prove it dead
 /dev-pr        →  branch analysis, optional SHA-bound review, PR body, guarded publication
 /dev-status    →  what's running, what's stale, cleanup
+                  (archive <slug> keeps the numbers; --calibration reads them back)
 /dev-setup     →  configure a repo to use all of the above
 ```
 
@@ -82,7 +83,7 @@ declare `extraKnownMarketplaces` + `enabledPlugins` in its `.claude/settings.jso
 .claude-plugin/              plugin + marketplace manifests (both state the version)
 skills/dev-*/SKILL.md        control plane — runs in the main loop, talks to you
 workflows/wf-*.js            data plane — background orchestration, invoked as devkit:wf-<name>
-scripts/                     install, promote, and the rules manifest the skills call
+scripts/                     install, promote, the rules manifest, and the run-ledger writer/reader
 hooks/                       shipped SessionStart hook + the opt-in git pre-commit
 docs/                        manual (usage) + architecture (design rationale)
 tests/                       node, no dependencies — `sh tests/run-all.sh`
