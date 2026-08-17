@@ -138,6 +138,13 @@ file. Validation lists commands actually observed in notes/current checks, never
 planned. Keep secrets, local paths, agent internals, `.dev` paths, and workflow failures out of the
 public body unless they are product-relevant limitations.
 
+**Language.** `pr.md` is the one artifact here that becomes public, so it is the one where following
+the conversation's language is most likely wrong. If `CLAUDE.md` carries an
+`Artifact language: <language>.` line, write the title and body in that language regardless of the
+language this conversation used; with no line, follow the conversation as before. The conventional
+commit prefix (`feat:`, `fix:`) is a token, not prose — it does not translate, and neither do
+commands under **Validation**, file paths, or identifiers.
+
 Show title, body, base/head, draft status, review gate, and whether a push is needed. Everything to
 here is plain git. `--body-only` stops at this point, and so does every lane except the GitHub one —
 in which case say what the artifact is for (`pr.md` to paste, or the `gh` command to run once

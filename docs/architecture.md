@@ -285,11 +285,20 @@ copies of them.
 | `tests/policy.test.js` | model/effort resolution, plus `policy()`/`metered()` drift across the scripts |
 | `tests/rules.test.js` | `paths:` frontmatter parsing, glob matching, matcher drift |
 | `tests/seeded-review.test.js` | `--from-report`: that no finder runs, and that `clean` still needs a post-fix pass |
-| `tests/explore-modes.test.js` | plan vs explain mode, and that reused findings skip scouting but not validation |
-| `tests/contract-drift.test.js` | that the prose still states the values the scripts use, and that every name it points at resolves |
+| `tests/explore-modes.test.js` | plan vs explain mode, reused findings skipping scouting but not validation, and that `language` reaches both synthesizer prompts |
+| `tests/dryrun-smoke.test.js` | that every shipped workflow answers `dryRun: true` with `{ok: true}` and a resolved policy, spawning nothing — the promise `/dev-setup` step 6 makes to every new repo |
+| `tests/contract-drift.test.js` | that the prose still states the values the scripts use, that every name it points at resolves, and that both manifests and `CHANGELOG.md` agree on the version |
 
 Run one with `node tests/<name>.test.js` or all of them with `sh tests/run-all.sh`; each prints a
-PASS/FAIL line per case and exits non-zero on failure. Where a test cannot reach through `dryRun` it extracts the shipped block by an anchor
+PASS/FAIL line per case and exits non-zero on failure, and the runner reports every failing file in
+one pass rather than stopping at the first.
+
+Nothing ran any of this automatically until the version that added `scripts/install-hooks.sh` — an
+**opt-in** `pre-commit` running the suite — and `.github/workflows/tests.yml`, which runs it on every
+push. The hook is opt-in on purpose: a pre-commit hook installed without asking is how people learn
+to type `--no-verify`, which costs more than the hook buys. `tests/dryrun-smoke.test.js` is what lets
+that hook stay a single line, by moving the three workflow `dryRun` calls into the suite where they
+also protect anyone who never installs it. Where a test cannot reach through `dryRun` it extracts the shipped block by an anchor
 and fails closed if the anchor moves — a stopgap, and the reason to prefer widening `dryRun`.
 
 `tests/contract-drift.test.js` is a different kind of check: the scripts are the source of truth for
@@ -457,6 +466,14 @@ a correction rather than the correction itself — was answered from real use, n
   `findings/` a later plan run reuses. `/dev-plan`'s prose says to route bare questions away.
 - The built-in `/run` complements step 7 of `/dev-implement`: launch the app and exercise the
   changed flow end-to-end, not just tests.
+- **A diff touching security-relevant surface → the built-in `/security-review`.** Neither default
+  lens is a security lens: `runtime-contracts` and `intent-verification`
+  (`workflows/wf-review-loop.js`, `const LENSES`) look for logic bugs and intent gaps, and neither
+  mentions authz, injection, secrets or dependency changes. So a clean `/dev-review` is evidence
+  about correctness and intent, not about safety — run `/security-review` as well when the change
+  touches auth, HTTP handlers, SQL, CI files or lockfiles. A path-conditioned security lens inside
+  the loop is the other half of this and is not built; it needs the additive-lens mechanism the
+  `repo-conventions` lens already demonstrates.
 
 ## First-run calibration checklist
 

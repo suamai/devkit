@@ -26,3 +26,10 @@ Spec-building is dialogue, so it happens here in the main loop — no background
 6. **Present and iterate.** Show a concise summary; apply the developer's adjustments to the file.
 
 7. **Handoff.** Suggest `/dev-plan` pointed at the same slug — it picks up `spec.md` from the workspace automatically.
+
+## Artifact language
+
+If `CLAUDE.md` carries an `Artifact language: <language>.` line, write `spec.md` in that language.
+No line means today's behavior: it follows the conversation. Acceptance criteria are the exception
+that matters — the command, endpoint, flag or identifier inside one is an address, and it stays
+exactly as it appears in the repo. Translate the sentence around it, never the thing being run.

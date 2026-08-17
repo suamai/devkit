@@ -1,6 +1,6 @@
 ---
 name: dev-setup
-description: Configure a repository to use the devkit dev pipeline — gitignore, CLAUDE.md pointer, Workflow permission, and a zero-cost smoke test of the four workflow scripts. Use in a new project, or to check an existing setup after installing or updating the plugin.
+description: Configure a repository to use the devkit dev pipeline — gitignore, CLAUDE.md pointer, Workflow permission, the stale-flow session hook, and a zero-cost smoke test of the three workflow scripts. Records the plugin version it configured against, so a later run can say what changed. Use in a new project, or to check an existing setup after installing or updating the plugin.
 ---
 
 You configure the repository you are in to work with the `devkit` pipeline. The skills, workflows
@@ -12,10 +12,24 @@ find the manual, and the repo's own path-scoped rules.
 
 Work through these, reporting each as ok / fixed / skipped-with-reason.
 
-1. **Plugin loaded.** Confirm the workflows resolve by name (`devkit:wf-explore-plan`,
-   `devkit:wf-implement`, `devkit:wf-review-loop`). If they do not, the plugin
-   was installed or updated after this session started — say so and tell the developer to restart
-   Claude Code. Everything below still works meanwhile via `scriptPath`.
+1. **Plugin loaded, and which version.** Confirm the workflows resolve by name
+   (`devkit:wf-explore-plan`, `devkit:wf-implement`, `devkit:wf-review-loop`). If they do not, the
+   plugin was installed or updated after this session started — say so and tell the developer to
+   restart Claude Code. Everything below still works meanwhile via `scriptPath`.
+
+   Read the installed version from `${CLAUDE_PLUGIN_ROOT}/.claude-plugin/plugin.json` (and the commit
+   from `${CLAUDE_PLUGIN_ROOT}/FROZEN_AT` if present — `promote-plugin.sh` writes it). Then look for
+   a `Configured against devkit <version>.` line in the repo's `CLAUDE.md`:
+
+   - **No line** — a repo configured before this was recorded, or never configured. Step 3 adds it.
+     Say that you are recording the current version, not discovering what it used to be; there is no
+     way to know retroactively and guessing would be worse than the gap.
+   - **Same version** — nothing to report beyond "up to date".
+   - **Different version** — this is the reason the line exists. Read
+     `${CLAUDE_PLUGIN_ROOT}/CHANGELOG.md` and summarise the entries *between* the two, then update
+     the line in step 3. A repo cannot pin a plugin version, so the changelog is the only
+     compatibility story there is; going backwards (installed older than recorded) is worth calling
+     out explicitly, because it usually means a stale install rather than a downgrade.
 
 2. **Git.** The repo must be a git repository (offer `git init` — `/dev-implement`, `/dev-review`
    and `/dev-pr` all need diffs). Add to `.gitignore` if absent:
@@ -33,6 +47,7 @@ Work through these, reporting each as ok / fixed / skipped-with-reason.
    /dev-debug (repro first, then hypotheses). Trivial/small changes don't need the pipeline
    (the /dev-plan triage decides).
    Cost profile: default.
+   Configured against devkit 0.2.0.
    ```
    Ask which cost profile this repo wants (`cheap` | `default` | `max` — the manual's Cost control
    explains the ladder); a side project and a production repo do not deserve the same budget.
@@ -40,9 +55,46 @@ Work through these, reporting each as ok / fixed / skipped-with-reason.
    read it and pass it as `profile`. No config file, no precedence rules, and unlike anything under
    `.dev/` it is committed, so it applies to whoever clones the repo.
 
+   `Configured against devkit <version>.` takes the version step 1 read from the installed plugin —
+   never a version you remember. Update it whenever step 1 found a mismatch, *after* reporting what
+   changed in between; silently rewriting it throws away the only signal.
+
+   **Also offer `Artifact language: <language>.`** — same mechanism, one more per-repo fact. Without
+   it, `plan.md`, `understanding.md`, `spec.md` and especially `pr.md` come out in whatever language
+   the conversation happened in, which is wrong for anyone who works in one language and publishes in
+   another. Ask only if there is a reason to think it applies (the repo's committed prose is in a
+   different language from the conversation, or the developer raises it); otherwise leave the line
+   out, which keeps today's behavior exactly. It binds prose only — identifiers, paths, commands and
+   quoted code are never translated, because those are addresses the pipeline follows literally.
+
 4. **Permissions.** In the project's `.claude/settings.json`, ensure `permissions.allow` includes
    `"Workflow"` (create the file and keys as needed, merging with what exists — never dropping
    entries). This spares the recurring permission prompt on every pipeline run.
+
+   **Offer the stale-flow hook** in the same file. A workspace at `implementing` means an implement
+   run that did not finish — a designed outcome (blocking question, unclean checkpoint, failed step,
+   budget floor), not only a crash — and nothing surfaced it until you remembered to run
+   `/dev-status`. Worse, `/dev-implement` treats such a workspace as a concurrency lock, so a
+   forgotten one blocks the next run for a reason nobody can see. The hook prints nothing at all when
+   the repo is clean, which is the only reason it is worth having at session start:
+   ```json
+   {
+     "hooks": {
+       "SessionStart": [
+         {
+           "matcher": "startup|resume",
+           "hooks": [{ "type": "command", "command": "sh \"<plugin-root>/hooks/session-start-stale-flows.sh\"" }]
+         }
+       ]
+     }
+   }
+   ```
+   Write the **resolved absolute path** in place of `<plugin-root>` (expand `${CLAUDE_PLUGIN_ROOT}`
+   yourself and paste the result) — that variable is plugin context, and a project settings file is
+   not. The plugin also ships the same hook in `hooks/hooks.json` for installs that load plugin
+   hooks; if it is already firing, say so and skip this rather than registering it twice. Verify by
+   running the script directly — it exits silently on a clean repo, so a silent run is a pass, and an
+   error means the path is wrong.
 
 5. **Repo rules (optional but high-value).** `.claude/rules/*.md` is a **native** Claude Code
    convention, not a devkit one: those files load automatically alongside CLAUDE.md, and a `paths:`
@@ -112,6 +164,9 @@ Work through these, reporting each as ok / fixed / skipped-with-reason.
 
 Checklist results, then:
 
+- The version this repo is now configured against, and — when step 1 found a mismatch — what changed
+  between the recorded version and the installed one. That comparison is the whole point of an
+  update run; leading with "all steps ok" while burying it is the one way to waste it.
 - Suggested first read: `${CLAUDE_PLUGIN_ROOT}/docs/manual.md` (5 minutes — commands, checkpoints,
   troubleshooting). Architecture and design rationale: `${CLAUDE_PLUGIN_ROOT}/docs/architecture.md`.
 - Suggested first run: `/dev-plan` on a real medium-sized task, then check the calibration numbers

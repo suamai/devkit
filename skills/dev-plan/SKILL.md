@@ -160,6 +160,17 @@ role or value throws before any agent runs — check it with `dryRun: true`, whi
 resolved policy. Omitting all three reproduces the shipped tiers exactly. Default it from the
 repo's `Cost profile:` line in CLAUDE.md when one is present.
 
+## Artifact language
+
+If `CLAUDE.md` carries an `Artifact language: <language>.` line, pass `language: "<language>"` to
+`wf-explore-plan` and write `plan.md` in that language when you edit it yourself — including the
+small tier's five-line file. No line means today's behavior: the artifact follows the conversation.
+
+It binds prose only. Step ids, file paths, `verify` commands, config keys and quoted code stay
+exactly as they appear in the repo, because `/dev-implement` follows them literally — a translated
+`verify` is a command that does not run. The machine-readable JSON steps block keeps its English
+field names for the same reason; only the values are prose.
+
 ## Notes
 
 - The workspace is the shared memory: agents exchange *paths* into it, never raw dumps. Every file has exactly one writer. Don't let the chat summary drift from `plan.md`.

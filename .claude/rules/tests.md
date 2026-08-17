@@ -22,6 +22,6 @@ it with stubs. Rationale: `docs/architecture.md` → "Testing".
   while the sentence around it now says the opposite is a check that teaches people to ignore the
   suite.
 - Every case prints a `PASS`/`FAIL` line and the file exits non-zero on failure, so
-  `sh tests/run-all.sh` stops at the first failing file.
+  `sh tests/run-all.sh` reports every failing file in one run and exits non-zero if any did.
 - Verify a new drift-style check by **mutation**: change the thing it guards and watch it fail. A
   test like this can silently stop testing.

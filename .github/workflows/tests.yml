@@ -1,0 +1,49 @@
+# The suite, on every push and pull request. The repo's thesis is *treat prompts as code*, and
+# `tests/run-all.sh` — the drift test in particular — is what makes changing a prompt stop being a
+# bet. The opt-in pre-commit hook (`sh scripts/install-hooks.sh`) is the local half of this; it can
+# be bypassed with `--no-verify` and is not installed by default, so this is the half that always
+# runs.
+name: tests
+
+on:
+  push:
+    branches: [main, dev]
+  pull_request:
+    branches: [main, dev]
+  workflow_dispatch:
+
+jobs:
+  suite:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      # Node, no dependencies, no framework — there is nothing to install and nothing to cache.
+      - name: Run the suite
+        run: sh tests/run-all.sh
+
+      # The shell scripts are the one part of the repo no node test reaches, and two of them
+      # (promote-plugin.sh, install.sh) are destructive enough that a syntax error is a bad way to
+      # find out. A parse check is not a test, but it is the difference between failing here and
+      # failing halfway through someone's install.
+      - name: Parse-check the shell scripts
+        run: |
+          set -e
+          for f in scripts/*.sh hooks/*.sh hooks/pre-commit tests/run-all.sh; do
+            [ -e "$f" ] || continue
+            sh -n "$f" && echo "ok  $f"
+          done
+
+      # Both manifests are read by a machine before they are read by a person; a trailing comma here
+      # means the plugin silently fails to load. contract-drift.test.js parses them too, so this is
+      # only a clearer error message — which is exactly what a manifest failure needs.
+      - name: Check the manifests parse
+        run: |
+          set -e
+          for f in .claude-plugin/plugin.json .claude-plugin/marketplace.json hooks/hooks.json; do
+            node -e "JSON.parse(require('fs').readFileSync('$f','utf8'))" && echo "ok  $f"
+          done

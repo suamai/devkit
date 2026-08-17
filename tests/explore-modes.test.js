@@ -105,7 +105,28 @@ async function main() {
   check('default mode is plan', [plain.result.mode, plain.result.steps.length], [undefined, 1])
   check('waves are still computed', plain.result.waves, [['s1']])
 
-  console.log(failed ? `\n${failed} FAILED` : `\nall ${15} cases pass`)
+  // --- Artifact language. The repo's `Artifact language:` line is only worth writing down if it
+  // reaches the agent that writes the file, so assert the prompt, not the arg. Both modes: the two
+  // synthesizer prompts are separate strings and it is one edit away from being appended to only one.
+  const promptOf = async (args) => {
+    let seen = ''
+    const replies = args.mode === 'explain' ? EXPLAIN : PLAN
+    await run(args, { ...fullSweep, synthesize: (p) => { seen = p; return replies } })
+    return seen
+  }
+  const silent = await promptOf(BASE)
+  check('no language arg changes nothing', /## Language/.test(silent), false)
+
+  for (const mode of [undefined, 'explain']) {
+    const prompt = await promptOf({ ...BASE, mode, language: 'Portuguese' })
+    check(`language reaches the ${mode || 'plan'} synthesizer`, /## Language/.test(prompt), true)
+    check(`  …naming the language`, /in Portuguese/.test(prompt), true)
+    // The failure that would matter: a translated step id, path or verify command is an address
+    // that no longer resolves, and every downstream agent follows those literally.
+    check(`  …and protecting addresses`, /never the pointer/.test(prompt) && /\bverify\b/.test(prompt), true)
+  }
+
+  console.log(failed ? `\n${failed} FAILED` : `\nall ${22} cases pass`)
   process.exit(failed ? 1 : 0)
 }
 

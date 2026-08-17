@@ -11,7 +11,11 @@ export const meta = {
 }
 
 // args: { task, workspace, specPath?, scope?, requirements?, constraints?, angles?, validate?=true,
-//         planPath?, mode?='plan', docPath?, priorFindings?, profile?, models?, efforts?, dryRun? }
+//         planPath?, mode?='plan', docPath?, priorFindings?, language?, profile?, models?, efforts?,
+//         dryRun? }
+//   language: write plan.md / understanding.md and the returned prose in this language, whatever the
+//         conversation used. Addresses (ids, paths, commands, config keys) are never translated.
+//         The skills read it from the repo's `Artifact language:` line in CLAUDE.md.
 //   mode: 'plan' writes plan.md with executable steps; 'explain' writes understanding.md and returns
 //         prose — same exploration and same validation, different synthesizer.
 //   priorFindings: the `findings` array a previous run in this workspace returned. Angles it already
@@ -105,6 +109,19 @@ const findingsDir = `${workspace}/findings`
 const mode = args.mode === 'explain' ? 'explain' : 'plan'
 const docPath = args.docPath || `${workspace}/understanding.md`
 const priorFindings = (args.priorFindings || []).filter((f) => f && f.angle && f.report_path)
+
+// Artifact language. Without this, `plan.md` and `understanding.md` come out in whatever language
+// the conversation happened in — fine until you work in one language and publish in another, at
+// which point it is a per-repo fact rather than a per-conversation one. Same mechanism as
+// `profile`: a line in CLAUDE.md that the skill reads and passes here. Absent, nothing changes.
+//
+// It binds the STRUCTURED OUTPUT too, not just the document, because half the plan's prose reaches
+// the developer through the returned steps rather than through the file. What it must not touch is
+// anything that is an address: a translated `id`, path or verify command is a pointer that no longer
+// resolves, and every downstream agent follows those literally.
+const LANGUAGE = args.language
+  ? `\n\n## Language\nWrite the document — and every prose string in your structured output — in ${args.language}, regardless of the language of this prompt or of the task brief. Leave anything that is an address exactly as it appears in the repo: identifiers, step ids, file paths, commands (including every \`verify\`), config keys, and quoted code. Translate the explanation, never the pointer.`
+  : ''
 
 const TASK_BRIEF = [
   '## Task', args.task,
@@ -404,7 +421,7 @@ Write it to "${docPath}":
 ## Not true          — plausible claims this exploration disproved, with proof
 ## Open questions
 
-Return the structured data; the document is the human-facing artifact.`
+Return the structured data; the document is the human-facing artifact.${LANGUAGE}`
 
 const synth = await metered('synthesize', () => agent(
   mode === 'explain' ? explainPrompt : `You are the planning orchestrator for a development task. Scouts explored the repo by angle (full reports on disk), followed by one batched adversarial pass over their load-bearing claims (verdicts: confirmed / refuted / unverified, plus corrections and missed findings).
@@ -432,7 +449,7 @@ Write the full plan to "${planPath}":
 ## Machine-readable steps
 A fenced \`\`\`json block containing exactly the steps array you return in your structured output.
 
-Return the structured data; the plan file is the human-facing artifact.`,
+Return the structured data; the plan file is the human-facing artifact.${LANGUAGE}`,
   { label: 'synthesize', ...ROLE.synth, schema: mode === 'explain' ? EXPLAIN_SCHEMA : PLAN_SCHEMA },
 ))
 

@@ -22,10 +22,12 @@ const PROSE = ['README.md', 'docs/manual.md', 'docs/architecture.md',
   .map((p) => ({ p, text: read(p) }))
 
 let failed = 0
+let cases = 0
 function check(name, actual, expected) {
   const a = JSON.stringify(actual)
   const e = JSON.stringify(expected)
   const ok = a === e
+  cases++
   if (!ok) failed++
   console.log(`${ok ? 'PASS' : 'FAIL'}  ${name.padEnd(52)} ${a}`)
   if (!ok) console.log(`      expected ${e}`)
@@ -142,5 +144,24 @@ const promptGuide = read('workflows/wf-explore-plan.js').match(/roughly (\d+) fi
 const diagramGuide = read('docs/architecture.md').match(/~(\d+) files as a soft guide/)
 check('step-size guide agrees', promptGuide && promptGuide[1], diagramGuide && diagramGuide[1])
 
-console.log(failed ? `\n${failed} FAILED` : `\nall ${14} cases pass`)
+// ---- 6. The version, which three places state and nothing reconciled. `plugin.json` is what
+// Claude Code loads; `marketplace.json` states it twice more (once as catalogue metadata, once on
+// the plugin entry) and a marketplace consumer reads THOSE. Under a plugin a repo cannot pin a
+// version, so a marketplace advertising 0.2.0 while the plugin ships 0.3.0 is not cosmetic — the
+// changelog is the entire compatibility story and this is what keeps it addressable.
+const plugin = JSON.parse(read('.claude-plugin/plugin.json'))
+const marketplace = JSON.parse(read('.claude-plugin/marketplace.json'))
+const entry = marketplace.plugins.find((p) => p.name === plugin.name)
+check('marketplace lists the plugin it ships', !!entry, true)
+check('every manifest states one version',
+  [...new Set([plugin.version, marketplace.metadata.version, entry && entry.version])], [plugin.version])
+
+// A bump with no changelog entry is a version that moved without saying what changed — the exact
+// failure the changelog exists to prevent, and the cheapest one to catch. Heading form is
+// `## 0.2.0 — YYYY-MM-DD`; only the number is load-bearing here.
+const released = [...read('CHANGELOG.md').matchAll(/^## \[?(\d+\.\d+\.\d+)\]?/gm)].map((m) => m[1])
+check('the shipped version has a changelog entry', released.includes(plugin.version), true)
+check('and it is the most recent one', released[0], plugin.version)
+
+console.log(failed ? `\n${failed} FAILED` : `\nall ${cases} cases pass`)
 process.exit(failed ? 1 : 0)

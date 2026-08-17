@@ -1,0 +1,26 @@
+#!/bin/sh
+# devkit-pre-commit — installed by `sh scripts/install-hooks.sh`, never automatically.
+# Runs the full suite (node, no dependencies, well under a second), which includes the three
+# workflow `dryRun` smoke calls. Bypass once with `git commit --no-verify`.
+#
+# It deliberately tests the WORKING TREE, not the staged snapshot. A stash-and-restore dance is the
+# usual refinement and it is the wrong trade here: it can lose work when it goes wrong, and the
+# failure it would catch (a commit that passes staged but not whole) is one `scripts/promote-plugin.sh`
+# catches anyway, since it refuses to promote a dirty tree or a failing suite.
+
+set -e
+
+root=$(git rev-parse --show-toplevel)
+cd "$root"
+
+command -v node >/dev/null 2>&1 || {
+  echo "pre-commit: node not found — skipping the suite (it is what verifies this repo)" >&2
+  exit 0
+}
+
+if ! sh tests/run-all.sh; then
+  echo >&2
+  echo "pre-commit: suite failed — commit aborted." >&2
+  echo "fix it, or bypass deliberately with: git commit --no-verify" >&2
+  exit 1
+fi

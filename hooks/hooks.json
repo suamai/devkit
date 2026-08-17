@@ -1,9 +1,4 @@
 {
-  "permissions": {
-    "allow": [
-      "Workflow"
-    ]
-  },
   "hooks": {
     "SessionStart": [
       {
@@ -11,7 +6,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "sh \"$CLAUDE_PROJECT_DIR/hooks/session-start-stale-flows.sh\""
+            "command": "sh \"${CLAUDE_PLUGIN_ROOT}/hooks/session-start-stale-flows.sh\""
           }
         ]
       }

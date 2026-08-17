@@ -15,8 +15,8 @@ A multi-agent development pipeline for Claude Code, packaged as a plugin.
 /dev-setup     →  configure a repo to use all of the above
 ```
 
-Read `docs/manual.md` to use it, `docs/architecture.md` to change it, `ROADMAP.md` for what was
-built and why — including what was deliberately dropped.
+Read `docs/manual.md` to use it, `docs/architecture.md` to change it — including what was
+deliberately dropped and why — and `CHANGELOG.md` for what moved between versions.
 
 ## What it is actually built around
 
@@ -49,11 +49,25 @@ Fan-out is the cheap part. The parts that carry their weight:
 Personal use, no marketplace needed — the plugin auto-loads from `~/.claude/skills/`:
 
 ```bash
-git clone <this repo> ~/projects/devkit
-ln -s ~/projects/devkit ~/.claude/skills/devkit
+git clone https://github.com/suamai/devkit.git ~/projects/devkit
+sh ~/projects/devkit/scripts/install.sh
 ```
 
 Restart Claude Code; it loads as `devkit@skills-dir`. Then run `/dev-setup` inside any project.
+
+That installs a **frozen, read-only copy** of `HEAD`, not a symlink, and runs the suite before it
+will. A symlink is the obvious shortcut and it is wrong here, because this repo is also the thing
+being edited: `${CLAUDE_PLUGIN_ROOT}` resolves back through the link into your working tree, so a
+step that edits a workflow changes the workflow of the run editing it, and a run that stops early —
+a designed outcome, not a crash — leaves the tooling half-edited for the next session. If you
+already have the symlink, `install.sh` replaces it.
+
+To update: `git pull`, then re-run `install.sh` (or `scripts/promote-plugin.sh`, which is the same
+install without the first-run checks — run it *between* plans, never during one). `CHANGELOG.md` says
+what changed since the version `/dev-setup` recorded in your project's `CLAUDE.md`.
+
+Editing devkit itself? Also run `sh scripts/install-hooks.sh` — an opt-in `pre-commit` running the
+suite. It is never installed for you, and CI runs the same suite on every push.
 
 For a team, publish from a repo carrying `.claude-plugin/marketplace.json` and have each project
 declare `extraKnownMarketplaces` + `enabledPlugins` in its `.claude/settings.json`.
@@ -61,10 +75,11 @@ declare `extraKnownMarketplaces` + `enabledPlugins` in its `.claude/settings.jso
 ## Layout
 
 ```
-.claude-plugin/              plugin + marketplace manifests
+.claude-plugin/              plugin + marketplace manifests (both state the version)
 skills/dev-*/SKILL.md        control plane — runs in the main loop, talks to you
 workflows/wf-*.js            data plane — background orchestration, invoked as devkit:wf-<name>
-scripts/                     small shell helpers the skills call (rules manifest)
+scripts/                     install, promote, and the rules manifest the skills call
+hooks/                       shipped SessionStart hook + the opt-in git pre-commit
 docs/                        manual (usage) + architecture (design rationale)
 tests/                       node, no dependencies — `sh tests/run-all.sh`
 evals/                       `claude plugin eval` cases for judgment calls no unit test reaches
@@ -83,3 +98,7 @@ the tests. Nothing else.
 against your plan, the SHA-bound review and the body draft are plain git, so a GitLab remote, a bare
 remote or no remote at all still gets everything except the `gh pr create`. `/dev-pr` detects which
 of those you are in and says so before starting.
+
+## License
+
+MIT — see `LICENSE`.

@@ -269,6 +269,25 @@ own. You are the curator; the rules are versioned, diffable repo content, and th
 When no task workspace matches a branch, `/dev-pr` uses `.dev/pr/<branch>/` instead. `/dev-status`
 lists these separately; they are not registered as implementation flows.
 
+### Artifact language
+
+By default these come out in whatever language the conversation happened in. If you work in one
+language and publish in another, that is a fact about the repo rather than about the conversation —
+so it goes in `CLAUDE.md`, next to `Cost profile:`, and `/dev-setup` offers it:
+
+```
+Artifact language: English.
+```
+
+It binds `plan.md`, `understanding.md`, `spec.md` and `pr.md` — the artifacts a human reads, `pr.md`
+above all, since that one becomes public. Omit the line and nothing changes.
+
+What it never touches is anything that is an **address**: step ids, file paths, `verify` commands,
+config keys, conventional-commit prefixes and quoted code all stay exactly as they appear in the
+repo, because the pipeline follows them literally — a translated `verify` is a command that does not
+run. Working artifacts (`findings/`, `notes/`, `reviews/`) are not covered; they are read by agents
+and by you, never published.
+
 ## Cost control
 
 Cost scales with the triage tier — that's the point of triage, and the tier is by far the largest
@@ -302,10 +321,27 @@ PR drafting without `--review` uses no review agents. `/dev-review --from-report
 verify phases entirely — those were already paid for when the report was written — so it costs one
 fixer plus one re-review.
 
+## Installing, updating, and versions
+
+`sh scripts/install.sh` installs a frozen read-only copy of `HEAD` into `~/.claude/skills/devkit`,
+after running the suite. Update with `git pull` then the same script (`scripts/promote-plugin.sh` is
+the same install without the first-run checks — run it *between* plans, never during one). Restart
+Claude Code either way: skills and workflows register at session start.
+
+A repo cannot pin a plugin version — every project runs whatever is installed on its next session
+start — so `CHANGELOG.md` is the compatibility story. `/dev-setup` records
+`Configured against devkit <version>.` in your `CLAUDE.md`, and a later run compares that to the
+installed plugin and summarises the entries in between. The version moves on behavior changes only,
+never on prose.
+
+`/dev-setup` also offers a `SessionStart` hook that flags any workspace left at `implementing` — an
+implement run that did not finish. It prints nothing when there is nothing to say.
+
 ## Troubleshooting
 
 | Symptom | Fix |
 |---|---|
+| "Configured against 0.1.0, you are on 0.4.0" | Expected after an update. `/dev-setup` reads `CHANGELOG.md` and tells you what changed; it updates the line once you have seen it |
 | `/dev-*` not in autocomplete | Restart Claude Code (skills/workflows register at session start) |
 | Edited a workflow, but the run behaves as before | `name:` resolution serves a snapshot from plugin load. Invoke by `scriptPath` while iterating, or restart |
 | "Workflow not found" | Same restart; meanwhile skills fall back to `scriptPath` automatically |
@@ -317,7 +353,7 @@ fixer plus one re-review.
 | PR review found real bugs | Run the offered `/dev-review --from-report <report.md>`, then `/dev-pr --review` again |
 | `gh` missing or not authenticated | `/dev-pr --body-only` still writes/returns the title and `pr.md`; publish manually or authenticate later |
 | Working tree is dirty | Commit/stash/discard intentionally; `/dev-pr` will draft but not publish bytes absent from `HEAD` |
-| Flow stuck at `implementing` | `/dev-status` — if no task is running, mark it abandoned |
+| Flow stuck at `implementing` | `/dev-status` — if no task is running, mark it abandoned. With the `SessionStart` hook installed, sessions tell you at startup instead of waiting to be asked |
 | Two teammates, same repo | Fine — `.dev/` is per-clone. Two implements in *one* clone: blocked, on purpose |
 | Agents keep missing the same repo quirk | Nothing carries over between cycles. After an implement that found real problems, Claude offers to propose up to three edits to `.claude/rules/*.md` — accept them and every future agent touching those files reads it. You can also ask directly: "turn what we just learned into a rule" |
 
