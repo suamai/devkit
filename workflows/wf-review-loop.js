@@ -336,11 +336,11 @@ const FIX_VERIFY_SCHEMA = {
 }
 
 const REPAIR_SCHEMA = {
-  type: 'object', required: ['repaired'],
+  type: 'object', required: ['repaired', 'changed_files'],
   properties: {
     repaired: { type: 'boolean', description: 'true ONLY if you ran the command again yourself and it passed, without reverting a fix or weakening any check' },
     summary: { type: 'string', description: 'what was actually wrong and what you changed' },
-    changed_files: { type: 'array', items: { type: 'string' }, description: 'every repository path you modified — the next review round reads exactly these' },
+    changed_files: { type: 'array', items: { type: 'string' }, description: 'REQUIRED when repaired=true, and must be non-empty: every repository path you modified — the next review round reads exactly these. A repair the next round cannot see is not accepted as clean.' },
     abandoned_because: { type: 'string', description: 'required when repaired=false: the conflict that made green impossible without abandoning a confirmed fix or weakening a check' },
   },
 }

@@ -23,7 +23,9 @@ different artifact, a new gate — and never on prose that restates behavior alr
 - **One bounded repair attempt per round when the check fails.** `check → repair → re-check`, once,
   never a second round of finding. The repair may not revert a confirmed fix or weaken a test to reach
   green, and its files are appended to what the next re-review reads, so a repair is reviewed like any
-  other change rather than trusted. Accepted attempts are returned in `repairs`
+  other change rather than trusted — a repair that names no files is therefore not accepted at all,
+  since the script has no filesystem access and an unnamed edit is one the next round cannot see.
+  Accepted attempts are returned in `repairs`
   (`{round, summary, changed_files}`); `fix_verify.attempts` counts the checks and
   `fix_verify.repaired` marks a round that broke its own check and then patched it.
 - **`ruleLens`.** `false` suppresses the `repo-conventions` reviewer even when a rule matches, for a

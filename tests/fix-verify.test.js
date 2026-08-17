@@ -73,26 +73,13 @@ function run(args, replies, budgetFor) {
 }
 
 // A real budget only falls, which is what this one does: generous until `label` has run, under the
-// floor afterwards.
+// floor afterwards. All three floors (543, 565, 625) read this same remaining(), and the round-entry
+// floor (30000) sits above the check's own skip floor (20000) — so a monotone drop below 20000 right
+// after `fix r1` also trips round 2's entry floor on the very next read, which is real: no round can
+// reach a re-review once the check itself has gone this low.
 const dropAfter = (label) => (calls) => ({
   total: 300000, spent: () => 0, remaining: () => (calls.includes(label) ? 19000 : 50000),
 })
-// This one deliberately is NOT monotone. All three floors read the same remaining(), so proving that
-// the CHECK's floor is what stopped the check needs the dip to land on exactly the read runFixCheck
-// makes: a monotone stub would trip round 2's entry floor (30000) instead and prove nothing about
-// the check.
-const dipOnceAfter = (label) => (calls) => {
-  let dipped = false
-  return {
-    total: 300000,
-    spent: () => 0,
-    remaining: () => {
-      if (!calls.includes(label) || dipped) return 50000
-      dipped = true
-      return 19000
-    },
-  }
-}
 
 const CMD = 'sh tests/run-all.sh'
 const SEED = [{ id: 'f1', title: 'unchecked null deref', file: 'src/a.ts', line: 12, severity: 'high', confirmed: true }]
@@ -187,9 +174,12 @@ async function main() {
     { args: { verifyCommand: '   ' } },
     [false, null, skipped('no verifyCommand'), true], NONE)
 
+  // Real (monotone) budget: once `fix r1` has pushed remaining() under the check's own 20000 floor,
+  // it stays there — so round 2's 30000 entry floor trips on the very next read too, and the run ends
+  // without a re-review or a clean verdict. That is the reachable shape; nothing recovers mid-run.
   await row('the budget floor stops the check before it spawns',
-    { budget: dipOnceAfter('fix r1') },
-    [false, null, skipped('budget floor'), true], NONE)
+    { budget: dropAfter('fix r1') },
+    [false, null, skipped('budget floor'), false], ['fix r1'])
 
   await row('a fixer that applied nothing leaves nothing to check',
     { replies: { 'fix r1': { applied: [], skipped: [] } } },
