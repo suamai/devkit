@@ -24,4 +24,8 @@ it with stubs. Rationale: `docs/architecture.md` → "Testing".
 - Every case prints a `PASS`/`FAIL` line and the file exits non-zero on failure, so
   `sh tests/run-all.sh` reports every failing file in one run and exits non-zero if any did.
 - Verify a new drift-style check by **mutation**: change the thing it guards and watch it fail. A
-  test like this can silently stop testing.
+  test like this can silently stop testing. Mutate **in memory** — a string, a copy, a throwaway
+  scratch file — never a tracked file: a check that rewrites something the repo owns and restores it
+  afterwards corrupts the tree if it dies in between, which is worse than the drift it guards. Write
+  the check as a pure function over text so the negative case is just a second call, and keep the
+  proof in the suite rather than running it once by hand.
