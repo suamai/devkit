@@ -44,6 +44,22 @@ function check(name, actual, expected) {
   if (!ok) console.log(`      expected ${e}`)
 }
 
+// Fenced blocks are excluded on purpose: a code block carries no prose to qualify itself, and the
+// section that introduces it is what names the condition.
+//
+// Stripped line by line rather than with a `/```[\s\S]*?```/` pair match, because this skill indents
+// its fences: a non-greedy pair then closes against the wrong fence, leaves the info string ("bash")
+// behind as text and welds two distant paragraphs into one. That mis-strip does not fail loudly — it
+// invents paragraphs that were never in the file, which is how this assertion would end up reporting
+// a violation nobody wrote.
+const prose = (text) => {
+  let inFence = false
+  return text.split('\n').filter((line) => {
+    if (/^\s*```/.test(line)) { inFence = !inFence; return false }
+    return !inFence
+  }).join('\n')
+}
+
 // ---- 1. The flag is reachable. A skill whose argument-hint omits it is a feature nobody discovers.
 const hint = (implement.match(/^argument-hint:.*$/m) || [''])[0]
 check('--isolated is in the argument-hint', /--isolated/.test(hint), true)
@@ -78,6 +94,19 @@ check('and it carries no "dev/" prefix', /(^|[^-\w])dev\//.test(String(DEFAULT_B
 // The skill has to offer that same shape where it names a fallback, or its advice sends the
 // developer to a branch the script would not have chosen.
 check('/dev-implement offers the same flat shape', /<slug>-iso/.test(implement), true)
+// ...and, the half that actually bit: merely CONTAINING the flat name proved nothing. The skill went
+// on claiming `dev/<slug>` was the script's default for a whole release while the script defaulted
+// to the flat one, and this assertion passed throughout. So pin the claim, not the vocabulary: no
+// sentence may say the setup default is `dev/<slug>`. Scoped to the worktree-setup paragraphs,
+// because the NON-isolated preflight legitimately still branches the primary to `dev/<slug>`.
+const setupParas = prose(implement)
+  .split(/\n\s*\n/)
+  .filter((p) => /worktree\.sh" setup|default branch name/.test(p))
+const claimsPrefixedDefault = (paras) => paras.filter((p) => /default[^.]*`dev\/<slug>`|`dev\/<slug>`[^.]*default/.test(p))
+check('no paragraph calls dev/<slug> the setup default', claimsPrefixedDefault(setupParas).length, 0)
+// Mutation proof: the exact sentence that shipped must be caught.
+check('and the sentence that shipped would be caught',
+  claimsPrefixedDefault(['Its default branch name is `dev/<slug>`, and that name is not always available.']).length, 1)
 
 // ---- 3. AC-01: the state keys, named by the skill that WRITES them and the skill that READS them.
 // A key only one side knows is a field that silently never round-trips.
@@ -115,21 +144,6 @@ check('and the long form too', deletesBranch('git branch --delete dev/x'), true)
 
 // ---- 6. AC-06: every isolated instruction is CONDITIONAL. Without the flag the skill must read as
 // it did before, which means no paragraph may state that the flow runs in a worktree unqualified.
-// Fenced blocks are excluded on purpose: a code block carries no prose to qualify itself, and the
-// section that introduces it is what names the condition.
-//
-// Stripped line by line rather than with a `/```[\s\S]*?```/` pair match, because this skill indents
-// its fences: a non-greedy pair then closes against the wrong fence, leaves the info string ("bash")
-// behind as text and welds two distant paragraphs into one. That mis-strip does not fail loudly — it
-// invents paragraphs that were never in the file, which is how this assertion would end up reporting
-// a violation nobody wrote.
-const prose = (text) => {
-  let inFence = false
-  return text.split('\n').filter((line) => {
-    if (/^\s*```/.test(line)) { inFence = !inFence; return false }
-    return !inFence
-  }).join('\n')
-}
 const MENTIONS_ROOT = /worktree|<root>|`root`/i
 const NAMES_ISOLATION = /isolated|isolation/i
 // `worktree.sh` is stripped first: the claim this guards against is "the flow runs in a worktree"

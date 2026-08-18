@@ -68,10 +68,11 @@ You orchestrate the implementation phase of a planned dev task. The heavy liftin
    exactly as above — it is the base ref the worktree is created at, which is what makes
    `git diff <baseline>` mean the same thing to every agent in the run. Then, in order:
 
-   - **Skip the primary-side branch.** Do not create or switch to `dev/<slug>` here: the worktree is
-     about to own that branch, and `git checkout -b dev/<slug>` afterwards fails with `fatal: a
-     branch named 'dev/<slug>' already exists` (exit 128). An isolated run leaves the primary
-     checkout on whatever branch the developer left it on, clean or dirty. That is the point.
+   - **Skip the primary-side branch.** Do not create or switch to `dev/<slug>` here. The reason is
+     not a name collision — the worktree's branch is flat (`<slug>-iso`) and the two never clash —
+     it is AC-03: an isolated run leaves the primary checkout on whatever branch the developer left
+     it on, clean or dirty, and creating a branch there is already touching it. That is the point of
+     the flag. Nothing about the primary changes until step 10 asks.
    - **Snapshot the primary checkout**, for the assertion step 10 makes before anything is
      integrated: `git status --porcelain | git hash-object --stdin` and `git rev-parse HEAD`. Keep
      both strings, and the primary's own path (`git rev-parse --show-toplevel`, referred to below as
@@ -85,14 +86,14 @@ You orchestrate the implementation phase of a planned dev task. The heavy liftin
      the primary checkout's `git status` never sees it, and prints one JSON line — `path`, `branch`,
      `baseline` (the resolved full sha), `setup_ms`, `disk_kb`. It refuses rather than improvising:
      exit 2 with one stderr line when a precondition fails and nothing was created, exit 3 when git
-     itself refused. Its default branch name is `dev/<slug>`, and **that name is not always
-     available**.
-     Two different conflicts both come back as exit 2 and they need different answers: an earlier run
-     already holds `dev/<slug>` → re-run with `dev/<slug>-iso` as the explicit `[branch]` argument;
-     git cannot create any `dev/…` branch at all because `refs/heads/dev` exists as a file, which is
-     every repo whose own default branch is named `dev` → `dev/<slug>-iso` fails identically, so pass
-     the flat name the script itself suggests, `<slug>-iso`, with no `dev/` prefix at all. Read which
-     conflict the script named, take the branch name out of its message, and pass it explicitly:
+     itself refused. Its default branch name is the flat `<slug>-iso` — deliberately carrying no
+     `dev/` prefix, because a repository that already has a branch named `dev` can hold nothing under
+     `refs/heads/dev/` (refs are files), and a `main` + `dev` pair is an ordinary layout. So the
+     default works everywhere and needs no argument.
+     It can still refuse with exit 2 when the name is taken — an earlier isolated run for this slug
+     left `<slug>-iso` behind, or the repo already had that branch. The message names the conflict
+     and suggests a free name; read it, take that name, and pass it explicitly rather than inventing
+     one:
      ```bash
      sh "${CLAUDE_PLUGIN_ROOT}/scripts/worktree.sh" setup <slug> <baseline> <branch>
      ```
