@@ -181,6 +181,30 @@ const uReport = run(uHome, [])
 check('a \\u escape decodes the same way JSON.parse would', row(uReport.out, 'n=1 signals:'), `n=1 signals: ${uExpected}×1`)
 fs.rmSync(uHome, { recursive: true, force: true })
 
+// ---- a triage can name more than one signal, and the line carries them comma-separated. Each must
+// land in its own histogram bucket: the joined string as one key is what made the escalation row
+// stop answering "which signal is doing the discriminating work". The run count and the signal
+// count are deliberately different totals, so both are asserted on the same fixture.
+const mHome = fs.mkdtempSync(path.join(os.tmpdir(), 'devkit-ledger-multisignal-'))
+fs.mkdirSync(path.join(mHome, '.claude', 'devkit'), { recursive: true })
+fs.writeFileSync(path.join(mHome, '.claude', 'devkit', 'runs.jsonl'), [
+  { phase: 'plan', tier: 'medium', signal: 'contract-change' },
+  // one with a space after the comma and one without: the ledger is hand-written by a skill's
+  // heredoc, so both spellings will occur and must collapse to the same two buckets.
+  { phase: 'plan', tier: 'medium', signal: 'contract-change, independent-parts' },
+  { phase: 'plan', tier: 'large', signal: 'unknown-code,contract-change' },
+].map((o) => JSON.stringify(o)).join('\n') + '\n')
+const mReport = run(mHome, [])
+check('each signal of a multi-signal line is counted separately',
+  row(mReport.out, 'n=3 signals:'),
+  'n=3 signals: contract-change×3 independent-parts×1 unknown-code×1')
+// n=3 is runs-with-a-signal, not the 5 signal occurrences above it: the escalation rate divides by
+// runs, so a multi-signal line must not inflate its denominator.
+check('a multi-signal line still counts as one escalated run',
+  row(mReport.out, '4. Escalation rate'),
+  '4. Escalation rate n=3 100% went past small (3/3)')
+fs.rmSync(mHome, { recursive: true, force: true })
+
 fs.rmSync(home, { recursive: true, force: true })
 fs.rmSync(bare, { recursive: true, force: true })
 fs.rmSync(emptyHome, { recursive: true, force: true })

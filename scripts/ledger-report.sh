@@ -225,7 +225,7 @@ function hist(g,   i, k, out) {
 
 # ---------------------------------------------------------------- one ledger line
 
-function handle(line,   F, O, C, CO, B, BO, FI, FO, VE, VO, phase, tier, profile, conc, tot, floor, agents, i, k) {
+function handle(line,   F, O, C, CO, B, BO, FI, FO, VE, VO, phase, tier, profile, conc, tot, floor, agents, i, k, sg, sgn) {
   if (line ~ /^[ \t]*$/) return
   if (parse(line, F, O) == 0 || F["phase"] == "") { bad++; return }
   ok++
@@ -279,7 +279,18 @@ function handle(line,   F, O, C, CO, B, BO, FI, FO, VE, VO, phase, tier, profile
 
   if (phase == "plan") {
     if (tier != "") { es_n++; if (tier != "trivial" && tier != "small") es_up++ }
-    if (F["signal"] != "") { bump("sig", F["signal"]); sig_n++ }
+    # A triage can fire more than one signal, and the line carries them comma-separated. Each is
+    # counted into the histogram separately: a joined string would make "contract-change,
+    # independent-parts" its own bucket, so neither signal is counted where a reader looks for it
+    # and the histogram silently stops answering "which signal does the discriminating work".
+    # sig_n is still bumped once per line, so it stays a count of RUNS while the histogram counts
+    # SIGNALS — the two are deliberately different totals. No signal in the closed list contains a
+    # comma, so this cannot split one name in half.
+    if (F["signal"] != "") {
+      sgn = split(F["signal"], sg, /[ ]*,[ ]*/)
+      for (i = 1; i <= sgn; i++) if (sg[i] != "") bump("sig", sg[i])
+      sig_n++
+    }
   }
 
   # The SAME floor wf-implement.js computes for agents_min (scouts + one implementer per step +

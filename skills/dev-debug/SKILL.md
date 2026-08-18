@@ -107,7 +107,8 @@ JSON
 
 `hypotheses` is how many step 2 actually fanned out, `refuted` how many step 3 killed, and `repro` is
 `"yes"` only when step 1 produced one that failed on demand — `--no-repro` is a `"no"`. Add `tier`
-and `signal` only when step 5 escalated into `/dev-plan`, to mark where that escalation came from;
+and `signal` only when step 5 escalated into `/dev-plan`, to mark where that escalation came from
+(comma-separated if several fired);
 the plan run writes its own line with its own numbers. There is deliberately **no** `slug` and **no**
 `state.json` write here, and neither is to be added later: debugging is not a pipeline stage and has
 no workspace (see the Notes below). A failed append is one sentence in the report, never a failed

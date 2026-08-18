@@ -586,7 +586,8 @@ inside a top-level string, is a row that gets mis-read quietly. Omit any field y
 - common: `phase` (`spec|plan|implement|review|pr|debug`), `slug`, `run_id`, `baseline`,
   `concurrent`, `cost` (the workflow's `cost` object **verbatim**), `stopped`, `stop_reason`,
   `profile`, `models`, `efforts` — the last three only when overridden
-- plan: `tier`, `signal` (only when one fired), `open_questions`, `waves`, `parallel_groups`,
+- plan: `tier`, `signal` (only when one fired; comma-separated when several did, and the reader
+  counts each into its own bucket), `open_questions`, `waves`, `parallel_groups`,
   `scouts_projected`, `agents_projected`. A `--explain` run adds `mode: "explain"` and carries **no**
   `tier` — nothing was triaged — which is also why the escalation row counts only lines that have one.
 - implement: `tier`, `waves`, `parallel_groups`, `steps_leaf`, `splits`, `scouts_ran`, `gates`,
@@ -646,7 +647,9 @@ rather than printing a number. Read them as calibration input, never as a target
   or redundant lenses.
 - **Escalation rate**: how often triage went past `small`, and which signal it named each time. If
   one signal fires almost always, it is doing no discriminating work; if `medium` is the norm, the
-  bias in `/dev-plan` §0 is not holding and the prose needs sharpening, not the thresholds.
+  bias in `/dev-plan` §0 is not holding and the prose needs sharpening, not the thresholds. A run may
+  name several signals; the histogram counts each one while `n` stays a count of runs, so the two
+  totals differ on purpose and the rate is never inflated by a run that named two.
 - **Unverified rate**, split the way `/dev-implement` reports it: steps that honestly could not run a
   check versus steps that *claimed* one without naming the command. The second number is a
   prompt-calibration signal and should be zero.

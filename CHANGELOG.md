@@ -9,6 +9,22 @@ different artifact, a new gate — and never on prose that restates behavior alr
 `.claude-plugin/plugin.json` and `.claude-plugin/marketplace.json` state it (the latter twice);
 `tests/contract-drift.test.js` fails if they disagree, or if the shipped version has no entry here.
 
+## 0.6.0 — 2026-08-17
+
+### Fixed
+- **The calibration report counts each escalation signal separately.** A triage can fire more than
+  one signal, and `/dev-plan` records them comma-separated on the ledger line — but the reader keyed
+  its histogram on the whole string, so `contract-change, independent-parts` became its own bucket
+  and neither signal was counted where anyone looks for it. With enough multi-signal runs the
+  escalation row degenerates into a list of unique combinations, which is precisely when it stops
+  answering the question it exists for: *which signal is doing the discriminating work?* The reader
+  now splits on commas and counts each name. `n` still counts **runs**, not signals, so a run naming
+  two signals does not inflate the escalation rate — the two totals differ on purpose.
+
+  Nothing needs rewriting to benefit: a single-signal line splits into one element and reads exactly
+  as before, and no signal in the closed list contains a comma. Existing lines that already joined
+  two signals start counting correctly on the next report.
+
 ## 0.5.0 — 2026-08-17
 
 ### Added

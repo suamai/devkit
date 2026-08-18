@@ -249,7 +249,9 @@ phase.
    ```
 
    Every value is a number, a boolean or a top-level string — the reader parses by key, so a string
-   never goes inside `cost`. `tier` always; `signal` only when one fired; `slug` whenever a workspace
+   never goes inside `cost`. `tier` always; `signal` only when one fired, **comma-separated when
+   several did** — the reader counts each separately, so joining them is how a signal stops being
+   counted; `slug` whenever a workspace
    exists. Four come from the step-5 lint's `schedule`: `waves` = `schedule.waves.length`,
    `parallel_groups` = how many `waves[].parallel_groups` hold more than one step,
    `scouts_projected` = the total length of `waves[].scouts`, `agents_projected` = `agents_min`.
