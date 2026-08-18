@@ -29,3 +29,11 @@ it with stubs. Rationale: `docs/architecture.md` → "Testing".
   afterwards corrupts the tree if it dies in between, which is worse than the drift it guards. Write
   the check as a pure function over text so the negative case is just a second call, and keep the
   proof in the suite rather than running it once by hand.
+- A test that shells out to `git` must **scrub `GIT_DIR`, `GIT_WORK_TREE` and their friends** from
+  the environment it hands the child, not merely pass a `cwd`. Those variables beat `cwd` when git
+  chooses a repository, and git exports them into every hook — so a suite run from `pre-commit`
+  points its throwaway-repo commands at the repository being committed to. Evidence: a `git init` in
+  a temp dir re-inited this repo through an inherited `GIT_DIR` and left it `core.bare = true`, after
+  which every `git status` there failed. `tests/worktree.test.js` and `tests/ledger.test.js` define a
+  scrubbed `ENV` for exactly this; `hooks/pre-commit` unsets the variables as the second line of
+  defence, covering the test nobody has written yet.
