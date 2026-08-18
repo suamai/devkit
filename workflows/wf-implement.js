@@ -11,7 +11,7 @@ export const meta = {
 }
 
 // args: { workspace, steps, completed?, baseline?, root?, planPath?, notes?, review?=true,
-//         reviewRounds?=2, reviewLoopPath?, scoutMode?='adaptive', maxParallelSteps?=5,
+//         reviewRounds?=3, reviewLoopPath?, scoutMode?='adaptive', maxParallelSteps?=5,
 //         gate?=true, checkpointFileThreshold?=20, checkpointMaxWaves?=3, rules?, criteria?,
 //         profile?, models?, efforts?, dryRun? }
 //   dryRun: with `steps`, returns the computed schedule (waves, parallel groups, scouts, matched
@@ -1425,7 +1425,12 @@ if (criteria.length || args.steps.some((s) => declaredCovers(s).length)) {
   const knownIds = [...new Set(criteria)]
   const rows = knownIds.map((id) => {
     const coveredByIds = coveredBy.get(id) || []
-    const evidence = coveredByIds.map((sid) => stepEvidence.get(sid)).filter(Boolean)
+    // Kept paired with its step id rather than flattened straight to evidence: `unsubstantiated_by`
+    // below has to name WHICH covering step is the weak link, and a step that produced no leaf at
+    // all — never implemented, so it contributes nothing to `checks` — is precisely the case a
+    // derivation over `checks` alone cannot see.
+    const covering = coveredByIds.map((sid) => ({ sid, e: stepEvidence.get(sid) })).filter((x) => x.e)
+    const evidence = covering.map((x) => x.e)
     return {
       id,
       covered_by: coveredByIds,
@@ -1435,6 +1440,11 @@ if (criteria.length || args.steps.some((s) => declaredCovers(s).length)) {
         : evidence.some((e) => e.status === 'failed') ? 'failed'
         : evidence.every((e) => e.status === 'passed') ? 'passed'
         : 'unverified',
+      // The covering steps that did not substantiate a pass — the difference between "nothing proves
+      // this" and "one of the three steps behind it ran no check". Empty on a `passed` row by
+      // construction, which is what lets the reason line below name a weak link instead of denying
+      // the evidence the row beside it records.
+      unsubstantiated_by: covering.filter((x) => x.e.status !== 'passed').map((x) => x.sid),
       checks: evidence.flatMap((e) => e.checks),
     }
   })
@@ -1641,9 +1651,16 @@ if (delivery_verdict !== READY) {
   if (gates.acceptance !== 'passed' && gates.acceptance !== 'n/a') {
     const named = (gates.acceptance === 'uncovered' ? coverage.uncovered
       : coverage.criteria.filter((c) => c.status === gates.acceptance).map((c) => c.id)).join(', ')
+    // Name the weak link rather than deny the evidence. A row reads `unverified` when SOME covering
+    // step ran no check, so "no executed check substantiates AC-01" contradicted the matrix printed
+    // directly beside it — which recorded AC-01's other covering step passing a named command. That
+    // matters beyond wording: /dev-pr quotes these reasons verbatim into a risk acknowledgement,
+    // where the matrix does not travel with them.
+    const weakLinks = [...new Set(coverage.criteria
+      .filter((c) => c.status === 'unverified').flatMap((c) => c.unsubstantiated_by))].join(', ')
     reasons.push(gates.acceptance === 'failed' ? `acceptance: a step covering ${named} failed its check`
       : gates.acceptance === 'uncovered' ? `acceptance: ${named} covered by no step`
-      : `acceptance: no executed check substantiates ${named || 'any criterion this plan declares'}`)
+      : `acceptance: ${named || 'the criteria this plan declares'} rest on step(s) that ran no substantiated check${weakLinks ? ` (${weakLinks})` : ''}`)
   }
   if (gates.tests !== 'passed') {
     reasons.push(gates.tests === 'failed'

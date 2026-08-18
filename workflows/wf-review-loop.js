@@ -11,7 +11,7 @@ export const meta = {
 }
 
 // args: { scope, intent?, baseline?, root?, contextPaths?, priority?, rules?, priorRefuted?,
-//         apply?=true, maxRounds?=3, lenses?, ruleLens?=true, verifyCommand?, fixModel?, files?,
+//         apply?=true, maxRounds?=3, lenses?, ruleLens?=true, verifyCommand?, files?,
 //         seedFindings?, profile?, models?, efforts?, dryRun? }
 //   scope:        what to review — files/paths/diff description. Reviewers only look here.
 //   intent:       what the change was supposed to accomplish (plan step, spec criteria).
@@ -665,7 +665,7 @@ while (round < maxRounds) {
   if (budget.total && budget.remaining() < 20000) { log('budget too low for fixes — stopping without clean verdict'); break }
   // A critical defect buys one rung above this run's fix tier, not a hardcoded opus: the
   // escalation has to keep meaning something under a cheap profile, where sonnet IS the escalation.
-  const fixModel = args.fixModel || (confirmed.some((f) => f.severity === 'critical') ? escalate(ROLE.fix.model) : ROLE.fix.model)
+  const fixModel = confirmed.some((f) => f.severity === 'critical') ? escalate(ROLE.fix.model) : ROLE.fix.model
   const fix = await metered('fix', () => agent(fixPrompt(confirmed), { label: `fix r${round}`, phase: 'Fix', ...ROLE.fix, model: fixModel, schema: FIX_SCHEMA }))
   if (fix) {
     allApplied.push(...fix.applied)

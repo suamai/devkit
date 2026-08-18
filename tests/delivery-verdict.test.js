@@ -110,7 +110,7 @@ async function main() {
   // The matrix is the join, not a restatement of it: the criterion, the step that claimed it, and the
   // command that step actually ran.
   check('  └─ the matrix names the criterion, the step and the command it ran', rowFor(ready.result, 'AC-01'),
-    { id: 'AC-01', covered_by: ['s1'], status: 'passed', checks: [{ step: 's1', command: 'node tests/a.test.js', status: 'passed', weak_evidence: false }] })
+    { id: 'AC-01', covered_by: ['s1'], status: 'passed', unsubstantiated_by: [], checks: [{ step: 's1', command: 'node tests/a.test.js', status: 'passed', weak_evidence: false }] })
   check('  └─ with nothing uncovered and no unknown id',
     [ready.result.coverage.uncovered, ready.result.coverage.unknown], [[], []])
 
@@ -121,6 +121,25 @@ async function main() {
   check('  └─ tests: unverified, and the criterion resting on it says so',
     [noStepCheck.result.gates.tests, rowFor(noStepCheck.result, 'AC-02').status], ['unverified', 'unverified'])
   check('  └─ and the reason names that gate', hasReason(noStepCheck.result, 'tests'), true)
+
+  // (a2) The same shape with the criterion resting on TWO steps: s2 covers AC-01 as well and runs
+  // nothing. The row is `unverified` because only an all-passed set reads `passed` — but s1's
+  // `node tests/a.test.js` did run and did pass, so a reason line claiming no executed check
+  // substantiates AC-01 would contradict the matrix printed beside it. It has to name the silent
+  // step instead, which is what makes the line safe for /dev-pr to quote without the matrix.
+  const partlyCovered = await run({
+    steps: [STEPS[0], { ...STEPS[1], covers: ['AC-01'] }],
+    criteria: ['AC-01'],
+    replies: { 'impl:s2': implReply('s2', { ran: false, not_ran_reason: 'no runtime surface to exercise here' }) },
+  })
+  check('a half-substantiated criterion names the step that ran nothing',
+    [rowFor(partlyCovered.result, 'AC-01').status, rowFor(partlyCovered.result, 'AC-01').unsubstantiated_by],
+    ['unverified', ['s2']])
+  check('  └─ the reason names it instead of denying the check that passed',
+    (partlyCovered.result.reasons.find((r) => r.startsWith('acceptance: ')) || '').includes('(s2)'), true)
+  check('  └─ and the passing command stays visible in the row',
+    rowFor(partlyCovered.result, 'AC-01').checks.filter((c) => c.status === 'passed').map((c) => c.command),
+    ['node tests/a.test.js'])
   // (b) the run finished, and the CHECKER itself reported that it ran no suite. Distinct from the
   // stopped-run placeholder below: nothing stopped here, the agent simply had nothing to run.
   const noSuite = await run({ replies: { 'consistency-check': { consistent: true, issues: [], suite_run: { ran: false, output_summary: 'this repo documents no suite' } } } })
@@ -295,7 +314,7 @@ async function main() {
     },
   })
   check('a split step\'s criterion is covered by its leaves', rowFor(split.result, 'AC-01'),
-    { id: 'AC-01', covered_by: ['s1'], status: 'passed',
+    { id: 'AC-01', covered_by: ['s1'], status: 'passed', unsubstantiated_by: [],
       checks: [{ step: 's1a', command: 'node tests/a1.test.js', status: 'passed', weak_evidence: false },
         { step: 's1b', command: 'node tests/a2.test.js', status: 'passed', weak_evidence: false }] })
   check('  └─ and the run is ready on that evidence', verdictOf(split.result), 'ready')
@@ -308,7 +327,7 @@ async function main() {
     replies: { 'impl:s1': undefined },
   })
   check('an inherited leaf reads as passed, not unverified', rowFor(inherited.result, 'AC-01'),
-    { id: 'AC-01', covered_by: ['s1'], status: 'passed', checks: [{ step: 's1', command: null, status: 'passed', weak_evidence: false }] })
+    { id: 'AC-01', covered_by: ['s1'], status: 'passed', unsubstantiated_by: [], checks: [{ step: 's1', command: null, status: 'passed', weak_evidence: false }] })
   check('  └─ and it never re-implements the step it inherited',
     [inherited.calls.includes('impl:s1'), verdictOf(inherited.result)], [false, 'ready'])
 

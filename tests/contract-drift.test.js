@@ -76,16 +76,43 @@ const DEFAULTS = {
 // backtick or a colon. `non-default` is English, not a claim about a value; excluding it is the
 // difference between a useful test and one that cries wolf until it gets deleted.
 const NAMED = (name) => '`' + name + '[`:]'
+// `default 5` and `defaults to 5` are the same claim, so both are the pinned restatement. Requiring
+// exactly `default ` is how a reworded sentence stops being compared without anything going red.
+// A pure function over text: the fail-closed guard and the mutation proof below are second calls.
+//
+// The gap stops at a COMMA as well as at `.` and `;`, because these knobs are documented in lists —
+// `` `checkpointFileThreshold` (default 20), `checkpointMaxWaves` (default 3) `` — and 80 characters
+// is far enough to reach the NEXT knob's default. Today the lazy quantifier hides that: the nearer
+// match wins. Drop one knob's value and the anchor silently adopts its neighbour's, which is how a
+// stale default would be reported as documented-and-correct. The mutation proof below is what
+// surfaced it.
+const documentedDefaults = (prose, name) => prose.flatMap(({ p, text }) =>
+  [...text.matchAll(new RegExp(NAMED(name) + '[^.;,\\n]{0,80}?(?<!non-)defaults?\\s+(?:to\\s+)?`?(\\w+)`?', 'g'))]
+    .map((m) => ({ p, documented: m[1] })))
+
 const mismatches = []
 for (const [name, value] of Object.entries(DEFAULTS)) {
-  for (const { p, text } of PROSE) {
-    const re = new RegExp(NAMED(name) + '[^.;\\n]{0,80}?(?<!non-)default\\s+`?(\\w+)`?', 'g')
-    for (const m of text.matchAll(re)) {
-      if (m[1] !== value) mismatches.push(`${p}: ${name} documented as ${m[1]}, script says ${value}`)
-    }
+  for (const { p, documented } of documentedDefaults(PROSE, name)) {
+    if (documented !== value) mismatches.push(`${p}: ${name} documented as ${documented}, script says ${value}`)
   }
 }
 check('every documented default matches its script', mismatches, [])
+
+// Fail closed, the same way the option-set guard below does. The check above compares only what it
+// can find, so prose that drifts OUT of the tracked shape produces zero comparisons — and zero
+// comparisons read as agreement. Silence is the failure this catches: a documented default that no
+// longer states its value in a machine-readable form is exactly as stale as a wrong one, and until
+// this case existed a reword made a knob stop being guarded without anything saying so.
+check('and every default is stated somewhere in that shape',
+  Object.keys(DEFAULTS).filter((name) => documentedDefaults(PROSE, name).length === 0), [])
+
+// Mutation proof, in memory: reword each default out of the tracked shape while leaving the name
+// anchored, and the guard above must find nothing left to compare for any of them.
+const rewordedAway = (text, name) =>
+  text.replace(new RegExp('(' + NAMED(name) + '[^.;,\\n]{0,80}?)(?<!non-)defaults?\\s+(?:to\\s+)?', 'g'), '$1around ')
+check('and it goes red when one is reworded out of it',
+  Object.keys(DEFAULTS).filter((name) =>
+    documentedDefaults(PROSE.map(({ p, text }) => ({ p, text: rewordedAway(text, name) })), name).length > 0), [])
 
 // The skill that tells Claude to pass these options must actually document them; silence there is
 // how a knob becomes folklore.

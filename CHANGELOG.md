@@ -9,6 +9,33 @@ different artifact, a new gate — and never on prose that restates behavior alr
 `.claude-plugin/plugin.json` and `.claude-plugin/marketplace.json` state it (the latter twice);
 `tests/contract-drift.test.js` fails if they disagree, or if the shipped version has no entry here.
 
+## 0.10.0 — 2026-08-18
+
+### Fixed
+- **The acceptance gate no longer denies evidence it just recorded.** A criterion covered by more
+  than one step reads `unverified` as soon as *one* of them ran no check — correct, but the reason
+  line said `acceptance: no executed check substantiates AC-01` while the matrix printed beside it
+  recorded AC-01's other covering step passing a named command. It now names the weak link
+  (`… rest on step(s) that ran no substantiated check (s6)`), derived from a new per-row
+  `unsubstantiated_by` field rather than from `checks`, which cannot see a covering step that
+  produced no leaf at all. This travels: `/dev-pr` quotes `reasons` verbatim into a risk
+  acknowledgement, where the matrix does not go with them.
+- **Two drift guards that were fail-open.** `tests/policy.test.js` compared the three copies of
+  `policy()` but never the four constants it validates against — verified by mutation: adding a role
+  to `wf-implement.js`'s `ROLE_NAMES` alone left the whole suite green, even though that vocabulary
+  is forwarded into `wf-review-loop`, which re-validates against its own copy and would have thrown
+  `unknown role` a wave later. And `tests/contract-drift.test.js` only recognised the exact spelling
+  `` `name` … default N ``: rewording a documented default to "defaults to 99" — wrong by a factor of
+  20 — passed. The default check now accepts both spellings, **fails closed** when a knob stops
+  stating its value in the tracked shape at all, and stops its 80-character gap at a comma, which was
+  letting one knob in a list adopt its neighbour's default. Each new guard ships with its
+  in-memory mutation proof.
+
+### Removed
+- **`fixModel` from `wf-review-loop`'s arguments.** No skill, document or test ever named it, and
+  `models: { fix }` already says the same thing through the one policy object that survives
+  `workflow()` nesting. The critical-finding escalation it could override is unchanged.
+
 ## 0.9.0 — 2026-08-18
 
 ### Added

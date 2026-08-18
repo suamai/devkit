@@ -17,9 +17,14 @@ function extract(src, signature) {
 }
 
 const IMPL = wf('wf-implement.js')
-const CONSTS = ['const MODELS =', 'const EFFORTS =', 'const ROLE_NAMES =', 'const PROFILE_SHIFT =']
-  .map((c) => IMPL.split('\n').find((l) => l.startsWith(c)) || (() => { throw new Error(`missing ${c}`) })())
+// The four constants `policy()` validates against. Extracted per FILE rather than once from
+// wf-implement, because each script carries its own copy and the copies are a contract — see the
+// drift check further down, which is the reason this is a function at all.
+const CONST_NAMES = ['const MODELS =', 'const EFFORTS =', 'const ROLE_NAMES =', 'const PROFILE_SHIFT =']
+const constsOf = (src, file) => CONST_NAMES
+  .map((c) => src.split('\n').find((l) => l.startsWith(c)) || (() => { throw new Error(`${file}: missing ${c}`) })())
   .join('\n')
+const CONSTS = constsOf(IMPL, 'wf-implement.js')
 
 // `policy` closes over `args` and `log`, so they come in as parameters here.
 function build(args) {
@@ -89,6 +94,22 @@ const WORKFLOWS = ['wf-implement.js', 'wf-explore-plan.js', 'wf-review-loop.js']
 const RESOLVERS = WORKFLOWS.map((f) => ({ f, body: extract(wf(f), 'function policy(') }))
 check('policy() is identical in all 3 workflows', RESOLVERS.filter((r) => r.body !== RESOLVERS[0].body).map((r) => r.f), [])
 
+// The resolver is only half the contract. `policy()` validates every override against the four
+// constants above, and those are copied into each script too — with nothing comparing them. A role
+// present in one copy and not another is therefore ACCEPTED by the script that owns it and then
+// throws `unknown role` inside the nested workflow it forwards the policy to: wf-implement passes
+// `profile`/`models`/`efforts` straight into wf-review-loop, which re-validates against its own
+// ROLE_NAMES. Identical vocabularies are what makes docs/architecture.md's "one object survives
+// workflow() nesting" true rather than merely intended.
+const POLICY_CONSTS = WORKFLOWS.map((f) => ({ f, body: constsOf(wf(f), f) }))
+const constDrift = (copies) => copies.filter((c) => c.body !== copies[0].body).map((c) => c.f)
+check('policy constants identical in all 3 workflows', constDrift(POLICY_CONSTS), [])
+// Mutation proof, in memory: a role added to one copy alone must be named. A pure function over
+// text, so the negative case is just a second call and no tracked file is ever written.
+check('and it names the copy a role drifted into',
+  constDrift(POLICY_CONSTS.map((c) => (c.f === 'wf-review-loop.js'
+    ? { f: c.f, body: c.body.replace("'decompose'", "'judge', 'decompose'") } : c))), ['wf-review-loop.js'])
+
 // Same for the per-phase cost accounting, which is fenced rather than extracted by signature
 // because it is a const plus two functions.
 function fencedCost(src, file) {
@@ -123,6 +144,6 @@ check('a directive → floors reported active', withBudget.costReport().floors_a
   await m2.metered('backwards', async () => { fake -= 9999 })
   check('a backwards delta clamps to zero', m2.costReport().by_phase.backwards, 0)
 
-  console.log(failed ? `\n${failed} FAILED` : `\nall ${25} cases pass`)
+  console.log(failed ? `\n${failed} FAILED` : `\nall ${27} cases pass`)
   process.exit(failed ? 1 : 0)
 })()
