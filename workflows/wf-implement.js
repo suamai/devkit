@@ -12,7 +12,7 @@ export const meta = {
 
 // args: { workspace, steps, completed?, baseline?, planPath?, notes?, review?=true, reviewRounds?=2,
 //         reviewLoopPath?, scoutMode?='adaptive', maxParallelSteps?=5,
-//         gate?=true, checkpointFileThreshold?=20, checkpointMaxWaves?=3, rules?,
+//         gate?=true, checkpointFileThreshold?=20, checkpointMaxWaves?=3, rules?, criteria?,
 //         profile?, models?, efforts?, dryRun? }
 //   dryRun: with `steps`, returns the computed schedule (waves, parallel groups, scouts, matched
 //          rules, projected checkpoints, plan warnings) instead of running anything — a zero-cost
@@ -30,6 +30,12 @@ export const meta = {
 //   rules: [{ path, globs }] — the repo's path-scoped rule files (.claude/rules/*.md frontmatter).
 //          Scripts have no filesystem access, so the caller reads them; agents get only the ones
 //          matching the files they touch. Omit and agents are told to look for them themselves.
+//   criteria: the spec's acceptance-criterion ids ("AC-01", …), in document order and NOT
+//          deduplicated — the caller extracts them from spec.md for the same reason `rules` arrives
+//          pre-extracted, and a spec declaring one id twice is a defect the lint reports rather than
+//          something to quietly collapse. They are the known-good set each step's `covers` is judged
+//          against, and what `coverage` and `gates.acceptance` below are computed from. Omit them
+//          and a plan with no spec behaves exactly as before: `acceptance: "n/a"`.
 //   baseline: git SHA captured before this run — reviewers judge diffs since it.
 //   workspace: absolute path to the task workspace (e.g. <repo>/.dev/<slug>).
 //   Context flows as files with single writers: briefs/<id>.md (scout), notes/<id>.md (implementer).
@@ -135,6 +141,13 @@ const completed = (Array.isArray(args.completed) ? args.completed : [])
   .filter((c) => c && c.id)
 const completedIds = new Set(completed.map((c) => c.id))
 
+// The canonical acceptance-criterion ids, extracted from spec.md by the CALLER: a workflow script
+// has no filesystem access, which is the same reason `rules` arrives pre-extracted. Document order,
+// and deliberately NOT deduplicated — a spec that declares one id twice is itself a defect, and the
+// coverage lint below is where it gets reported.
+const criteria = (Array.isArray(args.criteria) ? args.criteria : [])
+  .map((c) => (typeof c === 'string' ? c.trim() : '')).filter(Boolean)
+
 // A completed step's id is a satisfied dependency, so it is stripped from what remains rather than
 // left dangling. Pure, and the only graph surgery a continuation needs.
 function pendingSteps(steps, doneIds) {
@@ -150,6 +163,9 @@ const STEP_SHAPE = {
     files: { type: 'array', items: { type: 'string' } },
     depends_on: { type: 'array', items: { type: 'string' } },
     details: { type: 'string' }, verify: { type: 'string' },
+    // Optional, and never in `required`: BRIEF_SCHEMA.substeps reuses this shape, and a scout's
+    // sub-steps are invented mid-run with no spec ids of their own to declare.
+    covers: { type: 'array', items: { type: 'string' } },
     risk: { type: 'string', enum: ['contract', 'local'] },
     context_confidence: { type: 'string', enum: ['high', 'low'] },
   },
@@ -912,6 +928,42 @@ function projectSchedule() {
     warnings.push(`${ids.join(', ')} declare the same verify command ("${command}"): one shared check cannot be per-step evidence for each of them — a step whose goal adds behavior comes back weak_evidence, since that command already passed before it.`)
   }
 
+  // Coverage of the spec's acceptance criteria, free and before any agent runs. It reads
+  // `args.steps` — the whole PLAN — and not `todoSteps`: a continuation strips the steps already
+  // implemented, and reading those would report every criterion they cover as covered by nobody.
+  const coveredBy = new Map()
+  for (const s of args.steps) {
+    const listed = (Array.isArray(s.covers) ? s.covers : [])
+      .map((c) => (typeof c === 'string' ? c.trim() : '')).filter(Boolean)
+    // Needs no spec to be wrong: one step covering a criterion twice is still one claim, so the
+    // repeat only buys a second matrix row saying exactly what the first one said.
+    const twice = [...new Set(listed.filter((id, i) => listed.indexOf(id) !== i))]
+    if (twice.length) warnings.push(`${s.id} lists ${twice.join(', ')} twice in covers: one step covering a criterion twice is still one claim, and the repeat only adds a matrix row that says nothing new.`)
+    for (const id of new Set(listed)) {
+      if (!coveredBy.has(id)) coveredBy.set(id, [])
+      coveredBy.get(id).push(s.id)
+    }
+  }
+  // The other two checks need the canonical list. Without a spec there is no known-good set: every
+  // id would be "unknown" and every criterion "uncovered", so a plan with no criteria must behave
+  // exactly as it did before this lint existed.
+  if (criteria.length) {
+    const declared = new Map()
+    for (const id of criteria) declared.set(id, (declared.get(id) || 0) + 1)
+    for (const [id, n] of declared) {
+      if (n < 2) continue
+      warnings.push(`${id} is declared ${n} times in the criteria list: two criteria sharing one id cannot be told apart in the coverage matrix, so evidence for one reads as evidence for both.`)
+    }
+    for (const [id, ids] of coveredBy) {
+      if (declared.has(id)) continue
+      warnings.push(`${id} is covered by ${ids.join(', ')} but is in no criteria list: an id is an address into the spec, so that evidence attaches to nothing and whatever it was meant to cover stays uncovered.`)
+    }
+    // Two different steps covering one criterion is legal and stays silent — the synthesizer is
+    // told criteria may be covered by more than one step.
+    const uncovered = [...declared.keys()].filter((id) => !coveredBy.has(id))
+    if (uncovered.length) warnings.push(`no step covers ${uncovered.join(', ')}: nothing in the plan claims to verify them, so those rows of the acceptance matrix stay empty — either a step declares the id, or the plan says in prose which suite-level check covers it.`)
+  }
+
   return {
     waves: out,
     warnings,
@@ -995,7 +1047,12 @@ for (const wave of allWaves) {
   checkpointNumber++
   const review = await reviewCheckpoint(pending, checkpointNumber)
   const reason = isLastWave ? 'final wave' : blockingQuestions.length ? 'blocking question from an implementer' : riskyWave ? 'contract-risk step' : gate ? 'gate found a contract break' : accumulatedFiles.length >= checkpointFileThreshold ? `${accumulatedFiles.length} files pending` : `${pending.waves.length} waves pending`
-  checkpointReviews.push({ checkpoint: checkpointNumber, waves: [...pending.waves], steps: pending.steps.map((s) => s.id), reason, review })
+  // Bound rather than pushed inline: this checkpoint's own verdict on its review is computed a few
+  // lines below and is written onto THIS object. Deriving a second copy at the return would be free
+  // to disagree with the decision the run actually acted on, over the same findings, and nothing
+  // would catch that.
+  const checkpointEntry = { checkpoint: checkpointNumber, waves: [...pending.waves], steps: pending.steps.map((s) => s.id), reason, review }
+  checkpointReviews.push(checkpointEntry)
   const summary = review ? { clean: review.clean, rounds: review.rounds, confirmed: (review.confirmed || []).length, applied: (review.applied || []).length, skipped: (review.skipped || []).length } : null
   for (const report of flat(pending.reports)) report.review = summary
   for (const f of (review && review.refuted) || []) {
@@ -1074,6 +1131,13 @@ for (const wave of allWaves) {
   if (reviewBlocked && review && review.clean !== true) {
     log(`checkpoint ${checkpointNumber} blocked: ${unaddressed.length} unaddressed finding(s), ${unfixedSevere.length} unfixed high/critical, post-fix check ${checkVerdict}`)
   }
+  // Persisted at the moment it was made. The identity matching above exists only here, so
+  // `gates.review` at the return reads this decision rather than re-deriving it — and the counts
+  // travel with it, because "blocked" without what blocked it is a verdict nobody can act on.
+  checkpointEntry.unfixed_severe = unfixedSevere.length
+  checkpointEntry.unaddressed = unaddressed.length
+  checkpointEntry.check_failed = checkFailed
+  checkpointEntry.blocked = reviewBlocked
   pending = { waves: [], steps: [], reports: [] }
   if (reviewBlocked || blockingQuestions.length) {
     const why = reviewBlocked ? `checkpoint-${checkpointNumber}:review-not-clean` : `blocking question(s) from ${[...new Set(blockingQuestions.map((q) => q.step))].join(', ')}`
@@ -1088,6 +1152,91 @@ for (const wave of allWaves) {
 const unreviewedWaves = pending.waves
 
 const leafReports = flat(reports)
+
+// ---- The acceptance-criterion coverage matrix.
+// A criterion's status is DERIVED here and never self-reported: the id, the plan steps that declared
+// they cover it, and the check each of those steps actually ran. Computed before the consistency
+// check on purpose, so that checker can be TOLD which criteria no step covers instead of being asked
+// to hunt for them in the plan's prose.
+//
+// Three inputs, and they are deliberately not the same array: `criteria` (the canonical ids, which
+// only the caller can extract), `args.steps[].covers` (the whole PLAN, not `todoSteps` — a
+// continuation strips the steps it already finished, and reading the trimmed list would report what
+// they cover as covered by nobody), and `reports` — the TOP-LEVEL array, one entry per plan step id.
+// NOT `leafReports`: that one has already walked into a split step's substeps, where `s2a` exists and
+// the `s2` the plan declared `covers` on does not.
+const declaredCovers = (s) => (Array.isArray(s.covers) ? s.covers : [])
+  .map((c) => (typeof c === 'string' ? c.trim() : '')).filter(Boolean)
+// A leaf folded in from `args.completed` carries `unverified`/`weak_evidence` and no `status` at all,
+// so reading `status` alone would file an inherited pass as unverified.
+const leafStatus = (x) => (x.failed ? 'failed' : x.status || (x.unverified ? 'not-run' : 'passed'))
+let coverage = null
+if (criteria.length || args.steps.some((s) => declaredCovers(s).length)) {
+  // Evidence per PLAN step, because that is the granularity `covers` is declared at: substeps are
+  // invented mid-run by a scout and have no spec ids of their own, the same documented limitation
+  // `verifyCommandFor` carries. A split step aggregates its own leaves through `flat([r])`, exactly
+  // as continuationEntry() does below. One known gap of the same class: a step an EARLIER run already
+  // reviewed has no report here at all (inheritedReports drops `reviewed: true` entries), so a
+  // continuation's matrix reads `not-run` for a criterion only such a step covers.
+  const stepEvidence = new Map()
+  for (const s of args.steps) {
+    const r = reports.find((x) => x.step === s.id)
+    // A budget-skipped report carries no `impl`: nothing was implemented, so it is not evidence, and
+    // a step whose only leaves are those reads the same as a step with no report at all. A leaf that
+    // failed before implementation even ran (scout or impl agent unavailable) ALSO carries no `impl`,
+    // but it is not silence — `leafStatus` already reads `.failed` before it reads `.status`, so kept
+    // in, it renders as the `failed` check it is instead of vanishing into `not-run`.
+    const leaves = r ? flat([r]).filter((x) => x.impl || x.failed) : []
+    const checks = leaves.map((x) => ({
+      step: x.step, command: x.verify_command || null, status: leafStatus(x), weak_evidence: x.weak_evidence === true,
+    }))
+    stepEvidence.set(s.id, {
+      status: checks.some((c) => c.status === 'failed') ? 'failed'
+        : !checks.length ? 'not-run'
+        : checks.every((c) => c.status === 'passed') ? 'passed'
+        : 'unverified',
+      checks,
+    })
+  }
+  const coveredBy = new Map()
+  for (const s of args.steps) {
+    for (const id of new Set(declaredCovers(s))) {
+      if (!coveredBy.has(id)) coveredBy.set(id, [])
+      coveredBy.get(id).push(s.id)
+    }
+  }
+  // Deduplicated for the matrix only: the lint already reports a spec that declares one id twice, and
+  // a second row would restate the first one word for word.
+  const knownIds = [...new Set(criteria)]
+  const rows = knownIds.map((id) => {
+    const coveredByIds = coveredBy.get(id) || []
+    const evidence = coveredByIds.map((sid) => stepEvidence.get(sid)).filter(Boolean)
+    return {
+      id,
+      covered_by: coveredByIds,
+      // Conservative on purpose: a criterion resting partly on a step nothing substantiated is not
+      // proven, so only an all-passed set reads `passed`.
+      status: !coveredByIds.length ? 'uncovered'
+        : evidence.some((e) => e.status === 'failed') ? 'failed'
+        : evidence.every((e) => e.status === 'passed') ? 'passed'
+        : 'unverified',
+      checks: evidence.flatMap((e) => e.checks),
+    }
+  })
+  coverage = {
+    criteria: rows,
+    uncovered: rows.filter((c) => c.status === 'uncovered').map((c) => c.id),
+    // An id a step claims that the spec never declared. It addresses nothing, so it gets no row of
+    // its own — only this list, which is what keeps that evidence from looking attached to something.
+    unknown: [...coveredBy.entries()].filter(([id]) => !knownIds.includes(id)).map(([id, steps]) => ({ id, steps })),
+  }
+}
+
+// Composed here rather than inside the prompt below: that prompt is one big template literal, and a
+// nested one inside it would need every backtick escaped for the same string either way.
+const uncoveredNote = coverage && coverage.uncovered.length
+  ? `\n\nNo step in this plan claims to cover these acceptance criteria: ${coverage.uncovered.join(', ')}. The suite you are about to run is the only thing left that could cover them: check whether it actually exercises each one, and raise an issue for the ones it does not rather than reporting a clean composition.`
+  : ''
 
 // ---- Cross-step consistency check
 let finalCheck = null
@@ -1105,7 +1254,7 @@ Steps marked \`unverified\` have no substantiated executable check of their own 
 
 Steps marked \`weak_evidence\` passed a check that was already green BEFORE them (\`kind: existing-suite\`), so their command proves they broke nothing and nothing more: where such a step's goal was to add behavior, the suite you run is the first thing that could exercise it — check that it does, and raise an issue if it does not. Steps with \`status: "infra-error"\` never had their check run at all (the toolchain, not the code, failed, and one re-run did not clear it); nothing has executed them, so whatever you can establish about them here is all the evidence that exists.
 
-Steps were implemented by separate agents, possibly in parallel. Check the SEAMS between them: do the pieces actually compose — imports/exports, function signatures vs call sites, naming consistency, duplicated helpers that should be one, config/registration each step assumed another would do, plan requirements (and spec acceptance criteria, if the plan references a spec) no step ended up covering. Per-step verify_run covered steps individually, not the composition: run the repo's build/typecheck/test suite if available and report it in suite_run.
+Steps were implemented by separate agents, possibly in parallel. Check the SEAMS between them: do the pieces actually compose — imports/exports, function signatures vs call sites, naming consistency, duplicated helpers that should be one, config/registration each step assumed another would do, plan requirements no step ended up covering. Per-step verify_run covered steps individually, not the composition: run the repo's build/typecheck/test suite if available and report it in suite_run.${uncoveredNote}
 
 Small integration fixes (a rename, a missing import/registration, deduplicating an identical helper): apply directly and list them. Anything structural or judgment-dependent: report as an issue, don't fix.
 
@@ -1181,6 +1330,114 @@ function continuationEntry(r) {
 }
 const completedEntries = reports.map(continuationEntry).filter(Boolean)
 const completedEntryIds = new Set(completedEntries.map((c) => c.id))
+// Named once and read twice — by `gates.scope` below and by `continuation.pending` in the return —
+// so the two can never drift into disagreeing about what is left.
+const pendingStepIds = args.steps.filter((s) => !completedEntryIds.has(s.id)).map((s) => s.id)
+
+// ---- The delivery verdict: five gates, one word, and the evidence behind each one.
+// A pure function of structured outputs this run already produced. No agent decides it and none is
+// spawned for it — which is the only reason the word can be read as a fact about the run instead of
+// as a summary somebody wrote. The gate vocabularies are deliberately NOT drift-tracked (nothing
+// branches on a gate label); only this one is, which is why it is a literal a test can extract.
+const DELIVERY_VERDICTS = ['ready', 'ready-with-unverified', 'blocked']
+const [READY, READY_WITH_UNVERIFIED, BLOCKED] = DELIVERY_VERDICTS
+const suiteRun = (finalCheck && finalCheck.suite_run) || null
+const unfixedSevereIssues = ((finalCheck && finalCheck.issues) || [])
+  .filter((i) => i && (i.severity === 'high' || i.severity === 'critical') && i.fixed !== true)
+const blockedCheckpoints = checkpointReviews.filter((c) => c.blocked === true)
+// `.failed === true` catches a leaf that never reached `status` at all — the scout/impl-unavailable
+// early returns in `runStep` set only `.failed`, matching the convention `blocked` above already
+// reads at line 999 — so a step that failed to even get implemented still reads `failed` here rather
+// than falling through as if nothing ran.
+const failedSteps = leafReports.filter((r) => r.failed === true || r.status === 'failed').map((r) => r.step)
+const unverifiedNames = [...new Set([...unverifiedSteps.map((u) => u.step), ...infraErrors.map((e) => e.step)])]
+const gates = {
+  // Read off `coverage` rather than re-derived: one join, one answer. `uncovered` and `unverified`
+  // do not block — a suite-level check is a legitimate cover, and the matrix shows which rows rest
+  // on one.
+  acceptance: !coverage ? 'n/a'
+    : coverage.criteria.some((c) => c.status === 'failed') ? 'failed'
+    : coverage.criteria.length && coverage.criteria.every((c) => c.status === 'passed') ? 'passed'
+    : coverage.uncovered.length ? 'uncovered'
+    : 'unverified',
+  // `weakEvidenceSteps` is deliberately not read here: a check that was already green is still a
+  // check, the matrix row carries the mark, and the report counts them separately. A run that
+  // stopped early lands on `not-run` for free — the placeholder above sets `suite_run.ran` false.
+  tests: failedSteps.length || (suiteRun && suiteRun.ran === true && suiteRun.passed === false) ? 'failed'
+    : !suiteRun || suiteRun.ran !== true ? 'not-run'
+    : unverifiedSteps.length || infraErrors.length ? 'unverified'
+    : 'passed',
+  // TWO sources, and both are load-bearing: the checkpoint's own decision (persisted onto the entry
+  // at the moment it was made) and the consistency check, which runs AFTER the last checkpoint and
+  // is never re-checked against it. `blocked` is tested before `not-run` on purpose — a stopped run
+  // carries a fabricated unfixed high issue, and "nothing reviewed this" is not the honest label for
+  // a run that stopped because something did. That placeholder is also why the checkpoint half cannot
+  // be told apart from the other by behavior today (a blocked checkpoint always stops the run, and a
+  // stopped run always carries that issue) — it is read anyway, because the day the placeholder
+  // changes is the day the checkpoint's own verdict becomes the only source that still says so.
+  review: blockedCheckpoints.length || unfixedSevereIssues.length ? 'blocked'
+    : args.review === false || !checkpointReviews.some((c) => c.review) ? 'not-run'
+    : 'clean',
+  // `open` is informational: the question was asked and a reversible assumption recorded.
+  questions: needsInput.some((q) => q.blocking === true) ? 'blocking'
+    : needsInput.length ? 'open'
+    : 'none',
+  // Where a budget stop and an unreviewed dependency wave both land. Today `stoppedEarly` covers the
+  // other two on its own — the last wave always flushes, so waves go unreviewed and steps stay pending
+  // only when the loop broke — and they are still read, because each names a different thing that is
+  // true about the run and none of them is derived from the others.
+  //
+  // The design named a SIXTH blocked trigger for this gate — a stale plan — and it is deliberately
+  // not implemented rather than stubbed: nothing in this script's reach represents plan staleness
+  // (no filesystem, no git, no clock), so the branch would have nothing behind it. IDEAS.md #13
+  // (the plan-freshness gate) would ship `planned_at_sha`, which is the field that makes it
+  // computable, and this expression is where its branch goes. docs/architecture.md carries the full
+  // statement — do not invent an argument no caller passes in the meantime.
+  scope: stoppedEarly || unreviewedWaves.length || pendingStepIds.length ? 'incomplete' : 'within-plan',
+}
+const blocking = gates.acceptance === 'failed' || gates.tests === 'failed'
+  || gates.review === 'blocked' || gates.questions === 'blocking' || gates.scope === 'incomplete'
+const delivery_verdict = blocking ? BLOCKED
+  : (gates.acceptance === 'passed' || gates.acceptance === 'n/a') && gates.tests === 'passed'
+    && gates.review === 'clean' && (gates.questions === 'none' || gates.questions === 'open')
+    && gates.scope === 'within-plan' ? READY
+  : READY_WITH_UNVERIFIED
+// Exactly [] when the verdict is `ready` — which is not the same as "when nothing blocks". `ready`
+// tolerates an open, non-blocking question, so a per-gate loop run unconditionally would print a
+// reason line under a verdict that has nothing left to explain.
+const reasons = []
+if (delivery_verdict !== READY) {
+  if (gates.acceptance !== 'passed' && gates.acceptance !== 'n/a') {
+    const named = (gates.acceptance === 'uncovered' ? coverage.uncovered
+      : coverage.criteria.filter((c) => c.status === gates.acceptance).map((c) => c.id)).join(', ')
+    reasons.push(gates.acceptance === 'failed' ? `acceptance: a step covering ${named} failed its check`
+      : gates.acceptance === 'uncovered' ? `acceptance: ${named} covered by no step`
+      : `acceptance: no executed check substantiates ${named || 'any criterion this plan declares'}`)
+  }
+  if (gates.tests !== 'passed') {
+    reasons.push(gates.tests === 'failed'
+      ? `tests: ${[failedSteps.length ? `${failedSteps.join(', ')} failed the check it ran` : '',
+        suiteRun && suiteRun.ran === true && suiteRun.passed === false ? 'the final suite ran and did not pass' : ''].filter(Boolean).join('; ')}`
+      : gates.tests === 'not-run'
+      ? `tests: no suite result — ${stoppedEarly ? `the run stopped before the consistency check (${stopReason})` : 'the consistency check reported that it ran none'}`
+      : `tests: the suite passed, but ${unverifiedNames.length} step(s) carry no substantiated check of their own (${unverifiedNames.join(', ')})`)
+  }
+  if (gates.review !== 'clean') {
+    reasons.push(gates.review === 'blocked'
+      ? `review: ${[blockedCheckpoints.length ? `checkpoint ${blockedCheckpoints.map((c) => c.checkpoint).join(', ')} blocked the run` : '',
+        unfixedSevereIssues.length ? `${unfixedSevereIssues.length} unfixed high/critical issue(s) from the consistency check` : ''].filter(Boolean).join('; ')}`
+      : `review: ${args.review === false ? 'review was disabled for this run' : 'no checkpoint produced a review'}`)
+  }
+  if (gates.questions !== 'none') {
+    const asked = needsInput.filter((q) => gates.questions !== 'blocking' || q.blocking === true)
+    reasons.push(`questions: ${asked.length} ${gates.questions} question(s) from ${[...new Set(asked.map((q) => q.step))].join(', ')}`)
+  }
+  if (gates.scope !== 'within-plan') {
+    reasons.push(`scope: ${[stoppedEarly ? `the run stopped before all waves completed (${stopReason})` : '',
+      unreviewedWaves.length ? `wave(s) ${unreviewedWaves.join(', ')} were implemented but never reviewed` : '',
+      pendingStepIds.length ? `${pendingStepIds.join(', ')} did not complete` : ''].filter(Boolean).join('; ')}`)
+  }
+}
 
 return {
   workspace,
@@ -1196,6 +1453,11 @@ return {
   kindMissing,
   concerns: openConcerns,
   finalCheck,
+  // The run's own verdict on itself, computed above from everything already in this object.
+  delivery_verdict,
+  gates,
+  reasons,
+  coverage,
   stoppedEarly,
   stopReason,
   needs_user_input: needsInput,
@@ -1206,6 +1468,6 @@ return {
   // Pass `completed` straight back with the SAME `steps` to continue; fold any answers into `notes`.
   continuation: {
     completed: completedEntries,
-    pending: args.steps.filter((s) => !completedEntryIds.has(s.id)).map((s) => s.id),
+    pending: pendingStepIds,
   },
 }

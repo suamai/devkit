@@ -3,10 +3,12 @@
 A multi-agent development pipeline for Claude Code, packaged as a plugin.
 
 ```
-/dev-spec      →  grounded spec with verifiable acceptance criteria   (large/ambiguous tasks only)
+/dev-spec      →  grounded spec with verifiable acceptance criteria, each with a stable id
+                  (AC-01) the plan, the matrix and the review all address   (large/ambiguous only)
 /dev-plan      →  triage, then fan-out exploration → validated step plan
                   (--explain writes understanding instead, reusable by a later plan)
 /dev-implement →  steps in dependency waves, contract gates, review checkpoints, phase commit
+                  (and one delivery verdict, computed from the run's own evidence)
 /dev-review    →  two complementary reviewers → verify → fix → run the check → re-review until clean
                   (--from-report applies a PR review's confirmed findings)
 /dev-debug     →  repro → read-only hypothesis fan-out → refute → narrow serially → prove it dead
@@ -99,10 +101,10 @@ only way a repo specializes the pipeline, so they are worth writing properly.
 Git for `/dev-implement`, `/dev-review`, `/dev-debug` and `/dev-pr` — they judge diffs. Node to run
 the tests. Nothing else.
 
-`gh` is needed only for the last hop of `/dev-pr`: publication. Branch analysis, the coverage map
-against your plan, the SHA-bound review and the body draft are plain git, so a GitLab remote, a bare
-remote or no remote at all still gets everything except the `gh pr create`. `/dev-pr` detects which
-of those you are in and says so before starting.
+`gh` is needed only for the last hop of `/dev-pr`: publication. Branch analysis, the acceptance
+matrix against your plan, the SHA-bound review and the body draft are plain git, so a GitLab remote,
+a bare remote or no remote at all still gets everything except the `gh pr create`. `/dev-pr` detects
+which of those you are in and says so before starting.
 
 ## License
 

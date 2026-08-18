@@ -126,7 +126,52 @@ async function main() {
     check(`  …and protecting addresses`, /never the pointer/.test(prompt) && /\bverify\b/.test(prompt), true)
   }
 
-  console.log(failed ? `\n${failed} FAILED` : `\nall ${22} cases pass`)
+  // --- Acceptance criteria. `covers` is the plan's half of the evidence chain: the spec branch of
+  // the synthesizer prompt is the only thing that asks for it, and it is one edit away from being
+  // dropped while the schema still declares the field (or from being asked for on a spec-less run,
+  // where there is no criterion to name and every id would be invented).
+  const withSpec = await promptOf({ ...BASE, specPath: `${WS}/spec.md` })
+  check('a spec makes the synthesizer fill covers', /`covers`/.test(withSpec), true)
+  check('  …and no spec asks for none', /covers/.test(silent), false)
+
+  // The field itself, read out of the schema source rather than retyped — a shape restated in a test
+  // drifts exactly like prose does. Fails closed if the block moves or is reindented: `required`
+  // throws and `props` comes back empty, so neither check below can pass on nothing. The `from`
+  // offset matters — VALIDATION_SCHEMA has its own `risks:` earlier in the file.
+  const stepShapeOf = (src) => {
+    const from = src.indexOf('const PLAN_SCHEMA')
+    const block = src.slice(from, src.indexOf('\n    risks:', from))
+    // Two `required: [...]` arrays live in this slice: PLAN_SCHEMA's own top-level one, then the
+    // step's nested one inside `steps.items` — in that order. Take the LAST, so this reads the
+    // step's required list and not the schema's.
+    const reqs = [...block.matchAll(/required: \[([^\]]+)\]/g)]
+    if (!reqs.length) throw new Error('PLAN_SCHEMA step shape not found — this check has stopped testing')
+    const req = reqs[reqs.length - 1]
+    return {
+      props: [...block.matchAll(/^ {10}(\w+): \{/gm)].map((m) => m[1]),
+      required: req[1].split(',').map((v) => v.trim().replace(/'/g, '')),
+    }
+  }
+  const planStep = stepShapeOf(SRC)
+  check('PLAN_SCHEMA declares covers on a step', planStep.props.includes('covers'), true)
+  // Optional, and it must stay optional: a plan written without a spec has no criterion to name, and
+  // the lint downstream reports an absent `covers` rather than rejecting the plan.
+  check('  …and never requires it', planStep.required.includes('covers'), false)
+  // And the extraction reads the STEP's required array, not PLAN_SCHEMA's top-level one: add
+  // `covers` to the step's own required list on an in-memory COPY and the same call must flip to
+  // true. Without the fix above, this mutation is invisible — `required` would keep coming back as
+  // the top-level ['title', 'steps', 'open_questions'] no matter what the step declares.
+  check('  …and required tracks the step, not the top-level schema',
+    stepShapeOf(SRC.replace(
+      "required: ['id', 'title', 'goal', 'files', 'depends_on', 'details']",
+      "required: ['id', 'title', 'goal', 'files', 'depends_on', 'details', 'covers']"
+    )).required.includes('covers'), true)
+  // And the extraction bites: rename the property on an in-memory COPY and the same call must report
+  // it gone, so this cannot quietly stop testing.
+  check('  …and it fails when the field disappears',
+    stepShapeOf(SRC.replace(/\n( {10})covers: \{/, '\n$1coversRenamed: {')).props.includes('covers'), false)
+
+  console.log(failed ? `\n${failed} FAILED` : `\nall ${28} cases pass`)
   process.exit(failed ? 1 : 0)
 }
 

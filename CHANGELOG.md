@@ -9,6 +9,50 @@ different artifact, a new gate — and never on prose that restates behavior alr
 `.claude-plugin/plugin.json` and `.claude-plugin/marketplace.json` state it (the latter twice);
 `tests/contract-drift.test.js` fails if they disagree, or if the shipped version has no entry here.
 
+## 0.7.0 — 2026-08-17
+
+### Added
+- **Acceptance criteria carry stable ids, and covering them is linted for free.** `/dev-spec` now
+  numbers every criterion `AC-01: …` in document order and never renumbers one — an id is an address
+  the rest of the pipeline points at. A plan step declares which ones it covers (`covers: ["AC-01"]`,
+  optional, on both step schemas), `/dev-plan` extracts the canonical id list from `spec.md` with a
+  stated `grep` — a workflow script has no filesystem access, the same reason `rules` arrives
+  pre-extracted — and passes it into the `dryRun` projection it already runs. So the three coverage
+  warnings (an id no spec declares, an id declared twice, a criterion no step covers) reach you before
+  the approval checkpoint at **zero agent cost**. They are surfaced, never auto-patched: an unknown or
+  duplicate id is a plan defect to fix, while a criterion covered by no step is your call, since a
+  suite-level check is a legitimate cover and inventing a `covers` entry to quiet the warning is
+  precisely the lie the chain exists to prevent. `/dev-pr` then renders an acceptance matrix —
+  criterion → step(s) → the check that actually ran → outcome — from that structure instead of
+  reconstructing it in prose, and marks the rows resting on a check that was already green.
+
+  **Rejected: a criterion-level self-report.** The fuller design had implementers return
+  `{criterion, status, evidence}` beside their `verify_run` — a second self-reported evidence channel,
+  with a second honesty gate to write and defend, for something a genuinely verifiable criterion
+  already states as a command. A criterion's status is instead **derived** from the `verify_run` of
+  the steps that declare `covers`, so nothing new is self-reported and the matrix shows the command
+  rather than an adjective. Ids on their own are ceremony; the derived matrix is what makes them pay.
+
+- **One computed delivery verdict ends an implement run.** `wf-implement` returns `delivery_verdict`
+  (`ready`, `ready-with-unverified` or `blocked`), a `gates` object over acceptance/tests/review/
+  questions/scope, and `reasons` naming the evidence for every gate that is not clean.
+  `/dev-implement` leads its report with it, persists it into `last-run.json`, `state.json` and the
+  run ledger; `/dev-pr` stops before publication on `blocked` — stating the gates, offering
+  `/dev-implement --continue` or `/dev-review --from-report`, publishing only on an explicit override
+  — and asks for one risk acknowledgement on `ready-with-unverified`. Readiness used to be spread
+  across `review.clean`, `finalCheck.consistent`, `suite_run`, unverified steps, blocking questions,
+  budget exits and `stoppedEarly`: every signal honest on its own, the combination left to whoever
+  read the report, where "review clean" quietly read as "ready" even when nothing ran end to end.
+
+  **Rejected: letting an agent decide it.** The verdict is a pure function, in plain JS, of structured
+  outputs the run already produced — no agent call was added anywhere, and four existing test files
+  throw on an unexpected agent, so the constraint enforces itself. A label an agent asserts is the one
+  thing that would make people stop looking at the gates underneath it. `gates.scope` implements five
+  of the six blocked triggers the design named; the sixth, a stale plan, has no computable source in
+  this script's reach — no filesystem, no git, no clock — and is filed against the plan-freshness gate
+  (`IDEAS.md` #13, which would record `planned_at_sha`) rather than stubbed with an argument no caller
+  ever passes. Until it lands, a verdict is only as current as the plan it was computed against.
+
 ## 0.6.0 — 2026-08-17
 
 ### Fixed

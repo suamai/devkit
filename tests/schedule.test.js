@@ -179,6 +179,51 @@ async function main() {
   const chain = await run({ dryRun: true, steps: ['a', 'b', 'c', 'd'].map((id, i, all) => ({ id, goal: id, files: [`${id}.ts`], verify: 'x', depends_on: i ? [all[i - 1]] : [] })) })
   check('a chain of single steps is flagged', chain.schedule.warnings[0].startsWith('4 waves of one step each'), true)
 
+  // Coverage of the spec's acceptance criteria — the same projection, still at zero agents, so the
+  // developer sees an invented id or an unclaimed criterion before approving rather than after the
+  // run. `b` and `c` both cover AC-01 on purpose: more than one step per criterion is legal.
+  const COVER_STEPS = [
+    { id: 'a', goal: 'a', files: ['a.ts'], depends_on: [], verify: 'npm test -- a', covers: ['AC-99'] },
+    { id: 'b', goal: 'b', files: ['b.ts'], depends_on: [], verify: 'npm test -- b', covers: ['AC-01'] },
+    { id: 'c', goal: 'c', files: ['c.ts'], depends_on: [], verify: 'npm test -- c', covers: ['AC-01', 'AC-02', 'AC-02'] },
+  ]
+  const covered = await run({ dryRun: true, steps: COVER_STEPS, criteria: ['AC-01', 'AC-01', 'AC-02', 'AC-03'] })
+  check('an id no criterion declares is flagged',
+    covered.schedule.warnings.some((w) => w.includes('AC-99 is covered by a') && w.includes('no criteria list')), true)
+  check('a criterion no step covers is flagged',
+    covered.schedule.warnings.some((w) => w.includes('no step covers AC-03')), true)
+  check('the spec declaring one id twice is flagged',
+    covered.schedule.warnings.some((w) => w.includes('AC-01 is declared 2 times')), true)
+  check('a step listing one id twice is flagged',
+    covered.schedule.warnings.some((w) => w.includes('c lists AC-02 twice')), true)
+  // Those four and nothing else: two steps covering AC-01 is not a finding, and AC-02 being both
+  // duplicated inside `c` and legitimately covered by it is one warning, not two.
+  check('and covering one criterion from two steps is not', covered.schedule.warnings.length, 4)
+
+  // With no spec there is no known-good set, so "unknown" and "uncovered" are unknowable and the
+  // lint says neither — which is also what keeps the exact warning counts above it honest.
+  const noSpec = await run({ dryRun: true, steps: COVER_STEPS })
+  check('no criteria → no unknown and no uncovered',
+    noSpec.schedule.warnings.some((w) => w.includes('AC-99') || w.includes('no step covers')), false)
+  // ...but a step that lists the same id twice is wrong on its own terms, spec or no spec.
+  check('no criteria → the self-contained defect still lands',
+    [noSpec.schedule.warnings.length, noSpec.schedule.warnings[0].includes('c lists AC-02 twice')], [1, true])
+
+  // A plan whose steps cover every criterion exactly once is silent end to end.
+  const clean = await run({ dryRun: true, steps: [
+    { id: 'a', goal: 'a', files: ['a.ts'], depends_on: [], verify: 'npm test -- a', covers: ['AC-01'] },
+    { id: 'b', goal: 'b', files: ['b.ts'], depends_on: [], verify: 'npm test -- b', covers: ['AC-01', 'AC-02'] },
+  ], criteria: ['AC-01', 'AC-02'] })
+  check('a fully covered plan warns about nothing', clean.schedule.warnings, [])
+
+  // The lint reads the PLAN, not what is left of it: a continuation strips the completed steps, and
+  // reading `todoSteps` would report the criteria they cover as covered by no step at all.
+  const continued = await run({ dryRun: true, steps: [
+    { id: 'a', goal: 'a', files: ['a.ts'], depends_on: [], verify: 'npm test -- a', covers: ['AC-01'] },
+    { id: 'b', goal: 'b', files: ['b.ts'], depends_on: [], verify: 'npm test -- b', covers: ['AC-02'] },
+  ], criteria: ['AC-01', 'AC-02'], completed: ['a'] })
+  check('a continuation does not report completed steps as uncovered', continued.schedule.warnings, [])
+
   // The floor is a floor: it counts what is certain and says so.
   check('agent floor', schedule.agents_min, 4 + 5 + 1 + 4 + 1)
 

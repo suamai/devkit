@@ -44,7 +44,8 @@ pointer (never "read the whole workspace"):
   pr/<branch>/         ← standalone PR artifacts when no task workspace matches; never flow state
   <slug>/
     state.json         ← this flow's stage/baseline/lastRunId; written by the skill owning the phase
-    last-run.json      ← the implement run's args + completion map, so a stop can be continued
+    last-run.json      ← the implement run's args + completion map (so a stop can be continued),
+                         its computed delivery_verdict/gates/reasons, and the coverage matrix
     spec.md            ← /dev-spec (dialogue in the main loop)
     plan.md            ← wf-explore-plan's synthesizer; then curated by the /dev-plan skill
     understanding.md   ← same workflow in mode:'explain'; findings/ stay reusable for a later plan
@@ -76,7 +77,8 @@ that a rule now has to survive review by someone who can say no.
 
 ```
 /dev-spec  (optional, for large/ambiguous tasks — dialogue, repo-anchored questions)
-   → spec.md with VERIFIABLE acceptance criteria that flow through everything downstream
+   → spec.md with VERIFIABLE acceptance criteria, each carrying a stable id (AC-01) in document
+     order, that flow through everything downstream — the ids are what the evidence chain addresses
 
 /dev-plan "task"
    0. TRIAGE: default trivial/small; medium+ needs a named signal (unknown-code, contract-change,
@@ -87,6 +89,9 @@ that a rule now has to survive review by someone who can say no.
         Validate (sonnet ×1)→ one batched check of load-bearing headline claims
         Synthesize (opus)   → cross-check, coherent one-agent steps (~10 files as a soft guide,
                               executable verify), writes plan.md (+ JSON steps block)
+   └─ free coverage lint before approval: wf-implement's dryRun projection joins the spec's ids to
+      each step's `covers` → unknown id, duplicate id, criterion no step covers (zero agents;
+      surfaced to the dev, never auto-patched)
    └─ interrupt: open_questions → dev; checkpoint: dev approves plan
 
 /dev-implement <slug>
@@ -103,7 +108,12 @@ that a rule now has to survive review by someone who can say no.
           wf-review-loop      → one consolidated review over the wave's changed files, handed the
                                 covered steps' own verify commands (deduped, joined with &&) to run
                                 after its fixes; a failed check blocks the run
+        coverage      → criterion id → the steps declaring `covers` → each step's own executed
+                        check; DERIVED from verify_run, never self-reported. Computed first, so the
+                        checker below is TOLD which criteria no step covers instead of hunting prose
         Check (opus)  → the SEAMS between steps; runs the suite
+        verdict       → one delivery_verdict + five gates + reasons, a pure JS function of the
+                        run's structured outputs; no agent decides it
    └─ interrupt: needs_user_input → dev; skill verifies end-to-end and reports
    └─ a run that stopped early continues via `completed` (same steps; done ids stop being deps)
 
@@ -131,6 +141,8 @@ that a rule now has to survive review by someone who can say no.
 /dev-pr [base] [--review] [--draft] [--body-only]
    ├─ deterministic git map: merge-base, commits, diff, upstream, dirty-tree gate
    ├─ selectively reads matching .dev spec/plan/notes as hints
+   ├─ renders the acceptance matrix from last-run.json's coverage (criterion → step → the check
+   │  that ran → outcome) and gates publication on delivery_verdict
    ├─ optional report-only wf-review-loop (apply:false) → reviews/<reviewed-head>.md
    ├─ writes pr.md and previews title/body
    └─ explicit approval → push if needed → gh pr create/edit   ← the ONLY GitHub-specific step;
@@ -179,6 +191,64 @@ or a repo, shifts them.
 - All workflows accept `{ dryRun: true }` (zero-cost smoke test) and normalize `args` from JSON
   string. Named resolution requires a session restart after creating a workflow file; `scriptPath`
   works immediately.
+
+## The evidence chain — from a criterion id to one delivery verdict
+
+`/dev-spec` writes the ids, `/dev-plan` writes `covers`, `wf-implement` derives the matrix and the
+verdict, `/dev-pr` renders one and gates on the other. Every hop is deterministic, and two of them
+are decisions worth stating once, in one place.
+
+**A criterion's status is derived, never self-reported.** `spec.md` numbers each criterion `AC-01`,
+`AC-02`, … in document order and never renumbers them — an id is an address, so plans and matrices
+downstream can point at it. A plan step declares `covers: ["AC-01"]` (optional, in both step
+schemas). The canonical id list reaches the workflow as `args.criteria`, extracted from `spec.md` by
+the skill with a stated `grep`: a workflow script has no filesystem access, the same reason `rules`
+arrives pre-extracted, and an agent-transcribed "canonical" list would make the unknown-id check
+compare the agent against itself. From those two claims the run joins criterion → covering step →
+that step's own executed check, and the criterion's status is whatever `verify_run` reported.
+
+The rejected design also had the implementer return `{criterion, status, evidence}` beside its
+`verify_run`. That is a second self-reported evidence channel, with a second honesty gate to write
+and defend, for something a genuinely verifiable criterion already states as a command. Ids on their
+own are ceremony; the derived matrix is the only thing that makes them pay.
+
+The lint that guards the join costs **zero agents**, because it rides the `dryRun` projection
+`/dev-plan` already runs before asking for approval: an id no spec declares, an id declared twice,
+and a criterion no step covers. All three are *surfaced*, never silently fixed — an unknown or
+duplicate id is a plan defect to correct, while a criterion covered by no step is the developer's
+call, since a suite-level check is a legitimate cover and inventing a `covers` entry to quiet the
+warning is exactly the lie this chain exists to prevent. Two different steps covering one criterion
+is legal and silent. With no spec, or no ids in it, nothing is passed and the lint says nothing at
+all: absence is not a failure.
+
+**The verdict is computed in JS, and no agent decides it.** `wf-implement` returns
+`delivery_verdict: ready | ready-with-unverified | blocked` alongside a `gates` object and a
+`reasons` array, as a pure function of structured outputs the run already produced. No agent call is
+added anywhere — which is why the label can be read as evidence rather than as a summary somebody
+wrote, and it is what stops a confident word from making people quit looking at the gates under it.
+`ready` means every mandatory gate carries evidence, including a suite that actually ran;
+`ready-with-unverified` means no known failure and at least one claim without an executable check;
+`blocked` means at least one gate is in a blocking state:
+
+| gate | vocabulary | what blocks, and what deliberately does not |
+|---|---|---|
+| acceptance | `passed` · `unverified` · `uncovered` · `failed` · `n/a` | `failed` blocks — a covering step's check failed. `uncovered` and `unverified` do not: a suite-level cover is legitimate, and the matrix shows which. `n/a` when no ids are known and no step declares `covers`. |
+| tests | `passed` · `failed` · `unverified` · `not-run` | `failed` blocks — a step's check failed, or the final suite ran and did not pass. A run that stopped early lands on `not-run`. Weak evidence (a check that was already green) does not downgrade it; it is marked in the matrix row and counted separately in the report. |
+| review | `clean` · `blocked` · `not-run` | `blocked` blocks — a checkpoint review said so, **or** the final consistency check left a high/critical unfixed. Both sources are read: the consistency check runs after the last checkpoint and is never re-checked against it. |
+| questions | `none` · `open` · `blocking` | `blocking` blocks — an answer that would invalidate the step's approach. `open` is informational: the question was asked and a reversible assumption recorded. |
+| scope | `within-plan` · `incomplete` | `incomplete` blocks — the run stopped early, a dependency wave went unreviewed, or continuation work is pending. A budget stop lands here. |
+
+Only `delivery_verdict` is drift-tracked by `tests/contract-drift.test.js`; the five gate
+vocabularies deliberately are not. Nothing branches on a gate label, and five more pinned option
+sets would be five more things that must be maintained exactly forever.
+
+`scope` implements five of the six blocked triggers the design named. The sixth — **a stale plan** —
+has no computable source: nothing in `wf-implement`'s reach represents plan staleness, and the script
+has no filesystem access, no git and no clock. It is dropped rather than stubbed with an argument no
+caller ever passes, and filed against the plan-freshness gate (`IDEAS.md` #13), whose `planned_at_sha`
+is the field that would make it computable and `gates.scope` the place its branch goes. Until that
+lands, a verdict is only as current as the plan it was computed against, and `/dev-implement`'s
+workspace-staleness preflight is the only thing standing in front of it.
 
 ## Two shapes the feature cycle does not fit
 
@@ -312,6 +382,7 @@ copies of them.
 | `tests/fix-verify.test.js` | the post-fix check: skip reasons that spawn no agent, the classified `fix_verify`, the bounded repair attempt, and that a repair's files reach the next re-review |
 | `tests/lens-composition.test.js` | which reviewers a run gets: the two defaults, custom `lenses`, the appended rule lens, `ruleLens: false` and the four-rule cap |
 | `tests/continuation.test.js` | dependency surgery when a stopped run continues |
+| `tests/delivery-verdict.test.js` | the computed verdict through the same full-run harness: every gate's blocking state, all three verdicts, and the coverage matrix derived from the steps' own `verify_run` |
 | `tests/policy.test.js` | model/effort resolution, plus `policy()`/`metered()` drift across the scripts |
 | `tests/rules.test.js` | `paths:` frontmatter parsing, glob matching, matcher drift |
 | `tests/seeded-review.test.js` | `--from-report`: that no finder runs, and that `clean` still needs a post-fix pass |
@@ -591,8 +662,11 @@ inside a top-level string, is a row that gets mis-read quietly. Omit any field y
   `scouts_projected`, `agents_projected`. A `--explain` run adds `mode: "explain"` and carries **no**
   `tier` — nothing was triaged — which is also why the escalation row counts only lines that have one.
 - implement: `tier`, `waves`, `parallel_groups`, `steps_leaf`, `splits`, `scouts_ran`, `gates`,
-  `gate_breaks`, `checkpoints`, `review_rounds`, `agents_projected`, `unreviewed_waves`, `findings`,
-  `verification`. `tier` is the tier the plan was triaged at, carried over so the quote
+  `gate_breaks`, `checkpoints`, `review_rounds`, `agents_projected`, `unreviewed_waves`,
+  `delivery_verdict`, `findings`, `verification`. `delivery_verdict` is the run's own computed
+  string, top-level like every other string; the `gates` object behind it does **not** go on the line
+  (only `cost`, `findings` and `verification` may nest, and the ledger's own `gates` is the
+  contract-gate count, a number). `tier` is the tier the plan was triaged at, carried over so the quote
   `--phase implement --tier <t>` can match: comparability is phase + tier + profile, and a line
   missing the field it is filtered on never matches. Read it from the workspace's own `runs` array
   (the latest `plan` entry — every tier writes one, small included), and omit it if that entry has

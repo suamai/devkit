@@ -115,10 +115,39 @@ check('risk enum agrees across schemas',
 check('context_confidence enum agrees across schemas',
   enumOf('workflows/wf-explore-plan.js', 'context_confidence'), enumOf('workflows/wf-implement.js', 'context_confidence'))
 
-// Prose spells them as `risk: "contract" | "local"`. Compare the sets, not the formatting.
+// `covers` is the join the whole evidence chain hangs on — the planner writes it onto a step, the
+// implement run reads it back to build the acceptance matrix — so a schema that declares it on one
+// side only means the field is asked for and then silently dropped, or read and never populated.
+const STEP_SCHEMA_FILES = ['workflows/wf-implement.js', 'workflows/wf-explore-plan.js']
+const declaresCovers = (text) => /covers: \{ type: 'array'/.test(text)
+check('both step schemas declare covers', STEP_SCHEMA_FILES.filter((f) => !declaresCovers(read(f))), [])
+// And it bites — pure over text, so the negative case is a second call on a COPY rather than an edit
+// to a file the repo owns.
+check('and it fails when a schema drops it',
+  STEP_SCHEMA_FILES.filter((f) => !declaresCovers(read(f).replace(/covers: \{ type: 'array'/g, "covered: { type: 'array'"))),
+  STEP_SCHEMA_FILES)
+
+// `delivery_verdict` is COMPUTED, not declared in a schema, so `enumOf` cannot see it — the script
+// states its vocabulary as one literal for exactly this reason. Fail loudly if that declaration was
+// moved or renamed: an empty set would compare against nothing and pass.
+function deliveryVerdicts() {
+  const m = read('workflows/wf-implement.js').match(/const DELIVERY_VERDICTS = \[([^\]]+)\]/)
+  if (!m) throw new Error('workflows/wf-implement.js: could not extract DELIVERY_VERDICTS — has the declaration moved or been renamed?')
+  return m[1].split(',').map((v) => v.trim().replace(/'/g, ''))
+}
+
+// Prose spells them as `risk: "contract" | "local"`. Compare the sets, not the formatting — and
+// judge EVERY such statement in a file, not just the first one, since a document restates a set
+// wherever it explains it. A statement naming a single member (`delivery_verdict: 'blocked'` in an
+// instruction, `kind: existing-suite` in an aside) is not a claim about the vocabulary at all: the
+// alternatives list is what makes a sentence a restatement, so the `|` is what admits it here.
+function proseSets(text, name) {
+  return [...text.matchAll(new RegExp('`' + name + ': ([^`]+)`', 'g'))]
+    .map((m) => m[1]).filter((v) => v.includes('|'))
+    .map((v) => v.split('|').map((x) => x.trim().replace(/"/g, '')))
+}
 function proseSet(text, name) {
-  const m = text.match(new RegExp('`' + name + ': ([^`]+)`'))
-  return m ? m[1].split('|').map((v) => v.trim().replace(/"/g, '')) : null
+  return proseSets(text, name)[0] || null
 }
 // The sets a document is allowed to restate, and where the truth lives. `status` and `kind` type a
 // step's `verify_run`: the status the script DERIVES from ran/command/passed, and the kind of check
@@ -128,16 +157,20 @@ const OPTION_SETS = [
   ['risk', enumOf('workflows/wf-implement.js', 'risk')],
   ['status', enumOf('workflows/wf-implement.js', 'status')],
   ['kind', enumOf('workflows/wf-implement.js', 'kind')],
+  // The run's own verdict on itself: /dev-implement leads its report with it and /dev-pr gates
+  // publication on it, so a member renamed in the script while the prose still lists the old word is
+  // a gate that quietly stops matching. The five per-gate vocabularies under it (acceptance, tests,
+  // review, questions, scope) are deliberately NOT tracked — nothing branches on a gate label, and
+  // five more pinned statements would be five more things to maintain exactly forever, which is the
+  // decision docs/architecture.md records.
+  ['delivery_verdict', deliveryVerdicts()],
 ]
 // Pure over text, so the mutation proof below is just a second call on a COPY rather than a rewrite
 // of something the repo owns.
 function proseSetDrift(files, name, expected) {
-  return files.flatMap(({ p, text }) => {
-    const stated = proseSet(text, name)
-    return !stated || JSON.stringify(stated) === JSON.stringify(expected)
-      ? []
-      : [`${p}: ${name} documented as ${stated.join('|')}, schema says ${expected.join('|')}`]
-  })
+  return files.flatMap(({ p, text }) => proseSets(text, name)
+    .filter((stated) => JSON.stringify(stated) !== JSON.stringify(expected))
+    .map((stated) => `${p}: ${name} documented as ${stated.join('|')}, schema says ${expected.join('|')}`))
 }
 check('prose option sets match the schema',
   OPTION_SETS.flatMap(([name, expected]) => proseSetDrift(PROSE, name, expected)), [])
@@ -145,7 +178,7 @@ check('prose option sets match the schema',
 // document states passes the check above by giving it nothing to compare, and an enum whose prose
 // was deleted is precisely the drift this is here to catch.
 check('and every option set is stated in some document',
-  OPTION_SETS.filter(([name]) => !PROSE.some(({ text }) => proseSet(text, name))).map(([name]) => name), [])
+  OPTION_SETS.filter(([name]) => !PROSE.some(({ text }) => proseSets(text, name).length)).map(([name]) => name), [])
 // And it bites: rename one member and every set must come back as drift. The rename happens on an
 // in-memory copy — a check that rewrites a tracked file and restores it afterwards corrupts the tree
 // if it dies in between, which is worse than the drift it guards.

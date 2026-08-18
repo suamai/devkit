@@ -4,7 +4,7 @@ description: Build a grounded task specification through dialogue — repo-ancho
 argument-hint: <rough task description>
 ---
 
-Spec-building is dialogue, so it happens here in the main loop — no background workflow. The spec's acceptance criteria flow downstream: they anchor exploration, become each plan step's verification, feed the review "intent" lens, and close the final consistency check.
+Spec-building is dialogue, so it happens here in the main loop — no background workflow. The spec's acceptance criteria flow downstream: they anchor exploration, become each plan step's `covers` claim and its verification, feed the review "intent" lens, are checked by the free coverage lint at plan approval, are rendered as `/dev-pr`'s acceptance matrix, and close the final consistency check. Every one of those consumers addresses a criterion **by id**, which is why the criteria below are numbered and why the numbers are permanent.
 
 ## Process
 
@@ -17,7 +17,21 @@ Spec-building is dialogue, so it happens here in the main loop — no background
 4. **Write `<workspace>/spec.md`:**
    - **Goal** — one paragraph, the observable outcome.
    - **Non-goals** — explicitly out of scope (prevents scope creep downstream).
-   - **Acceptance criteria** — each one VERIFIABLE: a command to run, a behavior to exercise, an invariant to check. "Works well" is not a criterion; "`POST /orders` returns 422 for an empty cart" is.
+   - **Acceptance criteria** — each one VERIFIABLE: a command to run, a behavior to exercise, an invariant to check. "Works well" is not a criterion; "`POST /orders` returns 422 for an empty cart" is. **One criterion per bullet, each beginning with a stable id**, numbered from `AC-01` in document order:
+
+     ```markdown
+     - AC-01: `POST /orders` returns 422 for an empty cart.
+     - AC-02: `sh tests/run-all.sh` passes, the contract-drift suite included.
+     ```
+
+     The id is the address every downstream consumer uses: a plan step declares `covers: ["AC-01"]`, the
+     coverage lint checks those declarations against this list, and `/dev-pr` renders one matrix row per
+     id. So an id is **never reused and never renumbered** once written. Dropping a criterion retires its
+     id and the next one keeps counting; a criterion added later takes the next free number rather than
+     being inserted in the middle. Renumbering is the failure that costs the most and shows the least — it
+     silently re-points every `covers` and every matrix row that already cites the old number. And one id
+     means one checkable thing: two criteria joined by an "and" cannot be told apart in the matrix, so
+     split them into two ids.
    - **Constraints** — tech choices, compatibility, performance, style.
    - **Grounding** — pointers (`file:line`) to the existing code the spec talks about.
 
@@ -43,4 +57,6 @@ failed phase.
 If `CLAUDE.md` carries an `Artifact language: <language>.` line, write `spec.md` in that language.
 No line means today's behavior: it follows the conversation. Acceptance criteria are the exception
 that matters — the command, endpoint, flag or identifier inside one is an address, and it stays
-exactly as it appears in the repo. Translate the sentence around it, never the thing being run.
+exactly as it appears in the repo. Translate the sentence around it, never the thing being run. The
+`AC-01` id is an address in the same way: it is never translated, localized or renumbered, because a
+plan's `covers` and a matrix row cite it verbatim.

@@ -32,21 +32,35 @@ You orchestrate the implementation phase of a planned dev task. The heavy liftin
    linked by `depends_on`, but the reverse is a smell: a `depends_on` that isn't a hard dependency
    (the other step's code must exist to compile/run/verify) deepens the sequential chain for nothing.
    Run the lint rather than eyeballing it — zero agents, zero tokens:
-   `Workflow({ name: "devkit:wf-implement", args: { dryRun: true, steps, rules } })` returns the
-   schedule this run would follow (waves, real parallel groups, scouts, matched rules, projected
+   `Workflow({ name: "devkit:wf-implement", args: { dryRun: true, steps, rules, criteria } })`
+   returns the schedule this run would follow (waves, real parallel groups, scouts, matched rules, projected
    checkpoints) plus `warnings` and an `agents_min` floor. A chain of mostly single steps, steps
    with overlapping files and no dependency, a step with no `verify`, or several steps declaring the
    **same** `verify` string all show up there; depth is the main driver of wall-clock, so offer to
    flatten before running. The last of those is about evidence rather than scheduling: one shared
    command was already green before every step that named it but the first, so the rest come back
    `weak_evidence` (step 6) — a step whose goal *adds* behavior needs a check of its own.
+
+   `criteria` is the spec's canonical acceptance-criterion ids, and **you** extract them: a workflow
+   script has no filesystem access, the same reason `rules` arrives pre-extracted. This skill is its
+   own entry point — never assume `/dev-plan` ran and already passed them. In document order and
+   **not** deduplicated, because a spec that declares one id twice is exactly what the duplicate
+   warning is for:
+   ```bash
+   grep -oE '^[[:space:]]*[-*][[:space:]]*(\*\*)?AC-[0-9]+' "<workspace>/spec.md" | grep -oE 'AC-[0-9]+'
+   ```
+   No `spec.md`, or no ids in it → pass nothing and say so; never fabricate a list. With the ids in
+   hand the same zero-agent projection also reports the coverage warnings against each step's optional
+   `covers` array: an id no spec declares, an id declared twice, and a criterion no step covers. The
+   first two are plan defects — fix them before running. The third is the developer's call, because a
+   suite-level check is a legitimate cover: report it, never invent a `covers` entry to silence it.
    Fix obvious gaps in the plan file; ask only for judgment calls. If the plan wasn't approved in this conversation, show a one-paragraph summary
    and get explicit go-ahead — this phase edits many files.
 
 5. **Update state and run.** Set `stage: "implementing"` with `baseline` and `updated` in the
    workspace's `state.json`; it returns to `implemented` in step 8. Then:
    ```
-   Workflow({ name: "devkit:wf-implement", args: { workspace, steps, baseline, notes, reviewLoopPath, rules } })
+   Workflow({ name: "devkit:wf-implement", args: { workspace, steps, baseline, notes, reviewLoopPath, rules, criteria } })
    ```
 
    `rules`: the repo's path-scoped checklists, so subagents stop rediscovering conventions the repo
@@ -61,6 +75,9 @@ You orchestrate the implementation phase of a planned dev task. The heavy liftin
    ```
    A rule file with no `paths:` is unscoped — natively always loaded, so the workflow hands it to
    every agent. It comes back with empty `globs`; pass it through rather than filtering it out.
+   `criteria`: the same ids step 4 extracted, by the same command (extract them here if step 4 was
+   skipped) — the run needs them to compute the acceptance gate and the coverage matrix. Passing none
+   is not a failure: it yields `acceptance: "n/a"`, and a plan with no spec behaves exactly as before.
    `notes`: anything the developer said since the plan was written. `reviewLoopPath`:
    `${CLAUDE_PLUGIN_ROOT}/workflows/wf-review-loop.js`. Optional: `review: false`,
    `reviewRounds: N` (default 3 — rounds after the first are one targeted agent, so this is cheaper
@@ -84,8 +101,13 @@ You orchestrate the implementation phase of a planned dev task. The heavy liftin
    `lastRunId` in the workspace's `state.json` — it enables resume.
 
 6. **On completion, persist and read the result.** First write `<workspace>/last-run.json`
-   (`{ runId, stoppedEarly, stopReason, args, continuation }`) — without it a continuation in a later
-   session has no steps array and no completion map. Then:
+   (`{ runId, stoppedEarly, stopReason, delivery_verdict, gates, reasons, coverage, args, continuation }`)
+   — without it a continuation in a later session has no steps array and no completion map. `coverage`
+   is the **only** copy of the acceptance matrix `/dev-pr` renders later: the workflow computes it and
+   returns it, nothing else stores it, and `/dev-status archive <slug>` deletes this file. After an
+   archive the verdict still survives — step 8 puts it in `state.json` — and the matrix does not, which
+   is why `/dev-pr` then reports its check and outcome columns as unavailable instead of rebuilding
+   them from prose. Then:
    - `needs_user_input` with `blocking: true` → the run **stopped there on purpose**: an implementer
      guessed at something that changes its step's approach, and dependent waves were not built on the
      guess. Ask these first (AskUserQuestion, include the recorded `assumption` as context). If the
@@ -168,18 +190,22 @@ You orchestrate the implementation phase of a planned dev task. The heavy liftin
      honest "this repo documents no suite" is a result; a guess is not. `finalCheck.suite_run` does not
      substitute for this: on a stopped run the script fabricated it with nothing behind it, so restating
      it as a result would be reporting a check that never happened.
-     Then tell the developer, once: call the **`PushNotification`** tool
-     (`{ message, status: "proactive" }`, one line, ≤200 chars, no markdown) with
-     `implement <slug> stopped: <stopReason>`. `stopReason` can itself be long (a blocked wave joins
-     every concurrently blocked step's `id:stage`); if the composed message would run past 200
-     characters, truncate `stopReason` and keep the `<slug>` and "stopped" prefix intact — that is
-     what tells the developer where to look. It is a deferred tool — if it is not in the current tool
-     set, `ToolSearch` for it first. Key it on `stoppedEarly` **alone**: the flag is set exactly once per
-     run whichever path stopped it, and a blocking question forces the checkpoint flush before it, so
-     there is no second condition to test and no way to fire one ping per question. A `not sent` result
+   - `delivery_verdict: 'blocked'` → tell the developer, once: call the **`PushNotification`** tool
+     (`{ message, status: "proactive" }`, one line, ≤200 chars, no markdown). Key it on the verdict, not
+     on `stoppedEarly`: a stopped run always lands here too (`gates.scope` reads `incomplete` for it),
+     but so does a run that finished all its waves and still blocked — on `finalCheck.issues`, a
+     checkpoint review, or another gate — so `stoppedEarly` alone would miss that second case entirely.
+     Compose the message from what actually happened: `implement <slug> stopped: <stopReason>` when
+     `stoppedEarly` is true (`stopReason` can itself be long — a blocked wave joins every concurrently
+     blocked step's `id:stage`); otherwise `implement <slug> blocked: <reasons[0]>`, the run's own first
+     reason. Either way, if the composed message would run past 200 characters, truncate the variable
+     part and keep the `<slug>` and its verb ("stopped"/"blocked") intact — that is what tells the
+     developer where to look. It is a deferred tool — if it is not in the current tool set, `ToolSearch`
+     for it first. There is still only one condition to test and no way to fire one ping per question: a
+     blocking question forces the checkpoint flush before the verdict is computed. A `not sent` result
      means the developer is at the terminal — expected, not an error, never retried. This is not the
      automatic ping a finished background workflow already sends: that one says the run ended, this one
-     says it ended *early* and names what stopped it.
+     says *why it needs attention* and names it.
 
 7. **Verify end-to-end.** Per-step `verify_run` and `suite_run` already executed checks; re-run
    anything that failed after your fixes, and exercise the changed flow if the project has a runtime
@@ -195,11 +221,13 @@ You orchestrate the implementation phase of a planned dev task. The heavy liftin
 8. **Phase commit.** `impl(<slug>): <plan title>`, with the standard co-author trailer; using this
    skill opts into phase commits unless the developer said otherwise. Then set `stage: "implemented"`
    in the workspace's `state.json`, and **append** one compact entry to its `runs` array —
-   `{ phase: "implement", ts, run_id, agents_projected, steps_leaf, rounds, confirmed, applied,
-   unverified, cost_total, floors_active, stopped, stop_reason }` (`ts` is plain `YYYY-MM-DD HH:MM`,
-   matching `updated`), the same numbers step 9's ledger line carries (`rounds` is its
-   `review_rounds`, `unverified` is `unverifiedSteps.length`,
-   `cost_total`/`floors_active` come from `cost`). Append it; never rewrite an earlier entry, and merge
+   `{ phase: "implement", ts, run_id, delivery_verdict, agents_projected, steps_leaf, rounds,
+   confirmed, applied, unverified, cost_total, floors_active, stopped, stop_reason }` (`ts` is plain
+   `YYYY-MM-DD HH:MM`, matching `updated`), the same numbers step 9's ledger line carries (`rounds` is
+   its `review_rounds`, `unverified` is `unverifiedSteps.length`,
+   `cost_total`/`floors_active` come from `cost`). `delivery_verdict` is the returned verdict string
+   verbatim — a plain string, since this file carries no structure of its own — and it is the part of
+   the evidence chain that outlives `last-run.json`. Append it; never rewrite an earlier entry, and merge
    into whatever the earlier phases left in that file. This is the copy that survives when the ledger
    does not — `/dev-status archive <slug>` keeps `state.json` and deletes the bulk.
 
@@ -210,7 +238,17 @@ You orchestrate the implementation phase of a planned dev task. The heavy liftin
    the runs that finished well would bias the surviving copy the same way `clean` biases the
    workspaces. Write the entry, leave the stage alone, and say in the report that you did.
 
-9. **Report.** Lead with `cost`: `by_phase` (`steps` = scouting + implementation, which cannot be
+9. **Report.** Lead with the verdict the run computed for itself —
+   `delivery_verdict: ready | ready-with-unverified | blocked` — then `reasons`, one line per gate
+   that is not clean, naming the gate and the evidence behind it. Under that, `gates` as one compact
+   line: `acceptance`, `tests`, `review`, `questions`, `scope`, each with its own value. Restate a
+   gate exactly as it is labelled and never as something stronger: `tests: not-run` is not "the tests
+   pass", `acceptance` at `n/a` is not "the criteria are met", and `ready-with-unverified` is not
+   "ready". The verdict is computed in plain JS from this run's own structured outputs — verification
+   statuses, review findings, blocking questions, coverage, the waves that were reached — and no agent
+   asserts it anywhere; that is why it leads, and why it can be read as a fact about the run rather
+   than a claim the reader has to check.
+   Then `cost`: `by_phase` (`steps` = scouting + implementation, which cannot be
    split further because parallel steps interleave; `gate`; `review`; `check`) and `total`. If
    `floors_active` is false, say so once — the budget floors that skip steps and stop review rounds
    were inert, because they only exist when the developer put a "+300k"-style target in their own
@@ -222,9 +260,11 @@ You orchestrate the implementation phase of a planned dev task. The heavy liftin
    own", with the honest/unevidenced/infrastructure split from step 6 — and state `weakEvidenceSteps`,
    `infraErrors` and `kindMissing` as their own counts beside it, because none of the three is the same
    claim: verified-but-only-by-an-already-green-check, could-not-run-and-is-not-a-defect, and a
-   calibration number nobody acts on. If `stoppedEarly`, lead with `stopReason` rather than burying it
-   under the per-step detail, and put step 6's suite result right next to it — whether the tree this run
-   leaves behind still builds, or the honest reason that could not be established.
+   calibration number nobody acts on. A run that stopped early is `blocked` by construction (its
+   `scope` gate is `incomplete`) and its `stopReason` is one of the `reasons`, so it gets no second
+   competing lead: name it in the same breath as the verdict rather than burying it under the per-step
+   detail, and put step 6's own suite result right next to it — whether the tree this run leaves behind
+   still builds, or the honest reason that could not be established.
    If the run stopped early, do **not** phase-commit and report as done — say what stopped it and
    offer the continuation below.
 
@@ -237,7 +277,7 @@ You orchestrate the implementation phase of a planned dev task. The heavy liftin
 
 ```bash
 sh "${CLAUDE_PLUGIN_ROOT}/scripts/ledger-append.sh" <<'JSON'
-{"phase":"implement","slug":"<slug>","tier":"medium","run_id":"<lastRunId>","baseline":"<baseline>","waves":3,"parallel_groups":1,"steps_leaf":7,"splits":0,"scouts_ran":2,"gates":2,"gate_breaks":0,"checkpoints":2,"review_rounds":3,"agents_projected":19,"unreviewed_waves":0,"stopped":false,"concurrent":false,"findings":{"raw_titles":14,"clusters":9,"confirmed":5,"refuted":4,"applied":5,"skipped":0},"verification":{"steps":7,"passed":6,"unverified_honest":1,"unverified_unevidenced":0,"unverified_infra":0,"weak_evidence":2,"kind_missing":0},"cost":{"by_phase":{"steps":180000,"gate":9000,"review":120000,"check":11000},"total":320000,"budget_total":null,"floors_active":false}}
+{"phase":"implement","slug":"<slug>","tier":"medium","run_id":"<lastRunId>","baseline":"<baseline>","waves":3,"parallel_groups":1,"steps_leaf":7,"splits":0,"scouts_ran":2,"gates":2,"gate_breaks":0,"checkpoints":2,"review_rounds":3,"agents_projected":19,"unreviewed_waves":0,"stopped":false,"delivery_verdict":"ready","concurrent":false,"findings":{"raw_titles":14,"clusters":9,"confirmed":5,"refuted":4,"applied":5,"skipped":0},"verification":{"steps":7,"passed":6,"unverified_honest":1,"unverified_unevidenced":0,"unverified_infra":0,"weak_evidence":2,"kind_missing":0},"cost":{"by_phase":{"steps":180000,"gate":9000,"review":120000,"check":11000},"total":320000,"budget_total":null,"floors_active":false}}
 JSON
 ```
 
@@ -277,6 +317,11 @@ JSON
      removing both of those — never just "the rest" of the unevidenced split alone, or every
      infra-error step gets counted twice. `weak_evidence` = `weakEvidenceSteps.length`, `kind_missing`
      = `kindMissing.length`
+   - `delivery_verdict` = the returned verdict string, verbatim. It is top-level and string-valued,
+     which is what the ledger's shape allows; the `gates` object stays out of the line entirely, since
+     only `cost`, `findings` and `verification` may nest — and the `gates` number already in the line
+     is the count of contract gates, a different thing that happens to share the name. `reasons` stays
+     out too: it is prose for the report, not a comparable field.
    - `unreviewed_waves` = `unreviewedWaves.length`; `stopped`/`stop_reason` from `stoppedEarly` and
      `stopReason`; `cost` **verbatim**; `run_id` = the `lastRunId` you already recorded; `baseline` =
      the one step 3 captured

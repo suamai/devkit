@@ -156,15 +156,46 @@ phase.
 
 5. **Lint the plan before presenting it.** Zero agents, zero tokens, one call:
    ```
-   Workflow({ name: "devkit:wf-implement", args: { dryRun: true, steps, rules } })
+   Workflow({ name: "devkit:wf-implement", args: { dryRun: true, steps, rules, criteria } })
    ```
+   `args.criteria` is the spec's acceptance-criterion ids, and **you** extract them: a workflow script
+   has no filesystem access, the same reason `rules` arrives pre-extracted. Read them out of the spec
+   with the command rather than by eye:
+
+   ```bash
+   grep -oE '^[[:space:]]*[-*][[:space:]]*(\*\*)?AC-[0-9]+' "<workspace>/spec.md" | grep -oE 'AC-[0-9]+'
+   ```
+
+   Pass what it prints, in document order and **not deduplicated** — a spec declaring one id twice is
+   a defect the lint exists to report, and quietly de-duplicating on the way in is how that defect
+   reaches the acceptance matrix instead. No `spec.md`, or the command prints nothing: pass no
+   `criteria` at all and say so in one line. Never complete or repair the list from memory or from the
+   plan's own `covers` — a fabricated id makes the lint compare the plan against an invention, and
+   deriving the ids from `covers` makes an unknown id undetectable by construction.
+
    It returns `schedule`: the dependency waves, which steps *actually* run in parallel
    (`parallel_groups` — only disjoint declared files do), which get a scout, which repo rules match,
    where review checkpoints would fire and why, `warnings`, and `agents_min`. Fix what it finds
-   before the developer sees the plan; a plan that lints badly is cheaper to fix now than after an
-   implement run. Two `warnings` are worth acting on rather than reporting: steps with overlapping
-   files and no dependency (they cost the parallelism the plan appears to have), and a step with no
-   `verify` (it can only ever come back `unverified`).
+   before the developer sees the plan — the coverage warnings below are the one exception; a plan
+   that lints badly is cheaper to fix now than after an implement run. Two `warnings` are worth
+   acting on rather than reporting: steps with overlapping files and no dependency (they cost the
+   parallelism the plan appears to have), and a step with no `verify` (it can only ever come back
+   `unverified`).
+
+   **The three coverage warnings are surfaced, not silently fixed.** They are the only lint output
+   that judges the plan against the *spec*, and two of the three are not yours to settle:
+   - an **unknown id** — a step's `covers` naming a criterion the spec does not have — and a
+     **duplicate id** — one step listing an id twice, or the spec itself declaring one id twice — are
+     plan defects. Fix them before presenting, and still say what you fixed: an invented id usually
+     means the step is covering something nobody wrote down.
+   - a **criterion covered by no step** is the developer's decision, not a defect. A suite-level check
+     is a legitimate cover, and so is deciding a criterion is out of this plan's scope. Report it and
+     let them answer. Never auto-patch it by adding a `covers` entry to the nearest plausible step:
+     that manufactures evidence for a criterion nothing was written to satisfy, and the acceptance
+     matrix will later repeat it as fact.
+
+   State all three with the wave shape in step 6, before the approval checkpoint — they are about
+   what the plan promises to prove, which is exactly what the developer is approving.
 
    **Render the projection as a cost quote**, and present it with the plan in step 6. The developer
    is about to approve a number of agents, so it is stated as a bound with its escape hatches named,
@@ -224,11 +255,15 @@ phase.
    the plan is admitting it is vague — worth a look before approval; if a step you know is
    hand-waved came back `high`, fix it.
 
-   State the **wave shape** from the lint's `schedule` (e.g. "3 waves: s1+s2 → s3 → s4+s5"). Waves are
-   the sequential spine of implementation, so a deep chain of single steps is worth challenging at
-   approval time, not after: check whether each `depends_on` is a hard dependency (the other step's
-   code must exist to compile/run/verify) rather than reading order, and propose flattening or merging
-   when it isn't. The workflow logs a warning for a suspiciously deep chain — relay it if present.
+   State the **wave shape** from the lint's `schedule` (e.g. "3 waves: s1+s2 → s3 → s4+s5"), and with
+   it the **coverage warnings** step 5 collected — one line each, in the same breath, before you stop
+   for approval: which criteria no step covers, and which `covers` ids you corrected and how. The
+   developer is approving what this plan will and will not prove, so an uncovered criterion is a
+   question for them here rather than a discovery at `/dev-pr`. Waves are the sequential spine of
+   implementation, so a deep chain of single steps is worth challenging at approval time, not after:
+   check whether each `depends_on` is a hard dependency (the other step's code must exist to
+   compile/run/verify) rather than reading order, and propose flattening or merging when it isn't.
+   The workflow logs a warning for a suspiciously deep chain — relay it if present.
 
 7. **Handoff.** On approval, set `stage: "plan-ready"` in `<workspace>/state.json`, and store the
    result's `findings` array there too — that is what makes a later run in this workspace skip

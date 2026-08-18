@@ -9,7 +9,7 @@ pipeline, read this when you want to use it.
 | Command | Use when | Produces |
 |---|---|---|
 | `/dev-setup` | Configuring a repo for the pipeline, or checking it after a plugin update | gitignore, CLAUDE.md pointer, Workflow permission, rules, smoke test |
-| `/dev-spec <rough idea>` | Task is large or requirements are fuzzy | `.dev/<slug>/spec.md` with verifiable acceptance criteria |
+| `/dev-spec <rough idea>` | Task is large or requirements are fuzzy | `.dev/<slug>/spec.md` with verifiable acceptance criteria, each carrying a stable id (`AC-01`) the plan steps, the coverage lint and the PR's acceptance matrix all address |
 | `/dev-plan <task>` | Start of any nontrivial task | Triage; a five-line `plan.md` for small, a validated step plan for medium+ |
 | `/dev-review --from-report <review.md>` | Apply the confirmed findings of a PR review | Fixes applied and explicitly re-reviewed; clean/not-clean |
 | `/dev-implement <slug>` | Plan approved | Implemented steps, executed verifications, review loops, phase commit |
@@ -55,8 +55,8 @@ If the current branch already has a PR, `/dev-pr` previews an update to that PR 
 a duplicate. The positional base is normally unnecessary in that case.
 
 **GitHub is only the last hop.** Everything `/dev-pr` does except publication — base resolution,
-branch-to-base analysis, the coverage map against your plan, the SHA-bound review, the body draft —
-is plain git. Claude checks your remote once and says which lane it is in before starting:
+branch-to-base analysis, the acceptance matrix against your plan, the SHA-bound review, the body
+draft — is plain git. Claude checks your remote once and says which lane it is in before starting:
 
 | Your setup | What you get |
 |---|---|
@@ -66,7 +66,7 @@ is plain git. Claude checks your remote once and says which lane it is in before
 | No remote at all | Everything up to `pr.md`, against your local base branch. The review evidence and the change description are the deliverable, and a merge you do yourself is a perfectly good ending. |
 
 Only the last row's *publication* is missing in the lower lanes — `--review`, the gate on
-high/critical findings, and the coverage map all still work. That is the reason to run it solo.
+high/critical findings, and the acceptance matrix all still work. That is the reason to run it solo.
 
 ### Planning options
 
@@ -114,7 +114,10 @@ you can audit the choice in both directions, and override it either way ("treat 
   Push back freely — adjustments are edits to the plan file, cheap. Nothing touches your code yet.
 
 Tip: for large/ambiguous work, run `/dev-spec` first — the interview produces acceptance criteria
-that make everything downstream (plan verification, reviews, final check) measurably stricter.
+with stable ids (`AC-01`, `AC-02`, …) that make everything downstream measurably stricter: plan steps
+declare which ids they cover, a free lint tells you before you approve that one is covered by no step
+(or that a step invented an id the spec never had), and `/dev-pr` renders the matrix from what
+actually ran rather than from prose.
 
 ### 2. Implement — `/dev-implement <slug>`
 
@@ -139,9 +142,12 @@ then audits the seams across all of it and runs the test suite.
 
 - **Your checkpoint #3**: end-of-run questions (`needs_user_input`) — ambiguities where the
   implementer made the safest reversible choice and flagged it. Review them.
-- The run ends with a **phase commit** and a report: per-step changes, verification results,
-  deviations from the plan, review outcomes, remaining concerns. Read the deviations — that's
-  where surprises live.
+- The run ends with a **phase commit** and a report led by one **delivery verdict** — `ready`,
+  `ready-with-unverified`, or `blocked` — with the five gates behind it (acceptance, tests, review,
+  questions, scope) and a stated reason for every gate that is not clean. It is computed in plain
+  JS from the run's own structured outputs; no agent asserts it, which is why it is worth reading
+  as evidence. Then the detail: per-step changes, verification results, deviations from the plan,
+  review outcomes, remaining concerns. Read the deviations — that's where surprises live.
 - If the run **stops early** — a blocking question, an unclean checkpoint, a failed step — there is no
   phase commit, and the report tells you whether the tree it left behind still builds: your repo's own
   check is run before you are handed the result, rather than leaving you to guess what state the
@@ -169,6 +175,22 @@ suite is expensive or already red.
 `/dev-pr` detects the real default/base branch, compares `base...HEAD`, matches a task workspace by
 baseline/commits/file overlap, and writes a concise `pr.md`. It shows the title/body before doing
 anything external. A dirty tree may produce the draft but blocks publication.
+
+When a task workspace matched, it also renders an **acceptance matrix**: one row per acceptance
+criterion — criterion → the plan step(s) covering it → the check that actually ran → its outcome —
+built from `spec.md`, the plan's `covers` arrays and the implement run's own coverage record, never
+reconstructed from notes or commit messages. A row resting on a check that was already green before
+the step is marked as such. With no `last-run.json` (a small task implemented inline, or an archived
+workspace) the criterion → step half still comes from the plan and the check/outcome columns are
+reported unavailable rather than guessed.
+
+That run's **delivery verdict** gates publication as well — with or without `--review`, on every run
+that matched a workspace. `blocked` stops before publication, states which gates blocked and why, and
+offers what clears them (`/dev-implement --continue`, or `/dev-review --from-report`); it publishes
+only if you override explicitly, which a draft PR of a deliberately stopped run is a fair reason to
+do. `ready-with-unverified` asks for one explicit risk acknowledgement naming what is unverified.
+`ready` just continues. Like a review, a verdict describes the run that produced it, not current
+`HEAD` — if commits landed after it, you are told so before you decide.
 
 `--review` adds a report-only review: two complementary reviewers — plus a third, repo-conventions
 reviewer whenever one of the repo's own path-scoped rules matches the diff — and batched verification,
@@ -290,7 +312,8 @@ own. You are the curator; the rules are versioned, diffable repo content, and th
 | `notes/<id>.md` | The implementer's decisions and *whys* — read before questioning a choice |
 | `pr.md` | Proposed public PR body; safe to edit before publication |
 | `reviews/<sha>.md` | Confirmed/refuted review evidence for one exact branch HEAD |
-| `state.json` | This flow's own state: stage, baseline, last run id (resume), and the compact per-run summaries `archive` keeps |
+| `state.json` | This flow's own state: stage, baseline, last run id (resume), and the compact per-run summaries `archive` keeps — including each run's delivery verdict |
+| `last-run.json` | The last implement run's args and completion map (what `--continue` resumes from), its computed delivery verdict, gates and reasons, and the acceptance matrix `/dev-pr` renders: criterion → step(s) → the check that actually ran → outcome. `archive` deletes this file, so the matrix does not survive archiving; the verdict does, in `state.json` |
 
 When no task workspace matches a branch, `/dev-pr` uses `.dev/pr/<branch>/` instead. `/dev-status`
 lists these separately; they are not registered as implementation flows.

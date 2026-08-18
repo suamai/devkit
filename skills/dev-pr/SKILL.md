@@ -8,8 +8,8 @@ You prepare a pull request from the current branch. Analysis and review are read
 creating, or editing a PR always requires an explicit developer confirmation after the preview.
 
 **This skill is two things, and only the second needs GitHub.** Sections 1-4 — base resolution,
-branch-to-base analysis, the coverage map, the optional SHA-bound review, the body draft — are plain
-git and work in any repository, including one with no remote at all. Section 5 is publication via
+branch-to-base analysis, the acceptance matrix, the optional SHA-bound review, the body draft — are
+plain git and work in any repository, including one with no remote at all. Section 5 is publication via
 `gh`, and it is the only GitHub-specific part.
 
 So detect, then say what you detected; never assume. Read the remote once at the start
@@ -53,13 +53,36 @@ overlap the diff. If evidence conflicts or multiple workspaces match, ask.
 
 Read `spec.md` and `plan.md` when present. Read only relevant `notes/` selected by
 step ids, recorded commits, or changed-file overlap. Treat `findings/` and `briefs/` as historical
-hints. Build an internal coverage map: requirement/plan step → diff or commit evidence → executed
-verification → deviation/follow-up. Never claim completion from the plan alone.
+hints.
+
+**Render the acceptance matrix**, one row per acceptance criterion: criterion → the plan step(s) that
+cover it → the check that actually ran → its outcome. Every column comes from a structured record,
+never from prose: the criteria and their text from `spec.md`, the criterion → step join from the
+plan's `covers` arrays, and the check and outcome columns from `coverage` in
+`<workspace>/last-run.json` — the structure the implement run computed in JS from its own steps'
+verification and `/dev-implement` persisted. Mark a row whose check came back `weak_evidence`: it
+passed a command that was already green before the step, which proves nothing broke and nothing more.
+Notes, briefs and commit messages are **not** a source for this matrix — reconstructing an outcome
+from what an agent wrote about its own work is exactly the self-report the structured record replaces.
+It is rendered in the terminal report, next to section 4's preview; `pr.md` never carries it.
+
+Without `last-run.json` — a `Tier: small` task implemented inline, or a workspace `/dev-status archive`
+has already stripped — the criterion → step join still comes from the plan, and the check and outcome
+columns are reported as **unavailable**. Say which of the two it was; never guess an outcome to fill
+the column. Keep the older plan step → diff or commit evidence → deviation/follow-up map alongside the
+matrix for the requirements that are not acceptance criteria. Never claim completion from the plan
+alone.
 
 Without a matched task workspace, create `.dev/pr/<sanitized-branch>/` for PR artifacts. Create
 `reviews/` as needed. Do not add `.dev` files to git.
 
-## 3. Optional report-only review (`--review`)
+## 3. Review and the verdict gate
+
+Two gates share this section: an optional deeper review that only runs behind `--review` (**3a**), and
+the implement run's own verdict gate (**3b**), which always applies. Read past **3a** even on a plain
+`/dev-pr` with no flag — **3b** still gates publication.
+
+### 3a. Optional report-only review (`--review`)
 
 Run `wf-review-loop` with:
 
@@ -137,14 +160,39 @@ high/critical, `needs-attention` for low/medium only, otherwise `clean`.
   first, then the branch name if it is still too long — the actionable suffix (the command to run)
   is the part that must survive.
   Only here: not on the low/medium branch below, which asks for an acknowledgement rather than
-  stopping, and never on a `/dev-pr` run without `--review`, where nothing was gated at all. A
-  `not sent` result means the developer is already at the terminal reading this — expected, and never
-  retried.
+  stopping, not on the verdict gate that follows (the implement run itself already pings whenever its
+  own verdict lands on `blocked`, whether or not it stopped early — see **3b**), and never on a
+  `/dev-pr` run without `--review`, where this loop gated nothing. A `not sent` result means the
+  developer is already at the terminal reading this — expected, and never retried.
 - Low/medium: require one explicit risk acknowledgement in addition to publication confirmation.
 - Clean: continue to the PR preview.
 
 Only a review whose `reviewed_head` equals current `HEAD` can gate publication. After the fixes land,
 run `/dev-pr --review` again over the whole branch.
+
+### 3b. The verdict gate — always runs, with or without `--review`
+
+**The implement run's own verdict gates publication too.** Section 2's
+`last-run.json` carries `delivery_verdict` (and after an archive the latest `implement` entry in
+`state.json`'s `runs` still does), computed in JS by that run from its structured outputs, with no
+agent asserting it. Unlike the review above, which exists only when `--review` ran, it is there on
+every run that matched a task workspace — so read it whenever section 2 matched one, and say plainly
+when there was none to read:
+
+- `blocked` → stop before publication. State the blocking gates and the run's own `reasons`, and offer
+  what clears them: `/dev-implement --continue` when the run stopped with work left, or
+  `/dev-review --from-report <report-path>` when the blocker is unfixed findings. Publish only on an
+  explicit developer override — a draft PR of a deliberately stopped run is a legitimate reason to
+  take one, and that decision is theirs to make, not yours to assume or to refuse.
+- `ready-with-unverified` → require one explicit risk acknowledgement in addition to publication
+  confirmation, the same shape the low/medium review branch asks for. Name what is unverified, from
+  `reasons`; "some checks did not run" is not an acknowledgement of anything.
+- `ready` → continue.
+
+**A verdict describes the run that produced it, not current `HEAD`.** If commits landed after that run
+— fixes applied by hand, a `/dev-review` pass, anything else in the branch — say so and present it as
+what it is: the last computed verdict, now older than the diff being published. Same rule as
+`reviewed_head` above, for the same reason.
 
 ## 4. Draft the PR
 
@@ -162,7 +210,10 @@ sections:
 Omit empty sections. Synthesize behavior and motivation; do not dump commits or one bullet per
 file. Validation lists commands actually observed in notes/current checks, never checks merely
 planned. Keep secrets, local paths, agent internals, `.dev` paths, and workflow failures out of the
-public body unless they are product-relevant limitations.
+public body unless they are product-relevant limitations. The acceptance matrix is a terminal
+artifact, not a section of the body: `pr.md` may say in plain words what a criterion required and list
+under **Validation** the commands that actually ran, but never `.dev` paths, internal step ids or
+criterion ids — those address the pipeline, and the reader of a PR is not in it.
 
 **Language.** `pr.md` is the one artifact here that becomes public, so it is the one where following
 the conversation's language is most likely wrong. If `CLAUDE.md` carries an
