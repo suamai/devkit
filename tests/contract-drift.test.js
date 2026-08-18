@@ -271,5 +271,32 @@ const released = [...read('CHANGELOG.md').matchAll(/^## \[?(\d+\.\d+\.\d+)\]?/gm
 check('the shipped version has a changelog entry', released.includes(plugin.version), true)
 check('and it is the most recent one', released[0], plugin.version)
 
+// The criteria-extraction command is stated in TWO skills, because /dev-plan and /dev-implement are
+// each their own entry point and neither may assume the other ran. A workflow script has no
+// filesystem access, so the id list must arrive pre-extracted either way — but two copies that drift
+// give two entry points extracting different lists from the same spec, and the same plan then lints
+// differently depending on which skill you invoked. Nothing about that failure is visible: both
+// commands still run, and both still print ids.
+//
+// A pure function over text, so the negative case below is just a second call with a mutated string.
+// Fail closed: a command that cannot be found anywhere is a zero-length match set, which must read
+// as drift rather than as agreement between two absences.
+const CRITERIA_GREP = /grep -oE '\^\[\[:space:\]\]\*\[-\*\]\[\[:space:\]\]\*\(\\\*\\\*\)\?AC-\[0-9\]\+'[^\n]*/g
+const criteriaGreps = (texts) => texts.map((t) => (t.match(CRITERIA_GREP) || [])[0] || null)
+const criteriaAgree = (texts) => {
+  const found = criteriaGreps(texts)
+  return found.every(Boolean) && new Set(found).size === 1
+}
+const CRITERIA_SKILLS = ['skills/dev-plan/SKILL.md', 'skills/dev-implement/SKILL.md']
+const criteriaTexts = CRITERIA_SKILLS.map(read)
+check('both skills state the criteria-extraction command', criteriaGreps(criteriaTexts).filter(Boolean).length, CRITERIA_SKILLS.length)
+check('and the two copies are byte-identical', criteriaAgree(criteriaTexts), true)
+// Mutation proof, in memory: one copy loses the `**` alternation (a real drift — it would stop
+// matching bolded criteria) and the pair must go red.
+check('and it goes red when one copy drifts',
+  criteriaAgree([criteriaTexts[0], criteriaTexts[1].replace('(\\*\\*)?', '')]), false)
+// And red when a copy disappears entirely, rather than two absences reading as agreement.
+check('and red when a copy is gone', criteriaAgree([criteriaTexts[0], 'no command here']), false)
+
 console.log(failed ? `\n${failed} FAILED` : `\nall ${cases} cases pass`)
 process.exit(failed ? 1 : 0)

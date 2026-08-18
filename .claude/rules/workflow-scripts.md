@@ -33,6 +33,13 @@ Full rationale: `docs/architecture.md` → "Authoring a bespoke workflow" and "C
   block — are **byte-identical across every script**, because a self-contained script cannot import a
   helper. `tests/policy.test.js` and `tests/rules.test.js` fail when they drift, by design: editing
   one copy means editing all of them in the same commit.
+- Parts of this file are read as **text** by the suite: a guard slices the region between two anchors
+  (`const reviewBlocked =` → the next `\n  if (`, in `tests/schedule.test.js`; `  review: ` →
+  `? 'blocked'`, in `tests/delivery-verdict.test.js`) and asserts what the slice mentions. A line
+  added inside such a region satisfies the guard on a mutant's behalf, so the case that goes red is
+  its mutation proof — a test about code you did not touch. That is the diagnosis, not a flake: move
+  your line out of the slice, never widen the anchor to make it pass. `grep -n "indexOf('" tests/*.js`
+  lists the anchors before you place code near one.
 - These scripts are the source of truth for defaults, option sets and severity levels. Changing one
   means changing the prose that restates it — see the rule covering `skills/*/SKILL.md`.
 - `name:` resolution serves a snapshot taken when the plugin loaded, so an edited script must be
