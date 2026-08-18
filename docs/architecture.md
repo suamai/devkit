@@ -236,7 +236,7 @@ wrote, and it is what stops a confident word from making people quit looking at 
 | tests | `passed` · `failed` · `unverified` · `not-run` | `failed` blocks — a step's check failed, or the final suite ran and did not pass. A run that stopped early lands on `not-run`. Weak evidence (a check that was already green) does not downgrade it; it is marked in the matrix row and counted separately in the report. |
 | review | `clean` · `blocked` · `not-run` | `blocked` blocks — a checkpoint review said so, **or** the final consistency check left a high/critical unfixed. Both sources are read: the consistency check runs after the last checkpoint and is never re-checked against it. |
 | questions | `none` · `open` · `blocking` | `blocking` blocks — an answer that would invalidate the step's approach. `open` is informational: the question was asked and a reversible assumption recorded. |
-| scope | `within-plan` · `incomplete` | `incomplete` blocks — the run stopped early, a dependency wave went unreviewed, or continuation work is pending. A budget stop lands here. |
+| scope | `within-plan` · `incomplete` | `incomplete` blocks — a dependency wave was implemented but never reviewed, or a step is still pending (a budget stop, a failed step, or continuation work not yet done). A checkpoint block or a blocking question on an otherwise fully-implemented, fully-reviewed last wave also stops the run, but leaves nothing actually incomplete, so `scope` reads `within-plan` there — `review` or `questions` already carries that reason. |
 
 Only `delivery_verdict` is drift-tracked by `tests/contract-drift.test.js`; the five gate
 vocabularies deliberately are not. Nothing branches on a gate label, and five more pinned option

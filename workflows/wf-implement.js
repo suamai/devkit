@@ -1153,6 +1153,44 @@ const unreviewedWaves = pending.waves
 
 const leafReports = flat(reports)
 
+// What a follow-up run needs in order to skip this one's work. Built here rather than left to the
+// caller: the caller is a prose skill, and deriving this means walking split substeps back to the
+// parent id the plan actually declares, then matching against which checkpoints covered what.
+// Reported at PLAN-step granularity, because those are the ids `args.steps` contains.
+//
+// Computed here, before the coverage matrix and the final check — not further down, next to the
+// verdict that used to be its only reader — because both of those need it too: the matrix has to
+// credit a step this run never touched, and the stopped-early placeholder below has to know whether
+// anything is actually left before it claims so.
+const reviewedStepIds = new Set(checkpointReviews.filter((c) => c.review).flatMap((c) => c.steps))
+function continuationEntry(r) {
+  const leaves = flat([r])
+  if (!leaves.length || leaves.some((x) => !x.impl || x.failed || x.skipped_for_budget)) return null
+  const firstUnverified = leaves.find((x) => x.unverified)
+  return {
+    id: r.step,
+    changed_files: [...new Set(leaves.flatMap((x) => (x.impl.changed_files) || []))],
+    notes_paths: [...new Set(leaves.flatMap((x) => x.notes_paths || [x.impl.notes_path]).filter(Boolean))],
+    brief_path: r.brief_path,
+    unverified: Boolean(firstUnverified),
+    unverified_reason: firstUnverified ? firstUnverified.unverified_reason || undefined : undefined,
+    weak_evidence: leaves.some((x) => x.weak_evidence === true),
+    reviewed: reviewedStepIds.has(r.step),
+  }
+}
+// A step already done AND already reviewed by an EARLIER run never reaches `reports` at all —
+// `inheritedReports` above deliberately drops `reviewed: true` entries, since nothing this run does
+// should re-review them. That made it invisible to `reports.map(continuationEntry)`, which both
+// re-listed a finished step as pending below AND, passed on verbatim as `continuation.completed`,
+// dropped it from the NEXT run's `args.completed` — which reads as "go re-implement it". The original
+// entry IS this run's evidence for that step, so it is carried forward unchanged instead.
+const untouchedCompleted = completed.filter((c) => c.reviewed === true)
+const completedEntries = [...untouchedCompleted, ...reports.map(continuationEntry).filter(Boolean)]
+const completedEntryIds = new Set(completedEntries.map((c) => c.id))
+// Named once and read twice — by `gates.scope` below and by `continuation.pending` in the return —
+// so the two can never drift into disagreeing about what is left.
+const pendingStepIds = args.steps.filter((s) => !completedEntryIds.has(s.id)).map((s) => s.id)
+
 // ---- The acceptance-criterion coverage matrix.
 // A criterion's status is DERIVED here and never self-reported: the id, the plan steps that declared
 // they cover it, and the check each of those steps actually ran. Computed before the consistency
@@ -1170,17 +1208,27 @@ const declaredCovers = (s) => (Array.isArray(s.covers) ? s.covers : [])
 // A leaf folded in from `args.completed` carries `unverified`/`weak_evidence` and no `status` at all,
 // so reading `status` alone would file an inherited pass as unverified.
 const leafStatus = (x) => (x.failed ? 'failed' : x.status || (x.unverified ? 'not-run' : 'passed'))
+// Steps an EARLIER run already completed and reviewed, indexed for the coverage join below: they
+// never reach `reports` this run (see `untouchedCompleted` above), so their evidence has to be read
+// off the completed entry itself or the join reads a finished step as `not-run`.
+const untouchedById = new Map(untouchedCompleted.map((c) => [c.id, c]))
 let coverage = null
 if (criteria.length || args.steps.some((s) => declaredCovers(s).length)) {
   // Evidence per PLAN step, because that is the granularity `covers` is declared at: substeps are
   // invented mid-run by a scout and have no spec ids of their own, the same documented limitation
   // `verifyCommandFor` carries. A split step aggregates its own leaves through `flat([r])`, exactly
-  // as continuationEntry() does below. One known gap of the same class: a step an EARLIER run already
-  // reviewed has no report here at all (inheritedReports drops `reviewed: true` entries), so a
-  // continuation's matrix reads `not-run` for a criterion only such a step covers.
+  // as continuationEntry() does above.
   const stepEvidence = new Map()
   for (const s of args.steps) {
     const r = reports.find((x) => x.step === s.id)
+    const untouched = !r ? untouchedById.get(s.id) : null
+    if (untouched) {
+      // Same evidence shape an inherited leaf gets below (`command: null`, weak_evidence/unverified
+      // read straight off the entry) — this step just never had a leaf here to read them from.
+      const check = { step: s.id, command: null, status: untouched.unverified ? 'not-run' : 'passed', weak_evidence: untouched.weak_evidence === true }
+      stepEvidence.set(s.id, { status: check.status, checks: [check] })
+      continue
+    }
     // A budget-skipped report carries no `impl`: nothing was implemented, so it is not evidence, and
     // a step whose only leaves are those reads the same as a step with no report at all. A leaf that
     // failed before implementation even ran (scout or impl agent unavailable) ALSO carries no `impl`,
@@ -1263,10 +1311,35 @@ Keep the suite output out of your report — a compact observed result in suite_
 Return the structured report.`,
     { label: 'consistency-check', ...ROLE.check, schema: CHECK_SCHEMA },
   ))
+  if (!finalCheck) {
+    // Mirrors the impl-agent-unavailable path in `runStep`: an unavailable agent here is not a
+    // downgrade, it is a blocked run. This is the one agent that checks how the steps COMPOSE, and
+    // nothing else in the workflow re-runs that check — a silent null would let a run whose every
+    // step passed individually read as `ready-with-unverified` when in truth nothing verified the
+    // seams between them, or ran a suite, at all.
+    finalCheck = {
+      consistent: false,
+      issues: [{ description: 'The consistency-check agent was unavailable — nothing verified how the steps compose or ran the suite.', severity: 'critical', fixed: false }],
+      suite_run: { ran: false, passed: false, output_summary: 'The consistency-check agent was unavailable, so no suite ran.' },
+    }
+  }
 } else {
+  // Not every `stoppedEarly` trigger means work is actually left: a checkpoint that blocked ON the
+  // last wave, or a blocking question raised there, stops the run with every wave already implemented
+  // AND reviewed — `unreviewedWaves` and `pendingStepIds` (computed above, before this block on
+  // purpose) are both empty in that shape. Leading with "stopped before all waves completed" over
+  // that is a false claim about leftover implementation work, when the actionable problem already
+  // lives in `gates.review` or `gates.questions` and does not need this placeholder to repeat it,
+  // wrongly, as a claim this script cannot back with a step id.
+  const incompleteWork = unreviewedWaves.length > 0 || pendingStepIds.length > 0
   finalCheck = {
     consistent: false,
-    issues: [{ description: 'Implementation stopped before all dependency waves completed.', severity: 'high', fixed: false }],
+    issues: incompleteWork
+      ? [{ description: 'Implementation stopped before all dependency waves completed.', severity: 'high', fixed: false }]
+      // Medium, not high: nothing here is an unfixed defect the review layer missed — `gates.review`
+      // and `gates.questions` already carry whatever actually stopped the run — so this must not add
+      // its own severe issue on top of theirs for the one true fact it does state: no suite ran.
+      : [{ description: `Implementation stopped after every wave was implemented and reviewed (${stopReason || 'see checkpointReviews'}) — nothing here ran the cross-step consistency check.`, severity: 'medium', fixed: false }],
     // NOT a result: nothing ran, and nothing here judged anything. The run stopped before the
     // consistency check, which is the only agent in this workflow that executes a suite — so this
     // field is a placeholder the script fabricated, and stating it as an outcome would contradict the
@@ -1308,32 +1381,6 @@ const infraErrors = leafReports
 const kindMissing = leafReports.filter((r) => r.kind_missing).map((r) => r.step)
 const openConcerns = leafReports.flatMap((r) => ((r.impl && r.impl.concerns) || []).map((c) => ({ step: r.step, concern: c })))
 
-// What a follow-up run needs in order to skip this one's work. Built here rather than left to the
-// caller: the caller is a prose skill, and deriving this means walking split substeps back to the
-// parent id the plan actually declares, then matching against which checkpoints covered what.
-// Reported at PLAN-step granularity, because those are the ids `args.steps` contains.
-const reviewedStepIds = new Set(checkpointReviews.filter((c) => c.review).flatMap((c) => c.steps))
-function continuationEntry(r) {
-  const leaves = flat([r])
-  if (!leaves.length || leaves.some((x) => !x.impl || x.failed || x.skipped_for_budget)) return null
-  const firstUnverified = leaves.find((x) => x.unverified)
-  return {
-    id: r.step,
-    changed_files: [...new Set(leaves.flatMap((x) => (x.impl.changed_files) || []))],
-    notes_paths: [...new Set(leaves.flatMap((x) => x.notes_paths || [x.impl.notes_path]).filter(Boolean))],
-    brief_path: r.brief_path,
-    unverified: Boolean(firstUnverified),
-    unverified_reason: firstUnverified ? firstUnverified.unverified_reason || undefined : undefined,
-    weak_evidence: leaves.some((x) => x.weak_evidence === true),
-    reviewed: reviewedStepIds.has(r.step),
-  }
-}
-const completedEntries = reports.map(continuationEntry).filter(Boolean)
-const completedEntryIds = new Set(completedEntries.map((c) => c.id))
-// Named once and read twice — by `gates.scope` below and by `continuation.pending` in the return —
-// so the two can never drift into disagreeing about what is left.
-const pendingStepIds = args.steps.filter((s) => !completedEntryIds.has(s.id)).map((s) => s.id)
-
 // ---- The delivery verdict: five gates, one word, and the evidence behind each one.
 // A pure function of structured outputs this run already produced. No agent decides it and none is
 // spawned for it — which is the only reason the word can be read as a fact about the run instead of
@@ -1342,6 +1389,15 @@ const pendingStepIds = args.steps.filter((s) => !completedEntryIds.has(s.id)).ma
 const DELIVERY_VERDICTS = ['ready', 'ready-with-unverified', 'blocked']
 const [READY, READY_WITH_UNVERIFIED, BLOCKED] = DELIVERY_VERDICTS
 const suiteRun = (finalCheck && finalCheck.suite_run) || null
+// Same discipline as `verify_run` above (lines 627-634, `unverified`/`verifyFailed`): `ran: true` is
+// a CLAIM, `command` and `passed` are its evidence. Requiring only the boolean would make this the
+// one place composition-level checking still hands out a substantiated pass for one free-to-set
+// field — a consistency-check reply of exactly `{suite_run: {ran: true}}`, no command, no passed.
+const suiteCommand = typeof (suiteRun && suiteRun.command) === 'string' ? suiteRun.command.trim() : ''
+// A claimed failure needs no evidence bar: nobody games a check by claiming it went red, so
+// `passed === false` is trusted on `ran === true` alone, exactly like `verifyFailed` above.
+const suiteFailed = !!(suiteRun && suiteRun.ran === true && suiteRun.passed === false)
+const suitePassed = !!(suiteRun && suiteRun.ran === true && suiteCommand && suiteRun.passed === true)
 const unfixedSevereIssues = ((finalCheck && finalCheck.issues) || [])
   .filter((i) => i && (i.severity === 'high' || i.severity === 'critical') && i.fixed !== true)
 const blockedCheckpoints = checkpointReviews.filter((c) => c.blocked === true)
@@ -1362,19 +1418,22 @@ const gates = {
     : 'unverified',
   // `weakEvidenceSteps` is deliberately not read here: a check that was already green is still a
   // check, the matrix row carries the mark, and the report counts them separately. A run that
-  // stopped early lands on `not-run` for free — the placeholder above sets `suite_run.ran` false.
-  tests: failedSteps.length || (suiteRun && suiteRun.ran === true && suiteRun.passed === false) ? 'failed'
-    : !suiteRun || suiteRun.ran !== true ? 'not-run'
+  // stopped early lands on `not-run` for free — the placeholder above sets `suite_run.ran` false. A
+  // bare `{ran: true}` with no command and no substantiated pass reads the same way, for the reason
+  // `suitePassed` above states: it is not evidence, so it is worth exactly what no result is worth.
+  tests: failedSteps.length || suiteFailed ? 'failed'
+    : !suitePassed ? 'not-run'
     : unverifiedSteps.length || infraErrors.length ? 'unverified'
     : 'passed',
   // TWO sources, and both are load-bearing: the checkpoint's own decision (persisted onto the entry
-  // at the moment it was made) and the consistency check, which runs AFTER the last checkpoint and
-  // is never re-checked against it. `blocked` is tested before `not-run` on purpose — a stopped run
-  // carries a fabricated unfixed high issue, and "nothing reviewed this" is not the honest label for
-  // a run that stopped because something did. That placeholder is also why the checkpoint half cannot
-  // be told apart from the other by behavior today (a blocked checkpoint always stops the run, and a
-  // stopped run always carries that issue) — it is read anyway, because the day the placeholder
-  // changes is the day the checkpoint's own verdict becomes the only source that still says so.
+  // at the moment it was made) and the consistency check, which runs AFTER the last checkpoint and is
+  // never re-checked against it. `blocked` is tested before `not-run` on purpose — a stopped run whose
+  // waves or steps are genuinely incomplete carries a fabricated unfixed-high issue of its own (the
+  // `stoppedEarly` branch above), and "nothing reviewed this" is not the honest label for a run that
+  // stopped because something did. The one shape where that placeholder does NOT also carry a severe
+  // issue is a checkpoint blocked on an otherwise fully-implemented, fully-reviewed last wave — there
+  // `blockedCheckpoints` is the only source left saying so, which is why it is read at all rather than
+  // trusting the placeholder alone.
   review: blockedCheckpoints.length || unfixedSevereIssues.length ? 'blocked'
     : args.review === false || !checkpointReviews.some((c) => c.review) ? 'not-run'
     : 'clean',
@@ -1382,10 +1441,13 @@ const gates = {
   questions: needsInput.some((q) => q.blocking === true) ? 'blocking'
     : needsInput.length ? 'open'
     : 'none',
-  // Where a budget stop and an unreviewed dependency wave both land. Today `stoppedEarly` covers the
-  // other two on its own — the last wave always flushes, so waves go unreviewed and steps stay pending
-  // only when the loop broke — and they are still read, because each names a different thing that is
-  // true about the run and none of them is derived from the others.
+  // Where a budget stop and an unreviewed dependency wave both land — read off `unreviewedWaves` and
+  // `pendingStepIds` themselves, never off `stoppedEarly` alone: a checkpoint blocked on the last
+  // wave, or a blocking question raised there, also stops the run, with every wave already
+  // implemented AND reviewed. `stoppedEarly` cannot tell that shape apart from a genuinely unfinished
+  // run — only the two derived sets can — and gates.review / gates.questions already carry that
+  // shape's real reason, so `scope` staying `within-plan` there is not a missed block, it is the
+  // honest answer to the one question this gate asks.
   //
   // The design named a SIXTH blocked trigger for this gate — a stale plan — and it is deliberately
   // not implemented rather than stubbed: nothing in this script's reach represents plan staleness
@@ -1393,7 +1455,7 @@ const gates = {
   // (the plan-freshness gate) would ship `planned_at_sha`, which is the field that makes it
   // computable, and this expression is where its branch goes. docs/architecture.md carries the full
   // statement — do not invent an argument no caller passes in the meantime.
-  scope: stoppedEarly || unreviewedWaves.length || pendingStepIds.length ? 'incomplete' : 'within-plan',
+  scope: unreviewedWaves.length || pendingStepIds.length ? 'incomplete' : 'within-plan',
 }
 const blocking = gates.acceptance === 'failed' || gates.tests === 'failed'
   || gates.review === 'blocked' || gates.questions === 'blocking' || gates.scope === 'incomplete'
@@ -1417,7 +1479,7 @@ if (delivery_verdict !== READY) {
   if (gates.tests !== 'passed') {
     reasons.push(gates.tests === 'failed'
       ? `tests: ${[failedSteps.length ? `${failedSteps.join(', ')} failed the check it ran` : '',
-        suiteRun && suiteRun.ran === true && suiteRun.passed === false ? 'the final suite ran and did not pass' : ''].filter(Boolean).join('; ')}`
+        suiteFailed ? 'the final suite ran and did not pass' : ''].filter(Boolean).join('; ')}`
       : gates.tests === 'not-run'
       ? `tests: no suite result — ${stoppedEarly ? `the run stopped before the consistency check (${stopReason})` : 'the consistency check reported that it ran none'}`
       : `tests: the suite passed, but ${unverifiedNames.length} step(s) carry no substantiated check of their own (${unverifiedNames.join(', ')})`)
@@ -1433,7 +1495,11 @@ if (delivery_verdict !== READY) {
     reasons.push(`questions: ${asked.length} ${gates.questions} question(s) from ${[...new Set(asked.map((q) => q.step))].join(', ')}`)
   }
   if (gates.scope !== 'within-plan') {
-    reasons.push(`scope: ${[stoppedEarly ? `the run stopped before all waves completed (${stopReason})` : '',
+    // `stoppedEarly` is read for the reason it stopped, never for whether to block — the gate above
+    // already established that (`unreviewedWaves`/`pendingStepIds`), and this branch only runs when
+    // one of them is actually non-empty, which — the loop only breaks early on a genuine stop — makes
+    // `stoppedEarly` true here too. Named anyway, defensively, rather than assumed.
+    reasons.push(`scope: ${[stoppedEarly ? `the run stopped (${stopReason})` : '',
       unreviewedWaves.length ? `wave(s) ${unreviewedWaves.join(', ')} were implemented but never reviewed` : '',
       pendingStepIds.length ? `${pendingStepIds.join(', ')} did not complete` : ''].filter(Boolean).join('; ')}`)
   }

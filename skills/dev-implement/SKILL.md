@@ -192,9 +192,11 @@ You orchestrate the implementation phase of a planned dev task. The heavy liftin
      it as a result would be reporting a check that never happened.
    - `delivery_verdict: 'blocked'` → tell the developer, once: call the **`PushNotification`** tool
      (`{ message, status: "proactive" }`, one line, ≤200 chars, no markdown). Key it on the verdict, not
-     on `stoppedEarly`: a stopped run always lands here too (`gates.scope` reads `incomplete` for it),
-     but so does a run that finished all its waves and still blocked — on `finalCheck.issues`, a
-     checkpoint review, or another gate — so `stoppedEarly` alone would miss that second case entirely.
+     on `stoppedEarly`: a stopped run always blocks too, through whichever gate the stop actually came
+     from (`scope` for a genuinely incomplete wave or step, `review` or `questions` for a checkpoint
+     block or a blocking question on an otherwise fully-implemented, fully-reviewed last wave) — but so
+     does a run that finished all its waves and still blocked — on `finalCheck.issues`, a checkpoint
+     review, or another gate — so `stoppedEarly` alone would miss that second case entirely.
      Compose the message from what actually happened: `implement <slug> stopped: <stopReason>` when
      `stoppedEarly` is true (`stopReason` can itself be long — a blocked wave joins every concurrently
      blocked step's `id:stage`); otherwise `implement <slug> blocked: <reasons[0]>`, the run's own first
@@ -260,11 +262,14 @@ You orchestrate the implementation phase of a planned dev task. The heavy liftin
    own", with the honest/unevidenced/infrastructure split from step 6 — and state `weakEvidenceSteps`,
    `infraErrors` and `kindMissing` as their own counts beside it, because none of the three is the same
    claim: verified-but-only-by-an-already-green-check, could-not-run-and-is-not-a-defect, and a
-   calibration number nobody acts on. A run that stopped early is `blocked` by construction (its
-   `scope` gate is `incomplete`) and its `stopReason` is one of the `reasons`, so it gets no second
-   competing lead: name it in the same breath as the verdict rather than burying it under the per-step
-   detail, and put step 6's own suite result right next to it — whether the tree this run leaves behind
-   still builds, or the honest reason that could not be established.
+   calibration number nobody acts on. A run that stopped early is `blocked` by construction, and its
+   `stopReason` usually reads straight out of `reasons` too — `scope` names it verbatim when a wave or
+   step is genuinely incomplete; a stop from a checkpoint block or a blocking question on an otherwise
+   complete last wave instead reads through `review`'s or `questions`' own reason, which names the same
+   fact in the gate's own words rather than repeating the raw `stopReason` string. Either way it needs
+   no second competing lead: name it in the same breath as the verdict rather than burying it under the
+   per-step detail, and put step 6's own suite result right next to it — whether the tree this run
+   leaves behind still builds, or the honest reason that could not be established.
    If the run stopped early, do **not** phase-commit and report as done — say what stopped it and
    offer the continuation below.
 

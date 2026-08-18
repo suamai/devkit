@@ -311,12 +311,68 @@ async function main() {
   check('  └─ and it never re-implements the step it inherited',
     [inherited.calls.includes('impl:s1'), verdictOf(inherited.result)], [false, 'ready'])
 
+  // ---- (8) A bare `suite_run: {ran: true}` from the consistency check — no command, no passed — is
+  // worth exactly what no suite result is worth, never a substantiated pass. Mirrors THE HOLE the
+  // per-step `verify_run` discipline already closes (tests/verify-gate.test.js): `ran` is a claim,
+  // `command` and `passed` are its evidence.
+  const bareSuiteRan = await run({ replies: { 'consistency-check': { consistent: true, issues: [], suite_run: { ran: true } } } })
+  check('a bare suite_run.ran claim is not a substantiated pass',
+    [verdictOf(bareSuiteRan.result), bareSuiteRan.result.gates.tests], ['ready-with-unverified', 'not-run'])
+  const suiteRanNoPassed = await run({ replies: { 'consistency-check': { consistent: true, issues: [], suite_run: { ran: true, command: 'sh tests/run-all.sh' } } } })
+  check('  └─ ran=true plus a command but no passed is the same unevidenced claim',
+    suiteRanNoPassed.result.gates.tests, 'not-run')
+
+  // ---- (9) The consistency-check agent itself comes back unavailable on a run that did NOT stop
+  // early — mirrors `implUnavailable` above, but for the one agent that checks how every step
+  // COMPOSES. A silent null must not read as a downgrade to `ready-with-unverified`: it blocks.
+  const checkUnavailable = await run({ replies: { 'consistency-check': null } })
+  check('an unavailable consistency-check agent blocks, not just downgrades', verdictOf(checkUnavailable.result), 'blocked')
+  check('  └─ even though every step passed its own check',
+    checkUnavailable.result.reports.every((r) => r.status === 'passed'), true)
+  check('  └─ and gates.review names it, not a silent "nothing reviewed this"', checkUnavailable.result.gates.review, 'blocked')
+
+  // ---- (10) A CONTINUATION run where an earlier step is already done AND already reviewed
+  // (`reviewed: true` in args.completed) — the normal shape after a clean multi-session continuation.
+  // It must read as complete, not as still pending, its criterion must read as passed, not
+  // unverified, and it must survive back out through `continuation.completed` — or a THIRD
+  // continuation round loses it and re-implements work that finished two rounds ago.
+  const reviewedContinuation = await run({
+    args: { completed: [{ id: 's1', reviewed: true, changed_files: ['src/a.ts'], notes_paths: ['/w/notes/s1.md'], brief_path: '/w/briefs/s1.md' }] },
+  })
+  check('a step already done and reviewed reads as complete, not pending',
+    [verdictOf(reviewedContinuation.result), reviewedContinuation.result.gates.scope, reviewedContinuation.result.continuation.pending],
+    ['ready', 'within-plan', []])
+  check('  └─ its criterion reads passed, not unverified', rowFor(reviewedContinuation.result, 'AC-01').status, 'passed')
+  check('  └─ and it survives back out through continuation.completed, so a third round would not lose it',
+    reviewedContinuation.result.continuation.completed.some((c) => c.id === 's1'), true)
+  check('  └─ and it never re-implements the step it already finished',
+    reviewedContinuation.calls.includes('impl:s1'), false)
+
+  // ---- (11) A checkpoint blocks on an otherwise fully-implemented, fully-reviewed LAST wave —
+  // nothing is actually incomplete, so `scope` must not say it is, and the fabricated `finalCheck`
+  // placeholder must not manufacture a second severe issue on top of the checkpoint's own verdict.
+  const blockedLastWave = await run({
+    steps: [STEPS[0]],
+    criteria: ['AC-01'],
+    review: { clean: false, rounds: 1, confirmed: [{ id: 'f1', severity: 'critical', title: 't' }], applied: [], skipped: [] },
+  })
+  check('a checkpoint blocked on a fully-implemented last wave still blocks, via review',
+    [verdictOf(blockedLastWave.result), blockedLastWave.result.gates.review], ['blocked', 'blocked'])
+  check('  └─ but scope is NOT incomplete — nothing was actually left undone',
+    [blockedLastWave.result.gates.scope, blockedLastWave.result.continuation.pending, blockedLastWave.result.unreviewedWaves],
+    ['within-plan', [], []])
+  check('  └─ the placeholder does not manufacture its own severe issue on top of the checkpoint\'s',
+    (blockedLastWave.result.finalCheck.issues || []).some((i) => i.severity === 'high' || i.severity === 'critical'), false)
+  check('  └─ so the reasons do not falsely claim leftover implementation work',
+    blockedLastWave.result.reasons.some((r) => r.startsWith('scope: ')), false)
+
   // `gates.review` reads TWO sources and only one of them can be isolated by behavior: a blocked
-  // checkpoint ALWAYS stops the run, and a stopped run's fabricated finalCheck carries an unfixed
-  // high issue of its own, so a row blocking on the checkpoint would block on the placeholder too.
-  // The checkpoint source is guarded over the source text instead — fail closed if the expression
-  // moves, and proven to bite on a copy with that disjunct removed, since a check that silently stops
-  // testing is worse than none.
+  // checkpoint ALWAYS stops the run, and a stopped run whose waves/steps are genuinely incomplete
+  // carries a fabricated unfixed high issue of its own, so a row blocking on the checkpoint would
+  // block on the placeholder too (case (11) above is the one shape where it does not, precisely
+  // because nothing there is genuinely incomplete). The checkpoint source is guarded over the source
+  // text instead — fail closed if the expression moves, and proven to bite on a copy with that
+  // disjunct removed, since a check that silently stops testing is worse than none.
   function reviewGateReadsCheckpoints(text) {
     const at = text.indexOf('  review: ')
     const end = at === -1 ? -1 : text.indexOf("? 'blocked'", at)
