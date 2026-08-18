@@ -69,8 +69,16 @@ There is no dedicated remediation machinery to reach for; that is deliberate.
 
 3. **Run it.**
    ```
-   Workflow({ name: "devkit:wf-review-loop", args: { scope, intent, files, baseline?, contextPaths?, rules?, verifyCommand?, apply, maxRounds, profile?, models?, efforts? } })
+   Workflow({ name: "devkit:wf-review-loop", args: { scope, intent, files, baseline?, contextPaths?, rules?, verifyCommand?, root?, apply, maxRounds, profile?, models?, efforts? } })
    ```
+
+   `root`: only when reviewing a flow that ran `/dev-implement <slug> --isolated`. That flow's code
+   lives in a git worktree, not in the primary checkout, so a review launched without `root` reads a
+   tree the run never touched and reports on it — cleanly, and about the wrong files. Take the
+   absolute path from the workspace's `state.json` `worktree` field (`/dev-status` prints it beside
+   the flow), and pass the same `baseline` the flow used. No `worktree` field means the flow was not
+   isolated: omit `root` entirely rather than passing the primary checkout's own path, since an empty
+   `root` is what makes every prompt byte-identical to a normal review.
 
    `rules`: the repo's rule manifest, from `sh "${CLAUDE_PLUGIN_ROOT}/scripts/rules-manifest.sh"`
    (outputs `[]` when the repo has none). Pass it **unmatched**, together with `files` — the concrete

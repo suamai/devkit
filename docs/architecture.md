@@ -66,7 +66,7 @@ knowledge belongs in the repo itself (`CLAUDE.md`, `docs/`, `.claude/rules/*.md`
 PR-reviewable and travels with git. Adding a pull-side memory channel is a possible extension
 (see "Extending"), not something the pipeline currently depends on.
 
-There *is* a write path, and it deliberately ends at a human. `/dev-implement` step 10 offers — only
+There *is* a write path, and it deliberately ends at a human. `/dev-implement` step 11 offers — only
 when a run produced confirmed findings or a note recording a rediscovered convention — at most three
 proposed edits to `.claude/rules/*.md`, each citing its evidence, which the developer approves as a
 diff. That is the same producer an earlier design had feeding an agent-writable knowledge base,
@@ -394,6 +394,10 @@ copies of them.
 | `tests/dryrun-smoke.test.js` | that every shipped workflow answers `dryRun: true` with `{ok: true}` and a resolved policy, spawning nothing — the promise `/dev-setup` step 6 makes to every new repo |
 | `tests/setup-check.test.js` | that `/dev-setup --check` prescribes nothing that writes — every backticked span and fenced block in the mode's own section, with the section anchor failing closed if the heading moves |
 | `tests/contract-drift.test.js` | that the prose still states the values the scripts use, that every name it points at resolves, and that both manifests and `CHANGELOG.md` agree on the version |
+| `tests/worktree.test.js` | the `--isolated` worktree lifecycle against real `git` in a throwaway repo: setup's one JSON line and its measurements, the worktree sitting exactly at the baseline, every guard refusing before anything is written, removal that keeps the branch — and through all of it that the primary checkout's dirtied file, `git status --porcelain` and `HEAD` are unchanged |
+| `tests/isolation.test.js` | that `root` reaches every prompt the implement pipeline spawns and the nested review checkpoint, and that without it no prompt mentions a work root at all — the other half of the contract, that a non-isolated run is unchanged |
+| `tests/stale-flows-hook.test.js` | the SessionStart hook's output: a stale isolated flow naming its worktree, a stale flow without one printing no empty label, and the silence contract — nothing stale prints nothing at all |
+| `tests/isolated-flow.test.js` | the cross-document prose contract for `--isolated`: one byte-identical cleanup command wherever it is stated, the same state keys named by their writer and their reader, the pre-integration presentation ordered before the rules ratchet, and no unconditional claim that a flow runs in a worktree |
 
 Those two rows describe a deliberate asymmetry, so it does not later read as accidental drift. The
 classification itself — the eight lines that turn a `verify_run` into verified/unverified/failed — is
@@ -479,6 +483,25 @@ A git repo is a **prerequisite** for `/dev-implement`, `/dev-review`, and `/dev-
   pre-existing ones. Review without a baseline reviews whole files — much weaker.
 - On the default branch, the skill branches to `dev/<slug>` first. After a completed implement it
   makes a **phase commit** (`impl(<slug>): <title>`) — the rollback/review boundary.
+- **`--isolated` moves that whole story into a worktree.** `/dev-implement <slug> --isolated` creates
+  `.dev/<slug>/worktree` on branch `dev/<slug>`, branched explicitly **from the captured baseline**, so
+  `git diff <baseline>` means the same thing to every agent asked to judge the change. The primary
+  checkout is neither branched nor switched — the skill skips the `dev/<slug>` checkout above
+  entirely, because once the worktree owns that branch a second `git checkout -b` on it fails. The
+  phase commit is made *inside* the worktree, which demotes it from integration to "the commit that
+  makes this branch mergeable": nothing reaches the primary checkout until the pre-integration
+  presentation asks and you answer merge, cherry-pick, discard, or leave it as is. A successful merge
+  or cherry-pick there also sets `worktree_integrated: true` in `state.json`, so `/dev-status` can
+  tell a merged flow's since-removed worktree from one whose only copy is still on the branch.
+- `dev/<slug>` is only the **default** branch name, and `scripts/worktree.sh setup` refuses before
+  writing anything when it cannot be created — naming which of the two conflicts it hit, because they
+  need different answers. A branch `dev/<slug>` that already exists takes `dev/<slug>-iso`. A repo
+  whose **default branch is itself named `dev`** takes a flat name outside that prefix entirely
+  (`<slug>-iso`, no `dev/` prefix at all): `refs/heads/dev` is then a file, so git can create no ref
+  under `refs/heads/dev/` at all and `dev/<slug>-iso` fails identically to `dev/<slug>`. This
+  repository is that case, which is why the guard probes every path prefix of the intended name
+  rather than trusting `git check-ref-format`, which passes both. `state.json`'s `worktree_branch`
+  records the name that was actually used, so nothing downstream has to re-derive it.
 - `/dev-pr` compares `base...HEAD` from the exact merge-base. A dirty tree can produce a body draft
   but blocks publication because those bytes are not in the proposed PR.
 - `/dev-review --from-report` requires `HEAD == reviewed_head`, a matching branch **and a clean
@@ -489,10 +512,11 @@ A git repo is a **prerequisite** for `/dev-implement`, `/dev-review`, and `/dev-
 ## Flow state & concurrency
 
 Each workspace owns its state: `.dev/<slug>/state.json` holds
-`{ task, stage, updated, baseline, lastRunId, findings, runs, plan_freshness }` with stages
-`spec → planning → plan-ready → implementing → implemented` (or `abandoned`), written by the skill
-that owns that phase. `runs` is the compact per-phase summary described under "The run ledger" —
-the copy that survives `/dev-status archive <slug>`. `plan_freshness` is the nested block `/dev-plan`
+`{ task, stage, updated, baseline, lastRunId, findings, runs, plan_freshness, worktree,
+worktree_branch, worktree_integrated }`
+with stages `spec → planning → plan-ready → implementing → implemented` (or `abandoned`), written by
+the skill that owns that phase. `runs` is the compact per-phase summary described under "The run
+ledger" — the copy that survives `/dev-status archive <slug>`. `plan_freshness` is the nested block `/dev-plan`
 writes in the same handoff that sets `plan-ready`, and `/dev-implement`'s preflight is its only
 reader: it records which tree, which plan text, which spec and which plugin the plan was written
 against, so the preflight can tell "nothing relevant moved" from "a contract this plan rests on
@@ -506,6 +530,16 @@ skill has to be told to respect: there is no shared file two skills could race o
 that exists with no state file is a recoverable case (infer the stage from its artifacts) rather
 than a corrupt registry.
 
+`worktree` and `worktree_branch` are written by an `--isolated` run and by nothing else: the absolute
+path of the flow's worktree and the branch it sits on, both **flat top-level strings** because
+`hooks/session-start-stale-flows.sh` reads state with `sed` and handles nothing deeper. Their absence
+is what identifies a normal run, so a reader must treat a missing key as "not isolated" and never as
+an error. **The workspace itself does not move into the worktree**, and that is a decision rather than
+an omission: the advisory lock's glob, `/dev-status` and the SessionStart hook all resolve
+`.dev/*/state.json` against the developer's session directory, so a workspace living inside the
+worktree would make an isolated flow invisible to all three at once — including the lock that is
+supposed to still refuse a second flow. The code moves; the bookkeeping stays.
+
 `/dev-status` globs those files: table of flows, PR-review SHA/outcome, staleness flags, and
 `clean <slug>` to delete the workspace — which takes its state with it.
 
@@ -517,8 +551,15 @@ dedicated remediation axis that used to live here was removed.
 `implementing`), deliberately not a lock file: a shared file would reintroduce the writer the
 per-workspace split just removed. The reason is not file
 collisions — it's that step verifications and the consistency check *run the test suite on the
-shared working tree*; a second concurrent flow makes every verification result unreliable. True
-parallel flows are a designed extension: one git worktree + branch per flow, merge at the end.
+shared working tree*; a second concurrent flow makes every verification result unreliable.
+
+**Flow-level isolation is built, opt-in, and does not relax the lock.** `--isolated` gives one flow
+its own worktree and branch, so that run's verifications share a tree with nothing — not with a
+second flow, and not with your own uncommitted edits. The lock is deliberately unchanged: an isolated
+run still occupies the one `implementing` slot, which is also why the workspace stays in the primary
+checkout where the glob can see it. Isolation is the thing that would *make* relaxing the lock
+possible; relaxing it is a separate change nobody has made. True parallel **flows** — several at once,
+each in its own worktree, merged at the end — therefore remain a designed extension, not built.
 Don't improvise same-tree concurrency.
 
 ## Debugging & recovery
@@ -663,6 +704,12 @@ later report can be trusted; a field the script cannot read is omitted, never gu
 | `repo` | basename of `git rev-parse --show-toplevel` | omitted |
 | `repo_sha` | `git rev-parse HEAD` | omitted |
 
+**Append from the primary checkout.** `repo` and `repo_sha` are read with no explicit `-C`, so they
+describe whatever directory the script was invoked from, and the envelope always wins over the body —
+run from inside a flow's worktree the line records the worktree's own basename as `repo`, and no
+field in the JSON can correct it. An `--isolated` run drives `git` against the worktree all the way
+through and still appends its ledger line with the working directory in the primary checkout.
+
 **The body is the skill's half**, and it obeys one structural rule: **every string-valued field is
 top-level, and the only nested objects are `cost`, `findings` and `verification`, whose values are
 numbers, booleans or `null`.** The two override maps `models` and `efforts` are the single exception
@@ -692,7 +739,17 @@ inside a top-level string, is a row that gets mis-read quietly. Omit any field y
   `--phase implement --tier <t>` can match: comparability is phase + tier + profile, and a line
   missing the field it is filtered on never matches. Read it from the workspace's own `runs` array
   (the latest `plan` entry — every tier writes one, small included), and omit it if that entry has
-  none.
+  none. An `--isolated` run adds three more top-level fields — `isolated` (written as `true`, never
+  as `false`), `worktree_setup_ms` and `worktree_disk_kb` — and a run without the flag **omits all
+  three**, the rule `result_recovered` already follows: the store counts isolated runs rather than
+  carrying a negative on every line, and a non-isolated implement line stays byte-identical to what it
+  was before isolation existed. The two numbers are wall-clock milliseconds and kilobytes on disk,
+  measured by `scripts/worktree.sh` around `git worktree add` rather than typed by a model —
+  `disk_kb` is `du -sk` over the worktree's own checked-out files only, the *marginal* size a linked
+  worktree adds, not a total: the `.git` it links to is a small pointer file, so the object store it
+  shares with the primary checkout is never counted. They are top-level for the same reason every
+  other scalar is, and specifically **not** inside `cost`, which means tokens everywhere in this file
+  — a millisecond summed into a token total is a corrupt row that nothing downstream can detect.
 - review: `seeded`, `rounds`, `clean`, `rounds_end` (`clean|max-rounds|blocked|budget`), `findings`
 - pr: `reviewed`, `outcome` (`clean|needs-attention|blocked`), `rounds`, `findings`, `published`
 - debug: `hypotheses`, `refuted`, `repro` (`"yes"|"no"`), `tier`, `signal`
@@ -811,7 +868,7 @@ start.
   `repo-conventions` rule lens is appended to whatever they resolve to unless `ruleLens: false` —
   a caller asking for a different pair of general lenses is not asking for the repo's own checklists
   to be dropped.
-- Shared memory, half-built on purpose. The **write** side exists: `/dev-implement` step 10 distils
+- Shared memory, half-built on purpose. The **write** side exists: `/dev-implement` step 11 distils
   at most three lessons per cycle into `.claude/rules/*.md`, through a human. The **read** side is
   native — a `paths:`-scoped rule reaches whoever touches those files — but it is *push*: agents get
   the rules matching their files, and cannot go looking. A pull-side channel (scouts querying
@@ -820,8 +877,12 @@ start.
   and degrades every future agent's discovery. Curation, not storage, is the hard part.
 - Design judge-panel for arch-open tasks: N independent approach proposals + judges before
   synthesis — add as a workflow called by /dev-plan between explore and synthesize.
-- Parallel flows (designed, not built): `git worktree add` per flow, implement runs against the
-  worktree path (prompts take a `root` arg), merge + review at the end; the workspace state gains a
-  `worktree` field. Build only after single-flow cycles run well.
+- Parallel flows (still designed, not built). The vocabulary this note reserved — `git worktree add`
+  per flow, prompts taking a `root` arg, a `worktree` field in the workspace state — has since
+  shipped, but for exactly **one** flow: `/dev-implement <slug> --isolated`. What is still unbuilt is
+  the plural case, several flows at once each in its own worktree, merged and reviewed at the end;
+  that needs the advisory lock to learn the difference between "another flow is running" and "another
+  flow is running somewhere that cannot affect my tests", which single-flow isolation makes possible
+  and does not do. Build it only after isolated single-flow cycles run well.
 - Status dashboard (designed, not built): an Artifact-rendered HTML view of the workspace states;
   `/dev-status` covers the need until then.

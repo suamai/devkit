@@ -13,6 +13,9 @@ no shared registry to reconcile:
   "stage": "spec | planning | plan-ready | implementing | implemented | abandoned",
   "updated": "2026-07-09 14:32",
   "baseline": "<git sha, set when implementing starts>",
+  "worktree": "<absolute path, set when a flow runs --isolated>",
+  "worktree_branch": "<branch>",
+  "worktree_integrated": "true — set once step 10 merges or cherry-picks the branch; omitted otherwise",
   "lastRunId": "wf_...",
   "findings": [{ "angle": "...", "report_path": "...", "summary": "..." }],
   "runs": [
@@ -31,6 +34,19 @@ keeps this file and deletes everything else, so the evidence survives here even 
 lost. A reader tolerates extra keys and never drops one it did not write; real workspaces also carry
 what a phase handed on (`plan`, `spec`, `decisions`).
 
+`worktree` and `worktree_branch` appear only on a flow that ran `/dev-implement <slug> --isolated`:
+the absolute path of that flow's git worktree, and the branch it was created on. Both are **flat
+top-level strings on purpose**, not a nested `isolation` object — `hooks/session-start-stale-flows.sh`
+reads a state file with a `sed` one-liner that matches top-level strings and nothing else, and an
+abandoned isolated run is exactly the case that has to be able to say where its work is at session
+start. The workspace itself never moves into the worktree: it stays in the primary checkout, so this
+skill's glob, `/dev-implement`'s concurrency lock and that hook all keep seeing an isolated flow.
+
+`worktree_integrated` is a third, optional top-level boolean: `/dev-implement` step 10 writes it
+`true` the moment it merges or cherry-picks the branch into the primary checkout, and never writes
+it at all otherwise — same rule as `isolated` in the run ledger. It is what Status below reads to
+tell a merged flow's now-removed worktree from one still at risk.
+
 ## Status (default)
 
 1. Glob `.dev/*/state.json` and read each. Then list `.dev/*/` directories to catch a workspace with
@@ -42,18 +58,44 @@ what a phase handed on (`plan`, `spec`, `decisions`).
    `.dev/pr/<branch>/` workspaces are listed separately and never carry state.
 2. For each flow, check normal artifacts plus `pr.md` and `reviews/*.md`; also check whether a
    workflow task is running (TaskList). A review whose `reviewed_head` differs from current `HEAD`
-   is historical, not a current PR gate.
+   is historical, not a current PR gate. For a flow whose state carries `worktree`, also test that
+   the path is still a directory — one `[ -d "<path>" ]`, nothing more.
 3. Report a compact table: slug, stage, updated, task, artifacts and latest PR-review outcome/SHA.
    Flag an `implementing` stage with no running task, or an update older than ~24h, as likely stale.
    A workspace whose state carries `archived` is finished and thinned on purpose — report it as
    archived and never flag it stale or missing artifacts; its files were deleted by request.
+   A flow carrying `worktree` is isolated: name that path and its `worktree_branch` in the row, so
+   the diff is findable without re-deriving where it went. A `worktree` path that is gone is worth
+   flagging exactly like a stale `implementing` stage — the state still claims a worktree, so the
+   work now survives only on the branch — **unless the state also carries `worktree_integrated:
+   true`**, which means step 10 already merged or cherry-picked that branch into the primary
+   checkout before the directory disappeared; report that plainly ("worktree removed after merge")
+   rather than as at risk, since the work is in the primary checkout's own history now. Without that
+   flag, `git branch --list "<worktree_branch>"` is the one command that says whether even the
+   branch is still there. Report what it answers; deleting a branch is never this skill's decision.
 
 ## Clean (`clean <slug>`)
 
-1. Show exactly what will be deleted, including PR drafts and reviews under `.dev/<slug>/`.
+1. Show exactly what will be deleted, including PR drafts and reviews under `.dev/<slug>/`. When the
+   state carries `worktree`, that worktree is on the list too: name its path, and say that the branch
+   in `worktree_branch` **survives** and every commit made in that worktree survives with it — what
+   is lost is any **uncommitted** work still sitting in the worktree.
 2. Confirm with the developer before deleting (this is destructive and not yours to assume).
-3. Delete the workspace directory and report. Its state file lives inside it, so nothing else needs
-   unlinking.
+3. When the state carries `worktree`, remove the worktree **first**, with the one command
+   `/dev-implement` also offers at the end of an isolated run:
+   ```bash
+   sh "${CLAUDE_PLUGIN_ROOT}/scripts/worktree.sh" remove <slug>
+   ```
+   The order is not cosmetic: `rm -rf` over a directory holding a nested worktree leaves that
+   worktree registered as `prunable` in the repo's `.git/worktrees`, and it takes a separate
+   `git worktree prune` to clear — reproduced. If the worktree still holds uncommitted changes the
+   command exits 3 and removes nothing: that is a decision surfacing, not a fault. Show git's own
+   refusal, and append `--force` only after the developer says that uncommitted work is expendable —
+   never on your own initiative, and never as a retry. Skip this step entirely when there is no
+   `worktree` key; it is the only thing that makes an isolated flow's cleanup different.
+4. Delete the workspace directory and report. Its state file lives inside it, so nothing else needs
+   unlinking. If a worktree was removed, name the branch that survived it and give
+   `git branch -D <worktree_branch>` as the separate second decision — offered, never run.
 
 `clean pr/<branch>` follows the same show-and-confirm rule but deletes only that standalone PR
 workspace. Never interpret bare `pr` as permission to delete every branch.
@@ -69,23 +111,45 @@ space and keeps `state.json`, so the compact `runs` summaries of what that task 
 
 1. Show exactly what will be deleted: everything under `.dev/<slug>/` **except** `state.json` —
    `plan.md`, `spec.md`, `findings/`, `briefs/`, `notes/`, `reviews/`, `pr.md`, `last-run.json` and
-   whatever else is there. List what the directory actually holds, not this list.
+   whatever else is there. List what the directory actually holds, not this list. When the state
+   carries `worktree`, the worktree is on that list too, and its entry says two things plainly:
+   the branch in `worktree_branch` survives, and with it every commit made in that worktree — but
+   **any uncommitted work in the worktree is lost**. Archiving is how the space gets reclaimed, so
+   the worktree cannot be quietly exempted; saying what it costs, before the confirmation, is what
+   makes that a decision rather than a surprise.
 2. Confirm with the developer before deleting. This is destructive and not yours to assume — the
-   plan, the briefs and the review reports are gone afterwards.
-3. Delete:
+   plan, the briefs, the review reports and the worktree are gone afterwards.
+3. When the state carries `worktree`, remove the worktree first — the same one command `clean` uses,
+   for the same reason (a plain `rm -rf` over a nested worktree leaves it `prunable` in
+   `.git/worktrees`, needing a separate `git worktree prune`):
+   ```bash
+   sh "${CLAUDE_PLUGIN_ROOT}/scripts/worktree.sh" remove <slug>
+   ```
+   Its exit 3 on an uncommitted worktree, and the `--force` that answers it, work exactly as under
+   `clean` — step 1 already said what that costs, so this is where the developer confirms it against
+   git's own message rather than against a warning. Then delete the rest:
    ```bash
    find ".dev/<slug>" -mindepth 1 -maxdepth 1 ! -name state.json -exec rm -rf {} +
    ```
-4. Rewrite `state.json` keeping **every key it already has, except `findings`**, and adding
-   `archived: "<YYYY-MM-DD HH:MM>"`. This is a drop-list, not an allow-list: `updated` and anything
-   else a phase handed on (`plan`, `spec`, `decisions`) survive untouched, matching the "a reader
-   tolerates extra keys and never drops one it did not write" invariant stated above — an allow-list
-   that named only `task`, `stage`, `baseline`, `lastRunId` and `runs` would silently erase all of
-   that. Only `findings` goes, and not for tidiness: its `report_path` entries point at the
-   `findings/` files step 3 just deleted, and that array is what `/dev-plan` reads back as
-   `priorFindings` for a later run in this workspace — a dangling path handed to a scout is worse
-   than no prior findings at all. Report what was deleted and that everything else, including the
-   run summaries, was kept.
+4. Rewrite `state.json` keeping **every key it already has, except `findings`, `worktree` and
+   `worktree_branch`**, and adding `archived: "<YYYY-MM-DD HH:MM>"`. This is a drop-list, not an
+   allow-list: `updated` and anything else a phase handed on (`plan`, `spec`, `decisions`) survive
+   untouched, matching the "a reader tolerates extra keys and never drops one it did not write"
+   invariant stated above — an allow-list that named only `task`, `stage`, `baseline`, `lastRunId`
+   and `runs` would silently erase all of that. The three that go, go for one reason and it is not
+   tidiness: each of them names something step 3 just removed. `findings`' `report_path` entries
+   point at the `findings/` files, and that array is what `/dev-plan` reads back as `priorFindings`
+   for a later run in this workspace — a dangling path handed to a scout is worse than no prior
+   findings at all. `worktree` points at a directory that no longer exists, and leaving it would have
+   every later `/dev-status` and every session start announce a worktree that is gone;
+   `worktree_branch` goes with it, because a branch name left behind on its own reads as a live
+   isolated flow. `worktree_integrated` deliberately **stays**, and it is the exception that shows
+   what the rule is: it names no path and points at nothing step 3 removed — it records that this
+   flow's branch was merged or cherry-picked, which stays true forever and is exactly the thing worth
+   knowing about an archived flow whose worktree is gone. Report what was deleted, that everything else including the run summaries was kept,
+   and — the one thing no longer recorded anywhere — **name the surviving branch**, so its commits
+   stay findable (`git branch --list "<branch>"`; `git branch -D "<branch>"` remains a separate
+   decision nobody takes here).
 
 Re-planning in an archived workspace is fine; it simply re-scouts. `archive pr/<branch>` is not
 offered: those workspaces carry no state file by design, so there is nothing to keep and archiving

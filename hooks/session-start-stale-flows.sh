@@ -36,7 +36,13 @@ for state in "$@"; do
   [ "$(field stage "$state")" = "implementing" ] || continue
   slug=$(basename "$(dirname "$state")")
   updated=$(field updated "$state")
-  found="$found  - $slug${updated:+  (last updated $updated)}
+  # An isolated run (`/dev-implement <slug> --isolated`) left its work in a git worktree, not in the
+  # checkout this session opened in. Naming the path is the difference between "something is stale"
+  # and "here is where the code is" — and `worktree` is a flat top-level string precisely so field()
+  # can read it. Absent on every non-isolated flow, and the `${var:+...}` keeps the label absent too:
+  # nothing new prints for the flows that were already reported.
+  worktree=$(field worktree "$state")
+  found="$found  - $slug${updated:+  (last updated $updated)}${worktree:+  worktree: $worktree}
 "
   n=$((n + 1))
 done

@@ -1,7 +1,7 @@
 ---
 name: dev-implement
 description: Execute an approved plan from /dev-plan — adaptive context scouting, verified implementation, a cheap contract gate per dependency wave, and consolidated review at cost-driven checkpoints.
-argument-hint: <slug, workspace, or plan.md> [--continue] [extra notes]
+argument-hint: <slug, workspace, or plan.md> [--continue] [--isolated] [extra notes]
 ---
 
 You orchestrate the implementation phase of a planned dev task. The heavy lifting happens in the `wf-implement` workflow (which can recursively split oversized steps, gates each dependency wave with one cheap contract check, and calls `wf-review-loop` at accumulated review checkpoints); your job is preflight, interrupts, phase commits, and the final report.
@@ -17,14 +17,89 @@ You orchestrate the implementation phase of a planned dev task. The heavy liftin
    out across agents. With `--continue`, read `<workspace>/last-run.json` too and follow
    "Continuing a run that stopped" below instead of starting over.
 
+   **`--isolated`** runs this one flow inside a dedicated git worktree: step 3 creates it, every
+   agent the run spawns works in it, and step 10 presents the finished diff before anything reaches
+   the developer's primary checkout. It changes nothing else here — a run without the flag behaves
+   exactly as it does today, down to the args passed and the ledger line written. Two rules about the
+   flag itself:
+   - **Never retype it on a continuation.** With `--continue`, isolation is re-derived from the
+     workspace's `state.json`: a `worktree` field means this flow is isolated whether or not the flag
+     was typed, and no `worktree` field means it is not, whether or not it was. A continuation that
+     silently fell back to the primary checkout would split one flow across two trees, half its
+     commits somewhere the other half cannot see.
+   - **Refuse it on a flow that already has non-isolated work.** If `state.json` carries a
+     `baseline` — set the moment any earlier implement began, in step 5 below — and carries no
+     `worktree`, say so and stop instead of creating a worktree at today's baseline. Check `baseline`
+     itself, not a `runs` entry or `stage: implemented`: a crash before step 8's bookkeeping runs can
+     leave `stage` stuck at `implementing`, or at `abandoned` after the concurrency lock's own offer
+     to mark it so, with no `runs` entry for the attempt ever appended — `baseline` with no `worktree`
+     is what survives either way. There is nothing to retro-isolate: that work is already in the
+     primary checkout, and the honest offer is to finish or discard it first.
+
 2. **Concurrency lock.** Glob `.dev/*/state.json` and read them: any workspace at `implementing` is
    the repo-wide lock. Check whether it is live (running workflow task, recent `updated`). Live →
    stop: one implement per repo at a time because verifications share the working tree. Stale →
    offer to mark it abandoned and proceed.
 
+   `--isolated` changes nothing in this step, deliberately: an isolated flow's workspace still lives
+   at `.dev/<slug>/` in the primary checkout, so this glob still finds it and it still holds the
+   repo-wide lock. Isolation moves where the code is edited, not where the flow is recorded. And
+   nothing here relaxes the lock — one worktree per flow is what would eventually make relaxing it
+   thinkable, but two implements at once is still not a supported state and this step still refuses
+   it.
+
 3. **Git preflight.** This phase requires a git repo (offer `git init` otherwise). If on the default
    branch, create and switch to `dev/<slug>`. Ensure `.dev/` is gitignored. Capture the baseline —
    reviewers judge diffs since it.
+
+   **Under `--isolated`, and only then, this preflight branches.** Everything above still happens
+   except one line, and the order matters: capture the baseline **first**, from the primary checkout,
+   exactly as above — it is the base ref the worktree is created at, which is what makes
+   `git diff <baseline>` mean the same thing to every agent in the run. Then, in order:
+
+   - **Skip the primary-side branch.** Do not create or switch to `dev/<slug>` here: the worktree is
+     about to own that branch, and `git checkout -b dev/<slug>` afterwards fails with `fatal: a
+     branch named 'dev/<slug>' already exists` (exit 128). An isolated run leaves the primary
+     checkout on whatever branch the developer left it on, clean or dirty. That is the point.
+   - **Snapshot the primary checkout**, for the assertion step 10 makes before anything is
+     integrated: `git status --porcelain | git hash-object --stdin` and `git rev-parse HEAD`. Keep
+     both strings, and the primary's own path (`git rev-parse --show-toplevel`, referred to below as
+     `<primary>`). Nothing else records them, and they are the only evidence that this run did not
+     edit the developer's tree behind its own back.
+   - **Create the worktree**, with the cwd in the primary checkout:
+     ```bash
+     sh "${CLAUDE_PLUGIN_ROOT}/scripts/worktree.sh" setup <slug> <baseline>
+     ```
+     It creates the worktree at `.dev/<slug>/worktree`, inside the flow's own gitignored workspace so
+     the primary checkout's `git status` never sees it, and prints one JSON line — `path`, `branch`,
+     `baseline` (the resolved full sha), `setup_ms`, `disk_kb`. It refuses rather than improvising:
+     exit 2 with one stderr line when a precondition fails and nothing was created, exit 3 when git
+     itself refused. Its default branch name is `dev/<slug>`, and **that name is not always
+     available**.
+     Two different conflicts both come back as exit 2 and they need different answers: an earlier run
+     already holds `dev/<slug>` → re-run with `dev/<slug>-iso` as the explicit `[branch]` argument;
+     git cannot create any `dev/…` branch at all because `refs/heads/dev` exists as a file, which is
+     every repo whose own default branch is named `dev` → `dev/<slug>-iso` fails identically, so pass
+     the flat name the script itself suggests, `<slug>-iso`, with no `dev/` prefix at all. Read which
+     conflict the script named, take the branch name out of its message, and pass it explicitly:
+     ```bash
+     sh "${CLAUDE_PLUGIN_ROOT}/scripts/worktree.sh" setup <slug> <baseline> <branch>
+     ```
+     Never guess a third name after a second refusal — ask. The absolute `path` it prints is the
+     worktree's root, written `<root>` everywhere below.
+   - **Record it in `state.json`.** Write `worktree` (that absolute `path`) and
+     `worktree_branch` (its `branch`) into the workspace's `state.json`, as top-level strings — flat,
+     because `/dev-status` and the SessionStart stale-flow hook read them with a `sed`-based
+     top-level-string reader and nothing else. `worktree_branch` is recorded rather than derived
+     precisely because the name may not be the default one. Keep `setup_ms` and `disk_kb` in hand for
+     step 9's ledger line; nothing else stores those.
+   - **The freshness gate below is unchanged**, and on an isolated run it runs against the worktree
+     (`git -C "<root>" …`) — the tree this run is about to implement into. Its `HEAD` is the baseline
+     the primary just reported and its working tree is clean by construction, so the gate's four
+     branches read exactly as they do in the primary. The one difference is uncommitted work in the
+     primary: it is not in the tree this run implements into, so it is not a freshness signal here —
+     but if any of it touches a path a step declares in its `files`, say so in one line, because that
+     is what step 10's merge would collide with.
 
    **Then the freshness gate, here, before any agent exists.** The workspace's `state.json` carries a
    `plan_freshness` object that `/dev-plan` wrote at handoff — `skills/dev-plan/SKILL.md` step 7
@@ -125,6 +200,15 @@ You orchestrate the implementation phase of a planned dev task. The heavy liftin
    than it looks), `scoutMode: "always" | "adaptive" | "never"` (default adaptive: the plan's
    `context_confidence` decides, heuristic as fallback), `maxParallelSteps` (default 5), `gate: false`,
    `checkpointFileThreshold` (default 20), `checkpointMaxWaves` (default 3); `profile`/`models`/`efforts` (see Cost below — `impl` runs once per step and is the pipeline's largest single cost).
+
+   Under `--isolated`, and only then, one more optional arg goes in: `root`, the worktree path step 3
+   recorded. It must be absolute — the workflow throws on a relative one before any agent runs.
+   It reaches every agent the run spawns (scouts, implementers, the per-wave contract gate, the final
+   consistency check) and is threaded into the nested `wf-review-loop` with it, so all of them run
+   their git, build and verify commands in the worktree instead of the primary checkout. Workspace
+   paths are absolute and stay in the primary checkout, so `briefs/` and `notes/` are still written
+   where `/dev-status` and a continuation can find them. Omit `root` on every other run: with no
+   `root` every prompt is byte-identical to what it is today.
 
    A review checkpoint applies fixes, so it also hands the review loop the `verify` commands of the
    steps it covers — deduplicated, joined with `&&` — as that loop's `verifyCommand`. The fixes a
@@ -246,7 +330,9 @@ You orchestrate the implementation phase of a planned dev task. The heavy liftin
      stopped early), so their code is in the tree unjudged. Continuing handles this by itself: they come
      back as `continuation.completed` entries with `reviewed: false` and are folded into the next
      checkpoint. Only if the developer abandons the flow do you review them separately with
-     `wf-review-loop` scoped to their files.
+     `wf-review-loop` scoped to their files — passing the same `baseline`, and on an isolated flow
+     the same `root` (the `worktree` path from `state.json`), so that loop judges the same diff in
+     the same tree the run used.
    - `checkpointReviews[].review.fix_verify` → that checkpoint's post-fix check: the command it ran,
      whether it passed, or the honest reason it did not run. A check that **ran and did not clear** is a
      **different** stop cause from an unaddressed finding, and worth reporting as such: every finding may
@@ -268,7 +354,10 @@ You orchestrate the implementation phase of a planned dev task. The heavy liftin
      `/dev-review` states for its `verifyCommand`. If the repo documents no check, say *that* — an
      honest "this repo documents no suite" is a result; a guess is not. `finalCheck.suite_run` does not
      substitute for this: on a stopped run the script fabricated it with nothing behind it, so restating
-     it as a result would be reporting a check that never happened.
+     it as a result would be reporting a check that never happened. On an isolated run make that one
+     call in the worktree (`cd "<root>"` first): the code this run left behind is there, the primary
+     checkout has none of it, and a suite run in the primary would report on a tree this run never
+     touched.
    - `delivery_verdict: 'blocked'` → tell the developer, once: call the **`PushNotification`** tool
      (`{ message, status: "proactive" }`, one line, ≤200 chars, no markdown). Key it on the verdict, not
      on `stoppedEarly`: a stopped run always blocks too, through whichever gate the stop actually came
@@ -298,6 +387,8 @@ You orchestrate the implementation phase of a planned dev task. The heavy liftin
    stood then — never the composition, and never the waves a later checkpoint covered. The whole change
    is still `suite_run`'s job — and when the run stopped before reaching it, step 6's `stoppedEarly`
    bullet is where that check already happened, so what is left here is the per-step gap, not the tree.
+   On an isolated run every check in this step runs in the worktree — `cd "<root>"`, or
+   `git -C "<root>"` — for the same reason: that is where this run's code is.
 
 8. **Phase commit.** `impl(<slug>): <plan title>`, with the standard co-author trailer; using this
    skill opts into phase commits unless the developer said otherwise. Then set `stage: "implemented"`
@@ -318,6 +409,13 @@ You orchestrate the implementation phase of a planned dev task. The heavy liftin
    case: the run that stopped is the one whose numbers matter most, and a `runs` array holding only
    the runs that finished well would bias the surviving copy the same way `clean` biases the
    workspaces. Write the entry, leave the stage alone, and say in the report that you did.
+
+   **On an isolated run the commit is made in the worktree** — `git -C "<root>" commit` — onto the
+   isolated branch, and it is no longer integration: nothing lands in the primary checkout here, and
+   this commit exists to make that branch cherry-pickable and to give step 10 something to present.
+   The state writes above do not move with it: `stage`, the `runs` entry and everything else in this
+   step go to the workspace's `state.json` in the primary checkout, which is where they already live
+   and where `/dev-status` and a continuation look for them.
 
 9. **Report.** Lead with the verdict the run computed for itself —
    `delivery_verdict: ready | ready-with-unverified | blocked` — then `reasons`, one line per gate
@@ -352,6 +450,12 @@ You orchestrate the implementation phase of a planned dev task. The heavy liftin
    If the run stopped early, do **not** phase-commit and report as done — say what stopped it and
    offer the continuation below.
 
+   On an isolated run, say **where** the change is and that it is not yet in the developer's tree:
+   name the worktree path and its branch, and state plainly that the diff has **not been integrated**
+   — nothing has reached the primary checkout, and step 10 is where that decision gets made. A report
+   that leads with `ready` and omits that reads as "it landed", which is the one thing an isolated run
+   has deliberately not done.
+
    Then append this run to the ledger — one line, once per invocation, after the report and (when
    there was one) the phase commit. A run that stopped early writes its line too: no phase commit
    happened, and `stopped`/`stop_reason` below exist precisely to record that. Skipping it would make
@@ -367,6 +471,12 @@ JSON
 
    Both the command and the closing `JSON` start at column 0 on purpose: an indented terminator does
    not close a quoted heredoc, and the script then sees a two-line body and refuses it.
+
+   Run the append **from the primary checkout**, which on an isolated run means not from `<root>`.
+   The script derives `repo` and `repo_sha` from `git rev-parse` with no explicit directory, and its
+   envelope always wins over the body — so an append issued with the cwd inside an isolated run's
+   worktree records the worktree's own basename as the repo, and no field you put in the JSON can
+   override it.
 
    The envelope is the script's half and the shared vocabulary is in `docs/architecture.md` → "The run
    ledger"; every number below comes off *this* run's result, and anything you do not have is omitted
@@ -407,6 +517,11 @@ JSON
      ever see it) or via step 6's read-only recovery agent. Top-level and boolean, and **omitted** when
      no step needed either kind of recovery — it is the one field saying a report's numbers were
      rebuilt from notes and a diff rather than reported by the agent that did the work.
+   - `isolated`, `worktree_setup_ms`, `worktree_disk_kb` = written on an `--isolated` run only:
+     `true`, plus the `setup_ms` and `disk_kb` the setup script measured in step 3. All three are
+     top-level — they are wall-clock milliseconds and kilobytes, never inside `cost`, which is token
+     cost throughout — and all three are **omitted** entirely on every other run, the same rule
+     `result_recovered` follows, so a non-isolated line stays byte-identical to what it writes today.
    - `delivery_verdict` = the returned verdict string, verbatim. It is top-level and string-valued,
      which is what the ledger's shape allows; the `gates` object stays out of the line entirely, since
      only `cost`, `findings` and `verification` may nest — and the `gates` number already in the line
@@ -422,9 +537,68 @@ JSON
    The ledger is telemetry for a later report, never a gate. If the append fails, say so in one
    sentence and finish; never fail the phase over it, and never read the file back.
 
-10. **Ratchet the repo's rules — only when the run produced evidence.** Nothing carries between
+10. **Present before integrating — isolated runs only.** An isolated run has produced a branch, not
+    a change to the developer's checkout, and nothing reaches that checkout without an explicit
+    answer here. Skip this step entirely on a run that was not `--isolated`: there is nothing to
+    present, because step 8 already committed onto the branch the developer is standing on.
+
+    In this order, and all of it before the question:
+
+    1. **The isolated run's diff.** `git -C "<root>" diff --stat "<baseline>"` first, then the full
+       `git -C "<root>" diff "<baseline>"`, then `git -C "<root>" log --oneline "<baseline>..HEAD"`.
+       The stat is the map, the diff is the change, the log is what a cherry-pick would take.
+    2. **The verdict and the gates**, restated exactly as step 9 labelled them — the same
+       `delivery_verdict`, the same `reasons`, the same one-line `gates`. This is the developer's
+       last read before deciding, and a verdict rounded up here ("basically ready") is the one place
+       a rounding error becomes a merge.
+    3. **The primary-checkout assertion.** Re-run the two commands step 3 snapshotted, in the primary
+       checkout: `git status --porcelain | git hash-object --stdin` and `git rev-parse HEAD`. Both
+       match → report "primary checkout unchanged since preflight". Either differs → say which, and
+       what it shows now, before the question. Never state that line without having run them: the
+       whole promise of an isolated run rests on it, prompt text is the only thing keeping agents in
+       the worktree, and this is the one detector for an agent that ignored it.
+    4. **Then ask** — one `AskUserQuestion`, four options, with "leave as is" the default:
+       - **merge** — `git -C "<primary>" merge --no-ff <worktree_branch>` (`<primary>` is the
+         checkout this session is in, which it never left). A merge into a dirty primary succeeds
+         unless it touches a locally-modified file; when git refuses, report its refusal **verbatim**
+         and never force it or stash around it. The developer stashes and says merge again — that is
+         one command and it is theirs to run.
+       - **cherry-pick** — `git -C "<primary>" cherry-pick <sha>` for step 8's phase commit, when the
+         change is wanted without the isolated branch's history.
+       - **discard** — nothing is deleted. The isolated branch and its worktree stay exactly where
+         they are; "discard" means "not into my tree", not "gone".
+       - **leave as is** — the default, and the same physical state as discard said differently: the
+         developer has not decided yet.
+
+       Nothing integrates without that answer. Do not merge because the verdict was `ready`, and do
+       not skip the question because the diff looked small.
+
+       **On a successful merge or cherry-pick**, write `worktree_integrated: true` into the
+       workspace's `state.json` — a flat top-level boolean, written `true` only and omitted on
+       discard, leave-as-is, or a non-isolated run, the same rule `isolated` already follows. This is
+       what lets `/dev-status` tell a merged flow's now-removed worktree from one still at risk once
+       the developer runs the cleanup below; see that skill's Status step.
+
+    Finally, **offer** the cleanup and never run it:
+
+    ```bash
+    sh "${CLAUDE_PLUGIN_ROOT}/scripts/worktree.sh" remove <slug>
+    ```
+
+    Say what it does: it removes the isolated flow's worktree directory and **keeps the branch**, so
+    every commit survives it. Deleting the branch is a separate second decision the developer makes
+    explicitly — `git branch -D <worktree_branch>` — and it is the one that can destroy work.
+    `/dev-status clean` offers the same command, by name, for the same reason.
+
+11. **Ratchet the repo's rules — only when the run produced evidence.** Nothing carries between
     cycles by design; the repo itself is the only durable store, so this is the one moment where
     what an agent learned can be written somewhere the next one will read it.
+
+    On an isolated run this step edits `.claude/rules/*.md` in the **primary checkout**, and it runs
+    **after** step 10's integration decision — never in the worktree. Step 10 allows the whole diff
+    to be discarded, and a rule edit written into a discarded worktree would take the pipeline's only
+    durable-knowledge write path down with it. These writes land after the primary-checkout assertion
+    was already made, and they are the developer's own approved edits, so they do not weaken it.
 
     **Offer this only when there is a signal**, never as a routine end-of-run question: confirmed
     findings in `checkpointReviews[].review.confirmed`, unresolved `finalCheck.issues`, or an
@@ -458,6 +632,12 @@ Stopping early is a designed outcome here, not a crash: a blocking question, an 
 failed step or the budget floor all end the run with `stoppedEarly: true` and a `stopReason`. The
 work that landed is real and in the tree, so continuing resumes from it — it never re-runs it.
 
+On an isolated flow, "in the tree" means **in the worktree**: `state.json`'s `worktree` path holds
+the working tree, its `worktree_branch` holds whatever step 8 committed there, and the primary
+checkout has none of it and stands exactly as the developer left it. Say both when you report a
+stopped isolated run, so nobody goes looking in the primary checkout for work that is one directory
+away.
+
 Invoked as `/dev-implement <slug> --continue` (or just "continue the implement"): read
 `<workspace>/last-run.json` for the previous `args` and `continuation`.
 
@@ -475,6 +655,12 @@ Invoked as `/dev-implement <slug> --continue` (or just "continue the implement")
    Pass the plan's **full** steps array. The workflow strips completed ids out of `depends_on`
    itself; passing only the pending steps fails, because the dependency check rejects ids it cannot
    see. `baseline` stays the original one — reviewers must still judge the whole change.
+
+   On an isolated flow — `worktree` present in `state.json`, per step 1 — pass
+   `root: "<that path>"` too, alongside that same original `baseline`. Both come from the recorded
+   state, never from the command line: the flag is not retyped and the path is not re-derived. Then
+   re-snapshot the primary checkout the way step 3 does, because this continuation makes its own
+   step 10 assertion against its own snapshot, not the stopped run's.
 3. **Never hand-edit `completed`** — with one named exception: a step recovered under step 6's
    `result_serialization_failed` bullet has no other path into this array (the run that recovered it
    already returned, and `continuationEntry()` excludes a `failed: true` leaf), so that bullet has you
@@ -502,4 +688,4 @@ implementation *and* its review checkpoints.
 ## Notes
 
 - Workspace files: `briefs/` (only scouts that actually ran) and `notes/` (implementers — decisions and their whys, deviations, traps for later steps). Point the developer at them rather than pasting.
-- Only steps with declared disjoint `files` run in parallel. True parallel *flows* need one git worktree per flow — designed extension, not built; don't improvise it.
+- Only steps with declared disjoint `files` run in parallel. Flow-level isolation is built and opt-in: `--isolated` gives one flow its own git worktree, and step 2's lock is unchanged by it. True parallel *flows* — several implements running at once — are still not built: that needs one worktree per flow *and* a lock that admits more than one, and neither the lock nor `/dev-status` has been taught the second half. Don't improvise it.

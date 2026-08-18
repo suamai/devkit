@@ -81,7 +81,7 @@ Triage exactly as `/dev-plan` does, with the same bias toward the cheap tier:
   symptom is what sent everyone down the wrong path.
 
 If the diagnosis changed what you believe about the subsystem, that is exactly the material item
-`/dev-implement` step 10 ratchets into `.claude/rules/` — offer it.
+`/dev-implement` step 11 ratchets into `.claude/rules/` — offer it.
 
 ## 6. Prove the repro is dead
 

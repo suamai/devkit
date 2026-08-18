@@ -13,6 +13,17 @@ set -e
 root=$(git rev-parse --show-toplevel)
 cd "$root"
 
+# git exports GIT_DIR (and friends) into every hook, and those variables BEAT `cwd` when git picks a
+# repository. The suite shells out to git in throwaway directories, so leaving them set points those
+# commands at the repository being committed to instead: reproduced, a `git init` in a temp dir
+# re-inited the real repo through the inherited GIT_DIR and left it `core.bare = true`, which breaks
+# every later `git status` in that checkout. It bites hardest under `/dev-implement --isolated`,
+# whose phase commit runs in a worktree, but the variables are exported for an ordinary commit too.
+# Unset here so the suite sees the same environment a developer running it by hand does — the tests
+# scrub their own child environments as well, and this is the half that also covers a test nobody
+# has written yet.
+unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GIT_COMMON_DIR GIT_OBJECT_DIRECTORY GIT_NAMESPACE
+
 command -v node >/dev/null 2>&1 || {
   echo "pre-commit: node not found — skipping the suite (it is what verifies this repo)" >&2
   exit 0

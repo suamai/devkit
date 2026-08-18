@@ -10,12 +10,16 @@ export const meta = {
   ],
 }
 
-// args: { scope, intent?, baseline?, contextPaths?, priority?, rules?, priorRefuted?, apply?=true,
-//         maxRounds?=3, lenses?, ruleLens?=true, verifyCommand?, fixModel?, files?, seedFindings?,
-//         profile?, models?, efforts?, dryRun? }
+// args: { scope, intent?, baseline?, root?, contextPaths?, priority?, rules?, priorRefuted?,
+//         apply?=true, maxRounds?=3, lenses?, ruleLens?=true, verifyCommand?, fixModel?, files?,
+//         seedFindings?, profile?, models?, efforts?, dryRun? }
 //   scope:        what to review — files/paths/diff description. Reviewers only look here.
 //   intent:       what the change was supposed to accomplish (plan step, spec criteria).
 //   baseline:     git SHA before the change — reviewers judge the DIFF since it, not whole files.
+//   root:         absolute path to the tree these agents run their commands in — the flow's git
+//                 worktree when wf-implement was called with an isolated root. Omit it and every
+//                 prompt is byte-identical to a review of the primary checkout; `contextPaths` are
+//                 absolute and stay OUTSIDE it either way.
 //   contextPaths: workspace files with background (step brief, implementer notes) — hints, not truth.
 //   priority:     where to look FIRST inside the scope (author-flagged doubts, unverified steps).
 //                 A head start, never a scope restriction.
@@ -131,6 +135,12 @@ function costReport() {
 }
 // <<< shared: per-phase cost
 
+// Checked BEFORE the dryRun early return, and deliberately duplicating the check further down: the
+// skills tell callers to validate their args with `dryRun: true`, so a dryRun that answers `ok` for
+// a `root` the real run would throw on is worse than no check at all. wf-implement.js validates
+// ahead of its own projection for the same reason, and the two scripts have to answer the same
+// malformed input the same way or the advice to "check it with dryRun" is only true of one of them.
+if (args && args.root && !String(args.root).startsWith('/')) throw new Error('args.root must be an absolute path')
 if (args && args.dryRun) return { ok: true, workflow: 'wf-review-loop', policy: ROLE }
 if (!args || !args.scope) throw new Error('args.scope is required: which files/changes to review')
 
@@ -145,8 +155,20 @@ const contextPaths = args.contextPaths || []
 const CONTEXT_NOTE = contextPaths.length
   ? `\nBackground documents from earlier agents (read as needed; treat as hints and verify in code, not as ground truth):\n${contextPaths.map((p) => '- ' + p).join('\n')}\n`
   : ''
+// The tree the agents run their commands in. Empty by default — and then every prompt below is
+// byte-identical to what a review of the primary checkout has always sent, which is why the note is
+// built once here instead of branching inside seven prompts. Set (wf-implement passes its own
+// `root` down when the flow runs in a git worktree) it is an absolute path. This script has no
+// filesystem, no shell and no way to set anyone's working directory, so prompt text is the only
+// steering mechanism that exists. The three constants are duplicated verbatim in wf-implement.js — a
+// self-contained script cannot import a helper — and tests/isolation.test.js compares the copies.
+const root = (args.root || '').replace(/\/+$/, '')
+if (root && !root.startsWith('/')) throw new Error('args.root must be an absolute path')
+const GIT = root ? `git -C "${root}"` : 'git'
+const RUN_FROM = root ? `the work root "${root}"` : 'the repository root'
+const ROOT_NOTE = root ? `\n## Work root — read this before running anything\nThis flow runs in a git worktree at "${root}". EVERY repository command — git, build, test, any check named below — runs with that directory as its working directory: \`cd "${root}"\` first, or pass \`git -C "${root}"\`. The code you read and edit is under it. The developer's primary checkout is a DIFFERENT directory and must not be touched. The workspace paths named elsewhere in this prompt are absolute and deliberately sit OUTSIDE "${root}" — read and write those exactly as given.\n` : ''
 const BASELINE_NOTE = args.baseline
-  ? `\nBaseline: judge the CHANGES since git commit ${args.baseline} — run "git diff ${args.baseline} -- <files>" to see exactly what changed. Pre-existing defects untouched by the change are out of scope unless the change interacts with them.\n`
+  ? `\nBaseline: judge the CHANGES since git commit ${args.baseline} — run "${GIT} diff ${args.baseline} -- <files>" to see exactly what changed. Pre-existing defects untouched by the change are out of scope unless the change interacts with them.\n`
   : ''
 const PRIORITY_NOTE = args.priority
   ? `\n## Look here first\n${args.priority}\n\nThis is a head start, not a scope restriction: cover the whole scope. A flagged worry that turns out to be fine is a normal outcome — do not manufacture a finding to justify it.\n`
@@ -357,7 +379,7 @@ function reviewPrompt(lens, round) {
 
 ## Scope — review only this
 ${args.scope}
-${BASELINE_NOTE}
+${BASELINE_NOTE}${ROOT_NOTE}
 ## Intent of the change
 ${intent}
 ${CONTEXT_NOTE}${PRIORITY_NOTE}${REFUTED_NOTE}
@@ -390,7 +412,7 @@ skipped: ${JSON.stringify(skipped, null, 2)}
 ## Files to read
 ${touched.map((f) => '- ' + f).join('\n') || args.scope}
 Plus whatever callers, types or tests you need to judge the fixes.
-${BASELINE_NOTE}
+${BASELINE_NOTE}${ROOT_NOTE}
 ## Original intent of the change
 ${intent}
 ${CONTEXT_NOTE}
@@ -412,7 +434,7 @@ ${JSON.stringify(found, null, 2)}
 Context:
 Scope: ${args.scope}
 Intent: ${intent}
-${BASELINE_NOTE}${CONTEXT_NOTE}${REFUTED_NOTE}
+${BASELINE_NOTE}${ROOT_NOTE}${CONTEXT_NOTE}${REFUTED_NOTE}
 
 First SEMANTICALLY CLUSTER reports with the same root cause, even when titles or cited files differ. Produce one canonical finding per root defect and list the merged titles. Then independently verify every cluster against current code: confirm only when the code supports the claim, the failure is reachable, and no existing guard/test/invariant neutralizes it. Preserve only the highest justified severity. Uncertainty means confirmed=false.
 
@@ -428,7 +450,7 @@ ${JSON.stringify(findings, null, 2)}
 
 Scope: ${args.scope}
 Intent: ${intent}
-${BASELINE_NOTE}
+${BASELINE_NOTE}${ROOT_NOTE}
 Re-read the code. Confirm each id only if code evidence, runtime reachability and absence of prior handling all hold. Do not modify files. Return structured verdicts.`
 }
 
@@ -440,7 +462,7 @@ ${JSON.stringify(confirmed, null, 2)}
 Context:
 Scope: ${args.scope}
 Intent: ${intent}
-${BASELINE_NOTE}${CONTEXT_NOTE}
+${BASELINE_NOTE}${ROOT_NOTE}${CONTEXT_NOTE}
 For each canonical finding, apply the minimal correct fix, following the surrounding code's conventions. Re-read the code first; if a finding is wrong or unsafe to fix, skip it and say why. Stay inside scope unless correctness strictly requires a direct dependency or canonical documentation update; keep any expansion minimal and report it. Never perform unrelated cleanup.
 
 Return the structured report. The next round explicitly re-reviews the result.`
@@ -451,8 +473,8 @@ Return the structured report. The next round explicitly re-reviews the result.`
 // works" are different claims and only one of them was ever checked.
 function checkPrompt(round, command, fix) {
   return `You are running one executable check after review round ${round} applied fixes. You are not reviewing the code: you run a command and report what it did.
-
-## The command — run it from the repository root, exactly as written
+${ROOT_NOTE}
+## The command — run it from ${RUN_FROM}, exactly as written
 \`\`\`
 ${command}
 \`\`\`
@@ -475,7 +497,7 @@ Your final output is raw data for an orchestrator, not prose for a human.`
 // and whatever it does touch joins the next re-review's scope.
 function repairPrompt(round, command, fix, fixVerify) {
   return `Round ${round} of a code review applied fixes for independently confirmed defects, and then this command FAILED. Make the command pass WITHOUT abandoning those fixes. You get one attempt.
-
+${ROOT_NOTE}
 ## The command that must pass
 \`\`\`
 ${command}

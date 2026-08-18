@@ -10,8 +10,8 @@ export const meta = {
   ],
 }
 
-// args: { workspace, steps, completed?, baseline?, planPath?, notes?, review?=true, reviewRounds?=2,
-//         reviewLoopPath?, scoutMode?='adaptive', maxParallelSteps?=5,
+// args: { workspace, steps, completed?, baseline?, root?, planPath?, notes?, review?=true,
+//         reviewRounds?=2, reviewLoopPath?, scoutMode?='adaptive', maxParallelSteps?=5,
 //         gate?=true, checkpointFileThreshold?=20, checkpointMaxWaves?=3, rules?, criteria?,
 //         profile?, models?, efforts?, dryRun? }
 //   dryRun: with `steps`, returns the computed schedule (waves, parallel groups, scouts, matched
@@ -37,6 +37,10 @@ export const meta = {
 //          against, and what `coverage` and `gates.acceptance` below are computed from. Omit them
 //          and a plan with no spec behaves exactly as before: `acceptance: "n/a"`.
 //   baseline: git SHA captured before this run — reviewers judge diffs since it.
+//   root: absolute path to the tree every spawned agent runs its commands in — the flow's own git
+//          worktree under `/dev-implement --isolated`. OMIT it and every prompt below is byte-identical
+//          to what a normal run has always sent. The workspace paths are absolute and stay OUTSIDE it
+//          either way: briefs/ and notes/ are written where they are named, never redirected.
 //   workspace: absolute path to the task workspace (e.g. <repo>/.dev/<slug>).
 //   Context flows as files with single writers: briefs/<id>.md (scout), notes/<id>.md (implementer).
 //   Readers get paths, never dumps.
@@ -128,6 +132,19 @@ if (!args.steps || !args.steps.length) {
 const workspace = (args.workspace || '').replace(/\/+$/, '')
 const planPath = args.planPath || `${workspace}/plan.md`
 const notes = args.notes || ''
+// The tree the agents run their commands in. Empty by default — and then every prompt below is
+// byte-identical to what a non-isolated run has always sent, which is the whole point of building the
+// note once here instead of branching inside seven prompts. Set (by `/dev-implement --isolated`, to
+// the flow's git worktree) it is an absolute path. This script has no filesystem, no shell and no way
+// to set anyone's working directory, so prompt text is the only steering mechanism that exists; an
+// agent that ignores it edits the wrong tree and nothing here can tell. The three constants are
+// duplicated verbatim in wf-review-loop.js — a self-contained script cannot import a helper — and
+// tests/isolation.test.js compares the copies.
+const root = (args.root || '').replace(/\/+$/, '')
+if (root && !root.startsWith('/')) throw new Error('args.root must be an absolute path')
+const GIT = root ? `git -C "${root}"` : 'git'
+const RUN_FROM = root ? `the work root "${root}"` : 'the repository root'
+const ROOT_NOTE = root ? `\n## Work root — read this before running anything\nThis flow runs in a git worktree at "${root}". EVERY repository command — git, build, test, any check named below — runs with that directory as its working directory: \`cd "${root}"\` first, or pass \`git -C "${root}"\`. The code you read and edit is under it. The developer's primary checkout is a DIFFERENT directory and must not be touched. The workspace paths named elsewhere in this prompt are absolute and deliberately sit OUTSIDE "${root}" — read and write those exactly as given.\n` : ''
 const MAX_SPLIT_DEPTH = 2 // recursive splitting is an escape valve, not the default mode
 const scoutMode = args.scoutMode || 'adaptive'
 const maxParallelSteps = Math.max(1, args.maxParallelSteps || 5)
@@ -423,7 +440,7 @@ function scoutPrompt(s, depth, ctx) {
   return `You are a read-only context scout preparing the implementation of ONE plan step. Do NOT modify repository files; the only file you write is your brief.
 
 Read the plan at "${planPath}" — overall context plus the section for step ${s.id} ("${s.title}").
-
+${ROOT_NOTE}
 Step data:
 ${JSON.stringify(s, null, 2)}
 ${inherited.length ? '\nThis is a sub-step. Inherited context from the parent — read these FIRST, they carry the reasoning so far:\n' + inherited.map((p) => '- ' + p).join('\n') : ''}
@@ -456,7 +473,7 @@ Scout's compact summary (full detail in the brief file; verify anything load-bea
 ${JSON.stringify({ summary: brief.summary, gotchas: brief.gotchas }, null, 2)}
 ${notes ? '\nDeveloper notes:\n' + notes : ''}
 ${others.length ? '\nOther steps run CONCURRENTLY and own these files — do NOT touch them: ' + others.flatMap((o) => o.files || []).join(', ') : ''}
-
+${ROOT_NOTE}
 ## Guidelines
 - Implement the step fully, following the repo's conventions and the brief's pointers.
 - Stay within your step's files (${(s.files || []).join(', ') || 'as per the plan'}); if the correct implementation genuinely requires touching another file, do it only if no concurrent step owns it, and record it as a deviation.
@@ -517,8 +534,8 @@ const infraShown = (v) => !!String(v.command || '').trim() && !!(String(v.output
 function verifyRetryPrompt(s, verify) {
   const command = (verify.command || '').trim() || (s.verify || '').trim()
   return `A step's verification check reported an INFRASTRUCTURE failure: the check could not run for reasons unrelated to the code. You get one attempt to establish what is actually true.
-
-## The command — run it from the repository root, exactly as written
+${ROOT_NOTE}
+## The command — run it from ${RUN_FROM}, exactly as written
 \`\`\`
 ${command || 'No command was named. Determine the step\'s own check from the plan if you can; if you cannot run anything, return ran: false with a concrete reason.'}
 \`\`\`
@@ -547,10 +564,10 @@ Return only the verify_run object: raw data for an orchestrator, not prose for a
 function resultRetryPrompt(s, expectedNotesPath) {
   const declaredCheck = s.verify ? `Its declared check was \`${s.verify}\` — that it was DECLARED is not evidence it ran.` : 'The step declared no check.'
   const diffHint = args.baseline
-    ? `\`git diff ${args.baseline} -- <file>\` for the declared files, plus \`git status --porcelain\` for anything else it touched`
-    : '`git status --porcelain` and `git diff` over the declared files'
+    ? `\`${GIT} diff ${args.baseline} -- <file>\` for the declared files, plus \`${GIT} status --porcelain\` for anything else it touched`
+    : `\`${GIT} status --porcelain\` and \`${GIT} diff\` over the declared files`
   return `An implementer finished a step and produced NO structured result. The result is the only thing missing: its code and its notes are probably already in the working tree. Reconstruct the report from what is there — that is the whole job.
-
+${ROOT_NOTE}
 ## The step
 ${s.id}: ${s.goal || s.title || ''}
 Declared files: ${(s.files || []).join(', ') || 'undeclared'}
@@ -877,10 +894,10 @@ function lintVerifyCommand(command) {
 // are about to build on coherent? Anything else is cheaper to catch at the checkpoint review.
 function gatePrompt(waveNumber, changed, dependents) {
   return `You are a contract gate between waves of a multi-step implementation. You are NOT a code reviewer — a full review of this code runs later, at less cost than finding the same defect twice.
-
+${ROOT_NOTE}
 Wave ${waveNumber} just landed these files:
 ${changed.map((f) => '- ' + f).join('\n')}
-${args.baseline ? `\nInspect exactly what changed with "git diff ${args.baseline} -- <file>".\n` : ''}
+${args.baseline ? `\nInspect exactly what changed with "${GIT} diff ${args.baseline} -- <file>".\n` : ''}
 Steps that must now build on it:
 ${dependents.map((s) => `- ${s.id}: ${s.goal}\n  files: ${(s.files || []).join(', ') || 'undeclared'}`).join('\n')}
 
@@ -946,6 +963,10 @@ async function reviewCheckpoint(pending, checkpointNumber) {
     // already investigated and dismissed with reasoning.
     priorRefuted: priorRefuted.length ? priorRefuted : undefined,
     baseline: args.baseline,
+    // Same tree, same diff: a checkpoint reviewer reading the primary checkout of an isolated run
+    // would judge code that is not there. `undefined` and not `''` — the child treats a missing root
+    // exactly as it always has.
+    root: root || undefined,
     apply: true,
     // This loop APPLIES fixes, so it also has to prove the tree still works afterwards — otherwise a
     // checkpoint can report every finding fixed over code that stopped building. The checkpoint is
@@ -1434,7 +1455,7 @@ if (!stoppedEarly) {
     `You are the final consistency checker for a multi-step implementation.
 
 Plan: "${planPath}" (read it). Workspace: "${workspace}" — per-step briefs in briefs/, implementer notes in notes/.
-
+${ROOT_NOTE}
 Step reports (compact; read the notes/ files where detail matters):
 ${JSON.stringify(leafReports.map((r) => ({ step: r.step, title: r.title, failed: r.failed || false, skipped_for_budget: r.skipped_for_budget || false, summary: r.impl && r.impl.summary, changed_files: r.impl && r.impl.changed_files, deviations: r.impl && r.impl.deviations, concerns: r.impl && r.impl.concerns, verify_run: r.impl && r.impl.verify_run, status: r.status, kind: r.kind, attempts: r.attempts, weak_evidence: r.weak_evidence || false, unverified: r.unverified || false, unverified_reason: r.unverified_reason || undefined, review_clean: r.review && r.review.clean })), null, 2)}
 

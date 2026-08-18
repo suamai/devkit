@@ -38,11 +38,20 @@ const ledgerOf = (home) => path.join(home, '.claude', 'devkit', 'runs.jsonl')
 const rawOf = (home) => (fs.existsSync(ledgerOf(home)) ? fs.readFileSync(ledgerOf(home), 'utf8') : null)
 const linesOf = (home) => (rawOf(home) || '').split('\n').filter((l) => l !== '')
 
+// git's environment overrides `cwd` when it comes to choosing a repository, and a git HOOK exports
+// GIT_DIR/GIT_WORK_TREE/GIT_INDEX_FILE into everything it runs. This repo ships an opt-in pre-commit
+// hook that runs the whole suite, so without this scrub the `git init` below resolves to the
+// developer's real repository instead of the throwaway one. Reproduced: the primary repo was
+// re-inited through the inherited GIT_DIR and came back with `core.bare = true`.
+const GIT_ENV_KEYS = ['GIT_DIR', 'GIT_WORK_TREE', 'GIT_INDEX_FILE', 'GIT_COMMON_DIR', 'GIT_OBJECT_DIRECTORY', 'GIT_NAMESPACE']
+const scrubGit = (env) => { const e = { ...env }; for (const k of GIT_ENV_KEYS) delete e[k]; return e }
+const ENV = scrubGit(process.env)
+
 // One append. Returns the exit status and stderr instead of throwing, because refusal IS a case.
 function append(body, { home, cwd = ROOT, script = SCRIPT } = {}) {
   try {
     // stderr is piped, not inherited: a refusal message is a case here, not noise in the suite output.
-    execFileSync('sh', [script], { input: body, cwd, env: { ...process.env, HOME: home }, encoding: 'utf8', stdio: ['pipe', 'pipe', 'pipe'] })
+    execFileSync('sh', [script], { input: body, cwd, env: { ...ENV, HOME: home }, encoding: 'utf8', stdio: ['pipe', 'pipe', 'pipe'] })
     return { status: 0, stderr: '' }
   } catch (e) {
     return { status: e.status === undefined ? -1 : e.status, stderr: String(e.stderr || '') }
@@ -50,7 +59,7 @@ function append(body, { home, cwd = ROOT, script = SCRIPT } = {}) {
 }
 // git as the source of truth for what the envelope should say — extracted, never restated.
 function git(cwd, args) {
-  try { return execFileSync('git', args, { cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim() } catch (e) { return null }
+  try { return execFileSync('git', args, { cwd, env: ENV, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim() } catch (e) { return null }
 }
 
 // ---- 1. Creation and the append-only property.
@@ -94,7 +103,7 @@ check('and the line is still complete without it', [outside.phase, typeof outsid
 const weirdParent = tmp('weird-parent')
 const weirdRepo = path.join(weirdParent, 'weird"repo\\name')
 fs.mkdirSync(weirdRepo)
-execFileSync('git', ['init', '-q'], { cwd: weirdRepo, stdio: ['ignore', 'ignore', 'ignore'] })
+execFileSync('git', ['init', '-q'], { cwd: weirdRepo, env: ENV, stdio: ['ignore', 'ignore', 'ignore'] })
 const weirdHome = tmp('weird-home')
 const weirdResult = append('{"phase":"debug"}\n', { home: weirdHome, cwd: weirdRepo })
 check('a repo name with a quote and a backslash is accepted', weirdResult.status, 0)
@@ -155,7 +164,7 @@ check('and says so in one line', broken.stderr.trim().split('\n').length === 1 &
 // A genuinely UNSET $HOME is the guard at ledger-append.sh:86, not the mkdir -p failure above —
 // the two live on different lines and only one of them was ever driven.
 function appendNoHome(body, { cwd = ROOT, script = SCRIPT } = {}) {
-  const env = { ...process.env }
+  const env = scrubGit(process.env)
   delete env.HOME
   try {
     execFileSync('sh', [script], { input: body, cwd, env, encoding: 'utf8', stdio: ['pipe', 'pipe', 'pipe'] })

@@ -9,6 +9,83 @@ different artifact, a new gate — and never on prose that restates behavior alr
 `.claude-plugin/plugin.json` and `.claude-plugin/marketplace.json` state it (the latter twice);
 `tests/contract-drift.test.js` fails if they disagree, or if the shipped version has no entry here.
 
+## 0.9.0 — 2026-08-18
+
+### Added
+- **`/dev-implement <slug> --isolated`: one whole flow in a git worktree of its own.** The flag
+  creates `.dev/<slug>/worktree` on branch `dev/<slug>`, branched explicitly from the baseline the
+  preflight just captured, and runs the entire flow against it — implementers, contract gates, review
+  checkpoints and the final consistency check all get that absolute path in their prompts, so every
+  `git`, build and test command they issue names the worktree instead of your checkout. The primary
+  checkout is neither branched nor switched; the phase commit is made inside the worktree, which
+  makes it the commit you later merge or cherry-pick rather than integration itself.
+
+  **Nothing is integrated without you saying so.** A new terminal step presents the completed
+  `git diff <baseline>`, the commit log, the delivery verdict and its gates, and an assertion —
+  re-run, not asserted from memory — that the primary checkout's `HEAD` and `git status --porcelain`
+  are exactly what they were at preflight. Then it asks: merge, cherry-pick, discard, or leave it as
+  is, with "leave as is" the default. A `git merge` that git refuses because it touches a file you
+  have modified locally is reported verbatim and never forced.
+
+  **Cleanup is one offered command, never an automatic one.**
+  `sh "${CLAUDE_PLUGIN_ROOT}/scripts/worktree.sh" remove <slug>` is stated identically by
+  `/dev-implement` and by `/dev-status clean`, and it **keeps the branch** — deleting the branch is a
+  separate typed decision (`git branch -D`), because cleanup must not be able to destroy unmerged
+  commits by accident. `/dev-status` learns the whole shape: an isolated flow shows its worktree path
+  and branch, `clean` and `archive` remove the worktree before deleting the directory (a plain
+  `rm -rf` over a nested worktree leaves it `prunable` in `.git/worktrees`), and both say in the
+  what-will-be-deleted preview that uncommitted work inside the worktree is lost while the branch and
+  its commits survive. The SessionStart hook names the worktree of a stale isolated flow, so an
+  abandoned run says where its work is.
+
+  **Opt-in, and a run without the flag is unchanged.** With no `--isolated` no prompt gains a work
+  root, no `state.json` gains a key, no worktree is created, and the ledger line is byte-identical to
+  the one 0.8.0 wrote: `isolated`, `worktree_setup_ms` and `worktree_disk_kb` are written *only* on
+  isolated runs and omitted otherwise, the same rule `result_recovered` follows, so a report can
+  compare isolated against non-isolated runs instead of reading a `false` on every line. The advisory
+  lock is **not** relaxed — an isolated run still occupies the one `implementing` slot, and the
+  workspace deliberately stays in the primary checkout so `/dev-status`, the lock glob and the hook
+  keep seeing it. `state.json` gains `worktree` and `worktree_branch` as flat top-level strings.
+
+  `dev/<slug>` is only the default branch name, and `scripts/worktree.sh setup` refuses before
+  writing anything when that ref cannot be created, naming which conflict it hit: an existing
+  `dev/<slug>` takes `dev/<slug>-iso`, while a repo whose **default branch is itself named `dev`**
+  takes a flat name outside that prefix entirely (`<slug>-iso`, no `dev/` prefix), because
+  `refs/heads/dev` is then a file and git can create no ref under `refs/heads/dev/` at all. The
+  guard probes every path prefix of the intended branch name — `git check-ref-format` accepts both
+  cases and is no help here — and `state.json` records the branch that was actually used.
+
+  Four tests ship with it: `tests/worktree.test.js` drives the lifecycle against real `git` in a
+  throwaway repo and asserts the primary checkout is untouched across all of it,
+  `tests/isolation.test.js` pins that the work root reaches every prompt and is absent from all of
+  them without the flag, `tests/stale-flows-hook.test.js` covers the hook including its silence
+  contract, and `tests/isolated-flow.test.js` holds the two skills and the script to one contract.
+  The end-to-end claim — dirty a tracked file, run a whole isolated flow, find it unchanged — is a
+  by-hand acceptance check: no test in this repo executes a `SKILL.md`.
+
+### Fixed
+- **The suite no longer re-initialises your repository when it runs from a git hook.** git exports
+  `GIT_DIR`/`GIT_WORK_TREE` into every hook it runs, and those variables beat `cwd` when git chooses a
+  repository — so the tests that shell out to `git` in throwaway directories were pointed at the
+  repository being committed to. Reproduced: a `git init` in a temp dir re-inited the real repo and
+  left it `core.bare = true`, after which every `git status` in that checkout fails with
+  `fatal: this operation must be run in a work tree`. The opt-in `hooks/pre-commit` now unsets those
+  variables before running the suite, and `tests/worktree.test.js` and `tests/ledger.test.js` scrub
+  them from the environments they hand to their own child processes — the hook covers the tests
+  nobody has written yet, the tests cover being run some other way. Re-install with
+  `sh scripts/install-hooks.sh --force`.
+
+  This became reachable through `--isolated`, whose phase commit is made **inside** the worktree, but
+  the variables were exported for an ordinary commit too, so the fix is not conditional on isolation.
+
+### Changed
+- `/dev-review` documents a `root` argument. `wf-review-loop` has accepted one since this release;
+  reviewing an isolated flow's code without it reads the primary checkout — which holds none of that
+  run's changes — and reports on it cleanly and wrongly. The skill now says where to find the path
+  (the workspace's `worktree` field) and that omitting it is correct for every non-isolated flow.
+  `wf-review-loop` also validates `root` *before* its `dryRun` early return, so `dryRun` refuses a
+  relative path exactly as `wf-implement` already did rather than answering `ok`.
+
 ## 0.8.0 — 2026-08-18
 
 ### Added

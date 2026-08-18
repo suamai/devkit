@@ -83,6 +83,7 @@ A task can be promoted explicitly by saying “treat this as large”.
 | `/dev-review [scope] --no-apply` | One report-only find/verify pass. No fixes are written. Unlike `/dev-pr --review`, it does not persist a SHA-bound PR-gate artifact. |
 | `/dev-implement <slug>` | Execute `.dev/<slug>/plan.md`. |
 | `/dev-implement <slug> --continue` | Resume a run that stopped early, after you resolved what stopped it. Implemented steps are not redone; any that were never reviewed are folded into the next checkpoint. |
+| `/dev-implement <slug> --isolated` | Run the whole flow in a git worktree of its own (`.dev/<slug>/worktree`, branched from the captured baseline) instead of in your checkout. Nothing is integrated on the way: when the run finishes you get the completed diff and the delivery verdict first, then choose merge, cherry-pick, discard, or leave it as is. Cleanup is offered as one command and never run for you, and it keeps the branch — so the commits survive it. |
 | `/dev-implement <workspace-or-plan.md>` | Execute an explicitly named workspace or plan file rather than a slug. |
 | `/dev-status clean <slug>` | Preview, confirm, then delete a task workspace (its state file goes with it). |
 | `/dev-status clean pr/<branch>` | Preview, confirm, then delete one standalone PR workspace. Bare `pr` never deletes all PR workspaces. |
@@ -257,7 +258,10 @@ and shows you before and after. If it never reproduced the bug, it says so first
 the fix unverified.
 
 The read-only fan-out is structural, not caution: parallel agents running a repro contend for one
-working tree, which is the same reason only one `/dev-implement` runs per clone.
+working tree, which is the same reason only one `/dev-implement` runs per clone. `--isolated` is the
+answer to the contention rather than to the limit: it gives one flow its own worktree, so that run's
+test suites and `git` commands stop sharing a tree with whatever you have open — but it is still one
+flow, and the advisory lock still refuses a second.
 
 ## Teaching the repo (`.claude/rules/`)
 
