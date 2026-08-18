@@ -311,9 +311,13 @@ function slugifyAngle(text, index) {
 // warning: the decompose agent is skipped whenever `angles` is non-empty, so a bad caller-supplied
 // array costs exactly zero agents here, while carrying on would cost a whole exploration phase
 // whose reports then overwrite one another.
-function normalizeAngles(raw) {
+// `reserved` seeds the disambiguation set with names this run must not reuse even though they never
+// appear in `raw` — namely priorFindings' own `angle` values. Without it a fresh angle sharing a
+// prior finding's name dispatches its scout to that finding's `report_path` (same workspace, same
+// `findingsDir`), overwriting the file the reused entry still points readers at.
+function normalizeAngles(raw, reserved) {
   if (!Array.isArray(raw)) throw new Error(`args.angles must be an array of {name, focus, why} objects — a plain string is accepted as that angle's focus — received ${typeof raw}: ${JSON.stringify(raw)}`)
-  const taken = new Set()
+  const taken = new Set(reserved || [])
   return raw.map((entry, index) => {
     let angle
     if (typeof entry === 'string') {
@@ -362,8 +366,10 @@ Your final output is consumed by a script, not a human — return the structured
   angles = d.angles
 }
 // Both branches pass through here — a caller's array and a decomposer's are equally capable of
-// naming two angles the same thing, and the name is the report path.
-angles = normalizeAngles(angles)
+// naming two angles the same thing, and the name is the report path. `priorFindings` seeds the
+// disambiguation set too: its entries never pass through `raw`, but their `report_path`s are
+// already claimed in this workspace.
+angles = normalizeAngles(angles, priorFindings.map((f) => f.angle))
 log(`exploring ${angles.length} angles: ${angles.map(a => a.name).join(', ')}`)
 
 // ---- Phase 2: explore all angles. Phase 3 validates the load-bearing claims in one batch.

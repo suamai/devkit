@@ -565,7 +565,7 @@ ${declaredCheck}
 ## Reconstructing the result
 - \`changed_files\` is what the diff shows, never what the plan asked for.
 - \`summary\` says what landed, and says where the tree left you unsure.
-- \`notes_path\` is the file you actually found; omit it when there is none.
+- \`notes_path\` is REQUIRED by the schema, so it cannot be omitted: put the file you actually found there, or \`""\` when there is none. An empty string is read downstream exactly like a missing path — never invent one to satisfy the schema.
 - \`verify_run.ran\` is FALSE unless the notes or the diff show a command that was actually RUN and what it reported. A command you can see in the plan, or one you believe would pass, is not evidence that anything ran: return \`ran: false\` with a \`not_ran_reason\` naming that absence. You may not run it yourself.
 - \`concerns\` and \`deviations\` only where the notes or the diff state them. Do not invent the implementer's doubts, and do not add review findings of your own — a reviewer runs later, at the checkpoint.
 
@@ -827,8 +827,14 @@ const VERIFY_SEPARATORS = /&&|\|\||[;|]/
 // \u0060 is a backtick — written escaped so the character never appears raw in this file.
 const VERIFY_OPERATORS = /[;|>\u0060]|\$\(/
 const VERIFY_RUNNERS = ['npm', 'pnpm', 'yarn', 'bun', 'npx', 'make', 'cargo', 'go', 'python', 'python3', 'pytest', 'tox', 'poetry', 'uv', 'node', 'deno', 'sh', 'bash', 'just', 'task', 'mvn', 'gradle', 'dotnet', 'rake', 'bundle', 'composer', 'php', 'ruby', 'jest', 'vitest']
+// Two-anchor patterns bound their gap to `[^&;|\n]*` — never `[^\n]*` — so both anchors must land in
+// the SAME &&/;/|-separated segment. An unbounded gap reads across those separators when tested
+// against `surfaces`' unsplit `trimmed` entry below, so e.g. `git reset && npm run build --hard-mode`
+// (an unrelated, individually-safe pair) would trip the git-reset rule purely because `--hard` shows
+// up somewhere later in the line. Bounding the gap still lets the pattern match a real
+// `git reset --hard` however it sits within its own segment.
 const DANGEROUS_VERIFY = [
-  ['destructive filesystem/git', [/\brm\s+-[a-zA-Z]*r/, /\bgit\s+reset\b[^\n]*--hard\b/, /\bgit\s+clean\b[^\n]*\s-[a-zA-Z]*f/, /\bgit\s+checkout\s+--(\s|$)/, /\bgit\s+branch\b[^\n]*\s-D\b/, /\bchmod\s+-[a-zA-Z]*R/, /\bdd\s+if=/, /\btruncate\b/, /\bfind\b[^\n]*\s-delete\b/]],
+  ['destructive filesystem/git', [/\brm\s+-[a-zA-Z]*r/, /\bgit\s+reset\b[^&;|\n]*--hard\b/, /\bgit\s+clean\b[^&;|\n]*\s-[a-zA-Z]*f/, /\bgit\s+checkout\s+--(\s|$)/, /\bgit\s+branch\b[^&;|\n]*\s-D\b/, /\bchmod\s+-[a-zA-Z]*R/, /\bdd\s+if=/, /\btruncate\b/, /\bfind\b[^&;|\n]*\s-delete\b/]],
   ['publish/deploy', [/\b(npm|pnpm|yarn|cargo)\s+publish\b/, /\bgit\s+push\b/, /\bdocker\s+push\b/, /\bkubectl\s+(apply|delete)\b/, /\bterraform\s+(apply|destroy)\b/, /\bhelm\s+(upgrade|install)\b/, /\b(serverless|vercel|netlify|fly)\s+deploy\b/, /\bgh\s+release\s+create\b/]],
   ['data migration', [/\bmigrate\b/, /\balembic\s+upgrade\b/, /\bflyway\b/]],
   // Bare tool names are anchored at the START of a segment, where they can only be the command being

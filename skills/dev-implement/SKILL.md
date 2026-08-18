@@ -225,6 +225,18 @@ You orchestrate the implementation phase of a planned dev task. The heavy liftin
        Mark what comes back `result_recovered: true`, then treat it exactly like an implementer
        report, so it lands in `unverifiedSteps` unless the evidence really was there. Report the
        serialization failure separately from the step it recovered.
+       This recovery runs after the workflow call has already returned, so nothing you build here
+       reaches `continuation.completed` on its own: `continuationEntry()` excludes any leaf with
+       `failed: true`, and this report is still one. If the run needs to continue — the failed step
+       is why `stoppedEarly` fired, or a later step `depends_on` it — construct that step's
+       `completed` entry yourself and append it (never replace any entry already in the array) before
+       re-invoking: `{ id: <step id>, changed_files: <recovered changed_files>, notes_paths:
+       [<recovered notes_path>] or [] when none, unverified: <false only when the recovered
+       verify_run substantiates a pass>, unverified_reason: <its not_ran_reason or failure reason,
+       when unverified>, weak_evidence: <true when the recovered verify_run's kind is
+       existing-suite>, reviewed: false }`. This is the one named exception to "never hand-edit
+       `completed`" in "Continuing a run that stopped" below — every other entry there still passes
+       through verbatim.
      - No structured-output errors and no completed notes/code evidence → `implementation_failed`; re-run the step or implement inline.
      - Conflicting evidence → `agent_failed_unknown`; surface it instead of guessing.
    - Other failed steps (`failed: true`, e.g. `stage: "verify"`) → check the workflow journal, fix the cause, then continue (see below); only the failed step and what follows it re-runs.
@@ -463,9 +475,12 @@ Invoked as `/dev-implement <slug> --continue` (or just "continue the implement")
    Pass the plan's **full** steps array. The workflow strips completed ids out of `depends_on`
    itself; passing only the pending steps fails, because the dependency check rejects ids it cannot
    see. `baseline` stays the original one — reviewers must still judge the whole change.
-3. **Never hand-edit `completed`.** Its `reviewed` flags decide what gets folded into the next review
-   checkpoint. Flipping one to `true` to save a round ships unjudged code, which is the specific
-   failure this field exists to prevent.
+3. **Never hand-edit `completed`** — with one named exception: a step recovered under step 6's
+   `result_serialization_failed` bullet has no other path into this array (the run that recovered it
+   already returned, and `continuationEntry()` excludes a `failed: true` leaf), so that bullet has you
+   build and append its one entry yourself. Every other entry passes through verbatim. Its `reviewed`
+   flags decide what gets folded into the next review checkpoint; flipping one to `true` to save a
+   round ships unjudged code, which is the specific failure this field exists to prevent.
 4. **`resumeFromRunId` is a different tool.** It replays cached agents after a *crash*. A planned
    stop usually changes `notes` (that is where the answer goes), which changes every implementer
    prompt and invalidates the cache anyway — so `completed` is the path here, not resume.
