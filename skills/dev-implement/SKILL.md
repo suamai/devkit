@@ -26,6 +26,40 @@ You orchestrate the implementation phase of a planned dev task. The heavy liftin
    branch, create and switch to `dev/<slug>`. Ensure `.dev/` is gitignored. Capture the baseline —
    reviewers judge diffs since it.
 
+   **Then the freshness gate, here, before any agent exists.** The workspace's `state.json` carries a
+   `plan_freshness` object that `/dev-plan` wrote at handoff — `skills/dev-plan/SKILL.md` step 7
+   states the four fields and the exact command behind each, and it is the only statement of that
+   contract. Re-run those same commands against the tree you are about to implement into, compare,
+   and take exactly one of four branches. The first two are the common case and they **spawn
+   nothing** — a gate that costs an agent on every clean run is a tax, not a check:
+
+   - **Nothing relevant moved.** `planned_at_sha` is `HEAD`, `steps_sha` still matches `plan.md` on
+     disk, `spec_sha` still matches `spec.md`, and `git status --porcelain` shows nothing under any
+     path a step declares in its `files`. Continue: one line in the report, zero agents.
+   - **Only unrelated files moved.** `git diff --name-only <planned_at_sha> HEAD` plus that porcelain
+     list names no path any step's `files` names. Report the count — "N files changed since planning,
+     none of them the plan's" — and continue. Still zero agents.
+   - **A file the plan cites moved.** Some changed path does appear in a step's `files`. Spawn
+     **one** cheap targeted validator — a single read-only `Explore` agent from here, not a workflow —
+     and give it only the affected steps and the diff for those files. It answers one question: is
+     the plan still **executable**, do the anchors, signatures and assumptions those steps state still
+     hold? It may not re-explore the repo and it may not judge whether the plan was *thorough* — that
+     is an explicit non-goal, and a validator that drifts into it has turned a preflight into a second
+     planning round at implement prices.
+   - **Block.** `steps_sha` no longer matches `plan.md` (the plan was edited after handoff),
+     `spec_sha` no longer matches `spec.md` (a criterion changed under it), or the validator reports a
+     contract or plan assumption that no longer holds. Stop before step 5, say **which of the three**
+     it was and name the evidence, and offer either re-planning (`/dev-plan`, with what changed as
+     `constraints`) or an explicit developer override. Never proceed on your own judgement that it is
+     probably still fine.
+
+   Two situations look like the fourth branch and are not. **No `plan_freshness` object at all** — a
+   plan written before this shipped, or an inline small-tier plan that never had one — say so once and
+   continue; never reconstruct it from today's tree, which would certify a freshness nobody measured.
+   And a `plugin_commit` that differs from the installed `FROZEN_AT`: **report** it and point at
+   `/dev-setup --check`, never block on it alone. A plugin upgrade changes how the pipeline runs, not
+   whether the plan is executable.
+
 4. **Sanity-check the steps.** Each step needs `id`, `goal`, `files`, `depends_on`, `details`, and an
    executable `verify`; `risk: "contract" | "local"` is optional but worth filling in for steps that
    change a consumed surface — it earns an immediate review checkpoint. Steps sharing files must be
@@ -40,6 +74,13 @@ You orchestrate the implementation phase of a planned dev task. The heavy liftin
    flatten before running. The last of those is about evidence rather than scheduling: one shared
    command was already green before every step that named it but the first, so the rest come back
    `weak_evidence` (step 6) — a step whose goal *adds* behavior needs a check of its own.
+
+   The same projection also lints each step's `verify` **command** itself, and those warnings are
+   worth reading before anything runs: one that deletes, force-pushes, publishes, deploys, migrates
+   data or reaches an external service; one that is a synthesized shell pipeline where a
+   project-declared script (`npm run …`, a Makefile target, a committed script) would do; and one
+   aggregated line naming every command nobody recognizes, which is surfaced and then **proceeds** —
+   an unrecognized runner is a command you should look at, never a claim that it is unsafe.
 
    `criteria` is the spec's canonical acceptance-criterion ids, and **you** extract them: a workflow
    script has no filesystem access, the same reason `rules` arrives pre-extracted. This skill is its
@@ -156,8 +197,34 @@ You orchestrate the implementation phase of a planned dev task. The heavy liftin
    - `concerns` non-empty → the implementers' own doubts. The checkpoint reviewers received them as
      priority targets and the final check was asked to settle them, so treat anything still listed
      here as unresolved and either check it or surface it in your report.
-   - `stage: "implement-result-unavailable"` → classify it before taking action. Read that agent's transcript/journal and check `expected_notes_path`:
-     - Repeated `StructuredOutput`/schema validation errors **and** a completed notes file/code diff → `result_serialization_failed`. The implementation itself is not failed; do not re-run it. Reconstruct the compact report inline from notes + diff and report the serialization failure separately.
+   - A step report can already carry `result_recovered: true` even when its `stage` is not
+     `implement-result-unavailable`: the workflow's own non-editing `result:` retry sets it when *that*
+     attempt alone rescued an otherwise-missing result, and the step then continues through the normal
+     report path below — you will not see it flagged separately, only the field itself set. This is a
+     different producer from the recovery agent the next bullet describes; step 9 defines the field
+     covering both.
+   - `stage: "implement-result-unavailable"` → the implementer returned no structured result.
+     **The workflow already retried the serialization once** — `result_retry_attempted: true` on the
+     report says that non-editing re-serialization attempt happened and came back empty — so do not
+     retry it again. Classify first: read that agent's transcript directory (`journal.jsonl`) and
+     check `expected_notes_path`.
+     - Repeated `StructuredOutput`/schema validation errors **and** a completed notes file/code diff →
+       `result_serialization_failed`. The implementation itself is not failed, and **recovery never
+       re-runs implementation** — that would duplicate work on a tree the first attempt has already
+       half-edited. Recovery is automatic here: spawn **one** compact read-only agent (`Explore` — the
+       same structurally read-only mechanism `/dev-debug`'s hypothesis fan-out uses, which is what
+       makes "may not modify files" a tool-level guarantee rather than a request) and give it exactly
+       four things. (a) `expected_notes_path` **and** the workspace's `notes/` directory —
+       `notes_path` is normally self-reported, so the expected path is a convention and not a promise.
+       (b) The result schema field by field: `summary`, `changed_files`, `notes_path`, `verify_run`
+       (`ran`, `command`, `passed`, `kind`, `not_ran_reason`), `deviations`, `concerns`. (c) The
+       step's declared `files`. (d) `git diff <baseline> -- <files>`. It reconstructs the structured
+       result and nothing else: no edits, no implementation, and **no verification the notes or
+       `journal.jsonl` do not evidence** — with no command *and* no result recorded anywhere, it
+       returns `ran: false` and a `not_ran_reason` naming that absence rather than a plausible pass.
+       Mark what comes back `result_recovered: true`, then treat it exactly like an implementer
+       report, so it lands in `unverifiedSteps` unless the evidence really was there. Report the
+       serialization failure separately from the step it recovered.
      - No structured-output errors and no completed notes/code evidence → `implementation_failed`; re-run the step or implement inline.
      - Conflicting evidence → `agent_failed_unknown`; surface it instead of guessing.
    - Other failed steps (`failed: true`, e.g. `stage: "verify"`) → check the workflow journal, fix the cause, then continue (see below); only the failed step and what follows it re-runs.
@@ -322,6 +389,12 @@ JSON
      removing both of those — never just "the rest" of the unevidenced split alone, or every
      infra-error step gets counted twice. `weak_evidence` = `weakEvidenceSteps.length`, `kind_missing`
      = `kindMissing.length`
+   - `result_recovered` = `true` when at least one step's structured result was reconstructed instead
+     of returned by its implementer — whether that happened via the workflow's own non-editing
+     `result:` retry (that step's own report already carries `result_recovered: true`, set before you
+     ever see it) or via step 6's read-only recovery agent. Top-level and boolean, and **omitted** when
+     no step needed either kind of recovery — it is the one field saying a report's numbers were
+     rebuilt from notes and a diff rather than reported by the agent that did the work.
    - `delivery_verdict` = the returned verdict string, verbatim. It is top-level and string-valued,
      which is what the ledger's shape allows; the `gates` object stays out of the line entirely, since
      only `cost`, `findings` and `verification` may nest — and the `gates` number already in the line

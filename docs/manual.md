@@ -8,7 +8,7 @@ pipeline, read this when you want to use it.
 
 | Command | Use when | Produces |
 |---|---|---|
-| `/dev-setup` | Configuring a repo for the pipeline, or checking it after a plugin update | gitignore, CLAUDE.md pointer, Workflow permission, rules, smoke test |
+| `/dev-setup [--check]` | Configuring a repo for the pipeline, or checking it after a plugin update | gitignore, CLAUDE.md pointer, Workflow permission, rules, smoke test — with `--check`, the same diagnosis read-only: it reports and writes nothing |
 | `/dev-spec <rough idea>` | Task is large or requirements are fuzzy | `.dev/<slug>/spec.md` with verifiable acceptance criteria, each carrying a stable id (`AC-01`) the plan steps, the coverage lint and the PR's acceptance matrix all address |
 | `/dev-plan <task>` | Start of any nontrivial task | Triage; a five-line `plan.md` for small, a validated step plan for medium+ |
 | `/dev-review --from-report <review.md>` | Apply the confirmed findings of a PR review | Fixes applied and explicitly re-reviewed; clean/not-clean |
@@ -112,6 +112,11 @@ you can audit the choice in both directions, and override it either way ("treat 
   on a person rather than a workflow merely finishing. Answer them — they reshape the plan.
 - **Your checkpoint #2**: plan approval. Read the summary (full detail: `.dev/<slug>/plan.md`).
   Push back freely — adjustments are edits to the plan file, cheap. Nothing touches your code yet.
+  The free projection that prices the plan now also reads the `verify` commands it will later run:
+  one that deletes, force-pushes, publishes, deploys, migrates data or reaches an external service
+  is flagged with the step that carries it, so is one that is a synthesized shell pipeline where a
+  project-declared script would do, and every command nobody recognizes is listed once — shown, and
+  the run proceeds. They are surfaced for you to judge, never rewritten for you.
 
 Tip: for large/ambiguous work, run `/dev-spec` first — the interview produces acceptance criteria
 with stable ids (`AC-01`, `AC-02`, …) that make everything downstream measurably stricter: plan steps
@@ -402,12 +407,13 @@ implement run that did not finish. It prints nothing when there is nothing to sa
 | Symptom | Fix |
 |---|---|
 | "Configured against 0.1.0, you are on 0.4.0" | Expected after an update. `/dev-setup` reads `CHANGELOG.md` and tells you what changed; it updates the line once you have seen it |
+| "Is this repo still wired up correctly?" | `/dev-setup --check` — read-only diagnosis: versions, whether the three workflows resolve, the Workflow permission and the stale-flow hook, the three zero-cost smoke tests, rule parse errors and globs matching no tracked file, stale workspaces, git/remote/`gh`. It writes nothing and offers no edits; plain `/dev-setup` is what fixes anything it finds |
 | `/dev-*` not in autocomplete | Restart Claude Code (skills/workflows register at session start) |
 | Edited a workflow, but the run behaves as before | `name:` resolution serves a snapshot from plugin load. Invoke by `scriptPath` while iterating, or restart |
 | "Workflow not found" | Same restart; meanwhile skills fall back to `scriptPath` automatically |
 | Implement crashed midway | `lastRunId` is in `.dev/<slug>/state.json` — ask Claude to resume; completed steps replay from cache |
 | Implement *stopped* midway (blocking question, unclean checkpoint, failed step, budget) | Not a crash — that is the design. Resolve what stopped it, then `/dev-implement <slug> --continue` |
-| Implementer wrote code/notes but has no result | Inspect rejected `StructuredOutput` calls; classify `result_serialization_failed`, not `implementation_failed` |
+| Implementer wrote code/notes but has no result | Handled for you: the workflow retries the serialization once with a non-editing agent, and `/dev-implement` then reconstructs the report read-only from the notes, the diff and `journal.jsonl`, marked `result_recovered`. The implementation is never re-run — but a recovered report is reconstructed evidence, so read its verification claim as exactly that |
 | "Where did that review finding go?" | Refuted findings remain in the workflow result and `journal.jsonl` for audit |
 | PR review says it is stale | Its `reviewed_head` differs from `HEAD`; run `/dev-pr --review` again |
 | PR review found real bugs | Run the offered `/dev-review --from-report <report.md>`, then `/dev-pr --review` again |

@@ -9,6 +9,105 @@ different artifact, a new gate — and never on prose that restates behavior alr
 `.claude-plugin/plugin.json` and `.claude-plugin/marketplace.json` state it (the latter twice);
 `tests/contract-drift.test.js` fails if they disagree, or if the shipped version has no entry here.
 
+## 0.8.0 — 2026-08-18
+
+### Added
+- **A plan freshness gate, at the `/dev-implement` preflight.** `/dev-plan` now writes a
+  `plan_freshness` block into the workspace's `state.json` at handoff — `planned_at_sha`, a hash of
+  the machine-readable steps block *as it stands on disk* after whatever you edited at the approval
+  checkpoint, a hash of `spec.md` when there is one, and the plugin commit the plan was written
+  under (each omitted rather than fabricated when it cannot be read). `/dev-implement`'s git
+  preflight reads it back and branches four ways, and the two common branches cost **zero agents**:
+  nothing relevant moved → continue; only files no step declares changed → report the count and
+  continue. A change inside a step's own `files` buys exactly one cheap read-only validator, given
+  only the affected steps and the diff for those files and asked a single question — is this plan
+  still *executable* — never whether the exploration was thorough. A plan edited after handoff, a
+  spec whose criteria moved, or a validator reporting a contract that no longer holds stops the run
+  and offers re-planning or an explicit override. Two cases are stated rather than guessed: a plan
+  written before this shipped has no block, which is said once and continues; and a `plugin_commit`
+  that differs from the installed one is reported and points at `/dev-setup --check`, never a block
+  on its own — a plugin upgrade changes how the pipeline runs, not whether your plan is executable.
+
+  **Not wired into `delivery_verdict`, on purpose.** `gates.scope` still implements five of the six
+  blocked triggers 0.7.0 named, and the sixth — a stale plan — stays unimplemented. The preflight
+  blocks *before* any agent is spawned, which is strictly cheaper than a verdict computed just
+  before the run returns; and `wf-implement` still has no filesystem access, no git and no clock, so
+  the branch would need an argument no caller sends. What is left is a narrower window than the one
+  0.7.0 recorded — a plan current at the preflight and stale by the time the run ends — and it is
+  now a stated scope line rather than a missing field.
+
+- **`/dev-setup --check`: the whole checklist, read-only.** A mode that creates no file, edits no
+  file, adds no permission, bootstraps no rules, writes no gitignore line and offers no commit — run
+  it against a repo that has never been configured and the repo is byte-for-byte as it was. It
+  reports each item as ok, problem or unknown *with the evidence it read*: the plugin and manifest
+  version against the `Configured against devkit <version>.` line in your `CLAUDE.md` (read, never
+  rewritten); whether the three workflow names resolve, and that a restart is the fix when they do
+  not; whether `${CLAUDE_PLUGIN_ROOT}` expands inside a skill body; the `Workflow` permission and the
+  stale-flow `SessionStart` hook; the three `dryRun` smoke tests and the policy they resolve to,
+  which spawn zero agents — the reason a diagnostic may run them at all; rule-manifest parse errors
+  *and* a frontmatter pass beside them, because a malformed rule file and a deliberately unscoped one
+  both come back with empty globs; rule globs matching no tracked file; stale workspaces; and git,
+  remote and `gh` state. It closes by naming the invocation that fixes each problem — and in this
+  mode it will not apply one even if asked.
+
+  **Rejected: a separate `/dev-doctor`.** It would cost a name in the flat namespace shared with the
+  workflows and duplicate a checklist that then has to be kept in sync; a flag is the same capability
+  with nothing to drift. Also dropped, deliberately: comparing the installed plugin commit against
+  recent ledger lines. Both routes to it were worse than the gap — a new aggregate mode in
+  `scripts/ledger-report.sh`, or a skill reading raw `runs.jsonl`, which breaks the invariant that no
+  agent ever reads the ledger.
+
+- **The free projection now lints the `verify` commands a plan proposes.** The planner writes those
+  strings and implementers execute them; the honesty gate has always checked whether a command ran
+  and passed, never whether it should have been run at all. Three categories now reach you before
+  approval, at zero agents, in the `dryRun` projection that already prices the plan: a command that
+  deletes, force-pushes, publishes, deploys, migrates data or contacts an external service is flagged
+  with the step that carries it and the category it matched; a command that is a synthesized shell
+  program rather than a call — three or more chained segments, or an operator other than `&&` — is
+  flagged with a nudge toward a project-declared script; and every command in which no segment's head
+  is a recognized project runner is collected into **one** aggregated line naming each step and its
+  command, which says the run proceeds, the command having been shown. Matching runs over each step's
+  own `verify` and over its `&&`/`;`/`|`-separated segments — so `npm run db:migrate` is caught even
+  though its head is a declared script — and never over the joined command a checkpoint builds from
+  several steps.
+
+  **Rejected: a sandbox, and an allow-list.** This is a lint and an approval prompt. An allow-list —
+  warn on anything not proven safe — is the fragile shape `IDEAS.md` #16 rejects by name: it would
+  fire on most of the honest commands in this repo's own suite, and a warning that is always on is a
+  warning nobody reads.
+
+- **An implementer that finishes the work but not the report no longer needs you.** Recovery is
+  automatic, and read-only in both halves. `wf-implement` retries the **serialization** once: one
+  cheap non-editing agent, forbidden from implementing anything or editing any tracked file, that
+  reads the diff for the step's declared files and the notes and returns the structured result only.
+  If that also comes back empty the step is still reported `implement-result-unavailable`, now
+  carrying `result_retry_attempted: true`, and `/dev-implement` reconstructs the report itself from
+  `journal.jsonl`, the notes directory and the diff — the half a workflow script cannot do, having no
+  filesystem. Whichever half succeeds marks the object `result_recovered: true`, top-level on the
+  report and on the ledger line, so a reconstructed result is never mistaken for one an implementer
+  returned; it is then treated exactly like an implementer report, which means it counts as
+  unverified unless the notes or the journal actually show a command *and* its result. Recovery never
+  re-runs implementation.
+
+  **Rejected: a blind re-run of the implementer.** Re-invoking the implementer prompt would spend the
+  pipeline's most expensive role on a tree the first attempt may already have half-edited — duplicated
+  work, and a diff nobody asked for. What failed is the serialization, so the serialization is what
+  gets retried.
+
+### Fixed
+- **Two scouts of one exploration run can no longer share a report path.** `wf-explore-plan` accepted
+  an `angles` argument and read `a.name` off every entry without checking the shape, so a caller
+  passing an array of plain strings — the obvious reading of "override the decomposition" — sent every
+  scout to `findings/undefined.md`, where they overwrote one another. Found by this campaign's own
+  planning run, which did exactly that and lost four of its five reports. Angles are now normalized on
+  the *converged* value, so the caller's array and the decomposer's output both pass through it: a
+  string becomes that angle's focus with a slug for its filename, an object missing `name` or `focus`
+  throws naming the index rather than guessing what a scout was meant to look at, a non-array throws,
+  and repeated names are disambiguated deterministically (`a.md`, then `a-2.md`). Throwing costs
+  nothing on the caller-supplied path, since the decomposer is skipped whenever `angles` is non-empty.
+  The returned `findings` array now carries the path the **script** assigned rather than the one the
+  scout reported, and a divergence between the two is logged as the scout deviation it is.
+
 ## 0.7.0 — 2026-08-17
 
 ### Added

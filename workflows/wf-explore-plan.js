@@ -289,10 +289,59 @@ const EXPLAIN_SCHEMA = {
   },
 }
 
+// ---- Angle normalization. An angle's `name` is not a label: it is the FILENAME every scout writes
+// its report to, so a missing or duplicated one sends two scouts to the same path and the second
+// silently overwrites the first. Not hypothetical — run wf_836cc7e3-5d4 passed `angles` as an array
+// of strings, every `a.name` read back `undefined`, and five scouts shared one
+// `<workspace>/findings/undefined.md`.
+function slugifyAngle(text, index) {
+  const slug = String(text).toLowerCase()
+    .replace(/[\s_]+/g, '-')
+    .replace(/[^a-z0-9-]/g, '')
+    .replace(/-+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .slice(0, 40)
+    .replace(/-+$/, '') // the cut can leave a trailing separator behind
+  return slug || `angle-${index + 1}` // a focus made entirely of punctuation still needs a filename
+}
+
+// Both sources of angles converge here — the caller's `args.angles` AND the decomposer's output,
+// which can emit two identical names of its own, so validating only the caller's path would leave
+// the same clobbering reachable. A malformed entry THROWS, and that must not be softened into a
+// warning: the decompose agent is skipped whenever `angles` is non-empty, so a bad caller-supplied
+// array costs exactly zero agents here, while carrying on would cost a whole exploration phase
+// whose reports then overwrite one another.
+function normalizeAngles(raw) {
+  if (!Array.isArray(raw)) throw new Error(`args.angles must be an array of {name, focus, why} objects — a plain string is accepted as that angle's focus — received ${typeof raw}: ${JSON.stringify(raw)}`)
+  const taken = new Set()
+  return raw.map((entry, index) => {
+    let angle
+    if (typeof entry === 'string') {
+      // A bare string is unambiguous: it IS the focus, and the name is only a filename, so it is derived.
+      angle = { name: slugifyAngle(entry, index), focus: entry, why: 'supplied verbatim by the caller' }
+    } else if (entry && typeof entry === 'object' && entry.name && entry.focus) {
+      angle = { ...entry, why: entry.why || 'not stated' }
+    } else {
+      // Guessing the missing half fabricates the scout's assignment: an invented focus reads to the
+      // scout exactly like one a human wrote, and an invented name collides with the next entry.
+      throw new Error(`angles[${index}] must be a string, or an object with both a name and a focus — received ${JSON.stringify(entry)}`)
+    }
+    // Deterministic disambiguation, in order: the first `a` keeps `a.md`, the next takes `a-2.md`.
+    let name = angle.name
+    for (let n = 2; taken.has(name); n++) name = `${angle.name}-${n}`
+    taken.add(name)
+    return name === angle.name ? angle : { ...angle, name }
+  })
+}
+
 // ---- Phase 1: decompose into exploration angles (skipped if caller provides them)
 phase('Decompose')
 let angles = args.angles
-if (!angles || !angles.length) {
+// Only "nothing supplied" (or an explicitly empty array) skips validation and falls through to the
+// decomposer. Anything else the caller supplied — including a malformed-but-falsy shape like `{}` —
+// must still reach `normalizeAngles` below and throw there, or a caller bug silently pays for a whole
+// decompose-and-explore run instead of being rejected at zero agents.
+if (angles === undefined || angles === null || (Array.isArray(angles) && !angles.length)) {
   const d = await metered('decompose', () => agent(
     `You are decomposing a development task into parallel repository-exploration angles.
 
@@ -312,6 +361,9 @@ Your final output is consumed by a script, not a human — return the structured
   if (!d) throw new Error('decomposition agent failed')
   angles = d.angles
 }
+// Both branches pass through here — a caller's array and a decomposer's are equally capable of
+// naming two angles the same thing, and the name is the report path.
+angles = normalizeAngles(angles)
 log(`exploring ${angles.length} angles: ${angles.map(a => a.name).join(', ')}`)
 
 // ---- Phase 2: explore all angles. Phase 3 validates the load-bearing claims in one batch.
@@ -343,7 +395,7 @@ function validatePrompt(scouts) {
 ${TASK_BRIEF}
 
 Scout summaries and report paths:
-${JSON.stringify(scouts.map(({ angle, scout }) => ({ angle: angle.name, focus: angle.focus, report_path: scout.report_path, headline_findings: scout.headline_findings, risks: scout.risks })), null, 2)}
+${JSON.stringify(scouts.map(({ angle, scout, report_path }) => ({ angle: angle.name, focus: angle.focus, report_path, headline_findings: scout.headline_findings, risks: scout.risks })), null, 2)}
 
 Validate only HEADLINE claims that materially change the plan; do not re-check every supporting observation. Cluster equivalent claims across angles before spending time on them. Confirm only with independent code evidence; refute with proof; mark unverified when checking would be disproportionate and let the synthesizer spot-check it if load-bearing. Identify at most 3 critical misses across ALL reports, not per angle. Every verdict and miss must name its angle.
 
@@ -361,14 +413,26 @@ if (priorFindings.length) log(`reusing ${priorFindings.length} finding(s) from t
 // fresh ones, so a claim that has gone stale since it was written gets refuted rather than trusted.
 // That is the whole staleness guard — no HEAD comparison, no expiry, just the check that already
 // exists doing its job on older input.
+// `report_path` on the entry is the path this script DISPATCHED the scout to, not the one the scout
+// reported back: the self-reported field is what carried the broken `findings/undefined.md` into the
+// returned findings, and a caller reusing them has to be handed a path that exists. A prior finding
+// keeps its own — an earlier run wrote that file and this one does not.
 const scouted = [
   ...priorFindings.map((f) => ({
     angle: { name: f.angle, focus: f.focus || 'from an earlier run in this workspace' },
     scout: { summary: f.summary, headline_findings: f.headline_findings || [], open_questions: [], report_path: f.report_path },
+    report_path: f.report_path,
     reused: true,
   })),
-  ...angles.map((angle, index) => ({ angle, scout: scoutResults[index] })),
+  ...angles.map((angle, index) => ({ angle, scout: scoutResults[index], report_path: `${findingsDir}/${angle.name}.md` })),
 ].filter((entry) => entry.scout)
+
+// A scout that wrote somewhere else is a deviation worth seeing, not a reason to fail the run: the
+// dispatched path is what downstream agents get either way, so say so rather than swapping it.
+for (const entry of scouted) {
+  if (entry.reused || !entry.scout.report_path || entry.scout.report_path === entry.report_path) continue
+  log(`scout "${entry.angle.name}" reported "${entry.scout.report_path}" but was dispatched to "${entry.report_path}" — using the dispatched path`)
+}
 
 if (!scouted.length) throw new Error('all scouts failed — nothing to synthesize')
 
@@ -378,10 +442,11 @@ const validation = args.validate === false
   : await metered('validate', () => agent(validatePrompt(scouted), { label: 'validate:batch', phase: 'Validate', ...ROLE.validate, schema: VALIDATION_SCHEMA }))
 if (!validation) throw new Error('batched validation failed')
 
-const validated = scouted.map(({ angle, scout, reused }) => ({
+const validated = scouted.map(({ angle, scout, reused, report_path }) => ({
   angle: angle.name,
   focus: angle.focus,
   reused: reused || undefined,
+  report_path,
   scout,
   validation: {
     verdicts: validation.verdicts.filter((v) => v.angle === angle.name),
@@ -458,7 +523,7 @@ if (!synth) throw new Error('synthesis agent failed')
 
 // Everything downstream can be handed straight back as `priorFindings` — the point of explain mode.
 const reusableFindings = validated.map((v) => ({
-  angle: v.angle, focus: v.focus, report_path: v.scout.report_path,
+  angle: v.angle, focus: v.focus, report_path: v.report_path,
   summary: v.scout.summary, headline_findings: v.scout.headline_findings || [],
 })).filter((f) => f.report_path)
 
@@ -520,7 +585,7 @@ return {
   open_questions: synth.open_questions,
   dropped_claims: synth.dropped_claims || [],
   angles: angles.map((a) => a.name),
-  finding_reports: validated.map((v) => v.scout.report_path),
+  finding_reports: validated.map((v) => v.report_path),
   findings: reusableFindings,
   cost: costReport(),
 }

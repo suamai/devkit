@@ -243,12 +243,16 @@ vocabularies deliberately are not. Nothing branches on a gate label, and five mo
 sets would be five more things that must be maintained exactly forever.
 
 `scope` implements five of the six blocked triggers the design named. The sixth — **a stale plan** —
-has no computable source: nothing in `wf-implement`'s reach represents plan staleness, and the script
-has no filesystem access, no git and no clock. It is dropped rather than stubbed with an argument no
-caller ever passes, and filed against the plan-freshness gate (`IDEAS.md` #13), whose `planned_at_sha`
-is the field that would make it computable and `gates.scope` the place its branch goes. Until that
-lands, a verdict is only as current as the plan it was computed against, and `/dev-implement`'s
-workspace-staleness preflight is the only thing standing in front of it.
+is now a deliberate scope line rather than a missing field. `planned_at_sha` exists: `/dev-plan`
+records it, with the plan, spec and plugin hashes beside it, in the workspace's `plan_freshness`
+block, and the gate that reads it is **`/dev-implement`'s preflight**, which branches on it before
+any agent is spawned. That is the cheaper place for it by construction — a run stopped at the
+preflight has spent nothing, while a verdict computed just before `wf-implement` returns can only
+label work already paid for. What `gates.scope` still cannot see is a plan going stale *mid-run*:
+no caller passes it a staleness argument, and the script itself still has no filesystem access, no
+git and no clock, so the trigger stays unimplemented rather than stubbed with an argument nobody
+sends. That window — current at the preflight, stale by the time the run ends — is the honest
+residual cost of stopping at the preflight, and it is what `IDEAS.md` #13 still carries as open.
 
 ## Two shapes the feature cycle does not fit
 
@@ -388,6 +392,7 @@ copies of them.
 | `tests/seeded-review.test.js` | `--from-report`: that no finder runs, and that `clean` still needs a post-fix pass |
 | `tests/explore-modes.test.js` | plan vs explain mode, reused findings skipping scouting but not validation, and that `language` reaches both synthesizer prompts |
 | `tests/dryrun-smoke.test.js` | that every shipped workflow answers `dryRun: true` with `{ok: true}` and a resolved policy, spawning nothing — the promise `/dev-setup` step 6 makes to every new repo |
+| `tests/setup-check.test.js` | that `/dev-setup --check` prescribes nothing that writes — every backticked span and fenced block in the mode's own section, with the section anchor failing closed if the heading moves |
 | `tests/contract-drift.test.js` | that the prose still states the values the scripts use, that every name it points at resolves, and that both manifests and `CHANGELOG.md` agree on the version |
 
 Those two rows describe a deliberate asymmetry, so it does not later read as accidental drift. The
@@ -484,16 +489,22 @@ A git repo is a **prerequisite** for `/dev-implement`, `/dev-review`, and `/dev-
 ## Flow state & concurrency
 
 Each workspace owns its state: `.dev/<slug>/state.json` holds
-`{ task, stage, updated, baseline, lastRunId, findings, runs }` with stages
+`{ task, stage, updated, baseline, lastRunId, findings, runs, plan_freshness }` with stages
 `spec → planning → plan-ready → implementing → implemented` (or `abandoned`), written by the skill
 that owns that phase. `runs` is the compact per-phase summary described under "The run ledger" —
-the copy that survives `/dev-status archive <slug>`. That list is a **floor, not a schema**: every
-skill merges into whatever the previous one left, so real workspaces also carry what a phase needed
-to hand on (`plan`, `spec`, `decisions`). A reader must tolerate extra keys and a writer must never
-drop the ones it did not write. State sits **inside the thing it describes**, which is what makes the
-single-writer rule structural rather than an invariant every skill has to be told to respect: there
-is no shared file two skills could race on, and a directory that exists with no state file is a
-recoverable case (infer the stage from its artifacts) rather than a corrupt registry.
+the copy that survives `/dev-status archive <slug>`. `plan_freshness` is the nested block `/dev-plan`
+writes in the same handoff that sets `plan-ready`, and `/dev-implement`'s preflight is its only
+reader: it records which tree, which plan text, which spec and which plugin the plan was written
+against, so the preflight can tell "nothing relevant moved" from "a contract this plan rests on
+did". Its four fields and the command behind each are stated once, in `skills/dev-plan/SKILL.md`
+step 7 — one writer for the values, one statement of how they are computed. That list is a **floor,
+not a schema**: every skill merges into whatever the previous one left, so real workspaces also
+carry what a phase needed to hand on (`plan`, `spec`, `decisions`). A reader must tolerate extra
+keys and a writer must never drop the ones it did not write. State sits **inside the thing it
+describes**, which is what makes the single-writer rule structural rather than an invariant every
+skill has to be told to respect: there is no shared file two skills could race on, and a directory
+that exists with no state file is a recoverable case (infer the stage from its artifacts) rather
+than a corrupt registry.
 
 `/dev-status` globs those files: table of flows, PR-review SHA/outcome, staleness flags, and
 `clean <slug>` to delete the workspace — which takes its state with it.
@@ -515,9 +526,17 @@ Don't improvise same-tree concurrency.
 - **Live progress**: `/workflows` in the CLI; each workflow launch prints its transcript dir.
 - **What did an agent actually return?** Read `journal.jsonl` in the transcript dir — one result
   line per completed agent. Do this before diagnosing an empty/odd workflow result.
-- **Implementer has code/notes but no result**: inspect its transcript for rejected
-  `StructuredOutput` calls. Classify that as `result_serialization_failed`, distinct from
-  `implementation_failed`; do not re-run completed implementation work just to recover a report.
+- **Implementer has code/notes but no result**: the recovery is automatic, and read-only at every
+  step. `wf-implement` retries the **serialization** once — one cheap non-editing agent that reads
+  the diff and the notes and returns the structured result, never a second implementer on a tree the
+  first one may already have half-edited — and when that also comes back empty, `/dev-implement`
+  reconstructs the result itself from `journal.jsonl`, the notes and the diff. Either way the
+  rescued object is marked `result_recovered: true`, so a reconstructed report is never mistaken for
+  one an implementer returned, and neither producer may claim a verification the notes or the
+  journal do not evidence. **Recovery never re-runs implementation.** The by-hand classification
+  stays as the fallback for the other two kinds (`implementation_failed`, `agent_failed_unknown`):
+  inspect the transcript for rejected `StructuredOutput` calls, and classify what you find rather
+  than guessing.
 - **Stopped run vs crashed run.** `implement` stopping early (blocking question, unclean
   checkpoint, failed step, budget floor) is the design, not a fault: it returns
   `stoppedEarly` + `stopReason` + a `continuation` block. Resolve the cause and re-invoke with
@@ -663,8 +682,11 @@ inside a top-level string, is a row that gets mis-read quietly. Omit any field y
   `tier` — nothing was triaged — which is also why the escalation row counts only lines that have one.
 - implement: `tier`, `waves`, `parallel_groups`, `steps_leaf`, `splits`, `scouts_ran`, `gates`,
   `gate_breaks`, `checkpoints`, `review_rounds`, `agents_projected`, `unreviewed_waves`,
-  `delivery_verdict`, `findings`, `verification`. `delivery_verdict` is the run's own computed
-  string, top-level like every other string; the `gates` object behind it does **not** go on the line
+  `delivery_verdict`, `result_recovered`, `findings`, `verification`. `result_recovered` is a
+  top-level boolean, written only on a run where at least one step's structured result had to be
+  reconstructed instead of returned — omitted otherwise, so the store counts recoveries rather than
+  carrying a `false` on every line. `delivery_verdict` is the run's own computed string, top-level
+  like every other string; the `gates` object behind it does **not** go on the line
   (only `cost`, `findings` and `verification` may nest, and the ledger's own `gates` is the
   contract-gate count, a number). `tier` is the tier the plan was triaged at, carried over so the quote
   `--phase implement --tier <t>` can match: comparability is phase + tier + profile, and a line

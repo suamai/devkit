@@ -155,11 +155,12 @@ async function main() {
   check('  └─ and the reason names the step', redStep.result.reasons.some((r) => r.startsWith('tests: ') && r.includes('s1')), true)
 
   // ...the same failure, reached through the OTHER shape `runStep` returns it in: the impl agent
-  // itself came back unavailable (`agent()` resolved to a falsy value) rather than a red check. That
-  // leaf carries `.failed` and no `.status` or `.impl` at all — the shape `failedSteps` and the
-  // coverage matrix must recognize without ever seeing a status string, or it reads as `not-run` /
-  // `unverified` instead of the `failed` it actually is.
-  const implUnavailable = await run({ replies: { 'impl:s1': null } })
+  // itself came back unavailable (`agent()` resolved to a falsy value) rather than a red check, and
+  // the one cheap re-serialization attempt it buys came back empty too. That leaf carries `.failed`
+  // and no `.status` or `.impl` at all — the shape `failedSteps` and the coverage matrix must
+  // recognize without ever seeing a status string, or it reads as `not-run` / `unverified` instead
+  // of the `failed` it actually is.
+  const implUnavailable = await run({ replies: { 'impl:s1': null, 'result:s1': null } })
   check('an unavailable impl agent blocks, not just downgrades', verdictOf(implUnavailable.result), 'blocked')
   check('  └─ on tests, and on the criterion that rested on it',
     [implUnavailable.result.gates.tests, implUnavailable.result.gates.acceptance, rowFor(implUnavailable.result, 'AC-01').status], ['failed', 'failed', 'failed'])

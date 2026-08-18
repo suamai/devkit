@@ -148,7 +148,7 @@ phase.
    the old findings go through the same adversarial pass, so anything that went stale gets refuted
    rather than trusted, which is why no staleness check is needed on top.
 
-   Optional: `angles` to override angle decomposition when the developer already told you what to investigate; `validate: false` skips the single batched validation pass for cost-sensitive planning; `profile`/`models`/`efforts` set the model tiers (see Cost below). If the workflow name does not resolve (the plugin has not loaded in this session yet), invoke with `scriptPath` pointing at `${CLAUDE_PLUGIN_ROOT}/workflows/wf-explore-plan.js`. Runs in background; you'll be notified. While waiting, do nothing speculative.
+   Optional: `angles` to override angle decomposition when the developer already told you what to investigate — an array of objects `{name, focus, why, hints?}`, with a plain string accepted as shorthand for that angle's `focus`; a malformed entry throws before any agent is spawned, so a wrong shape costs the call and nothing else; `validate: false` skips the single batched validation pass for cost-sensitive planning; `profile`/`models`/`efforts` set the model tiers (see Cost below). If the workflow name does not resolve (the plugin has not loaded in this session yet), invoke with `scriptPath` pointing at `${CLAUDE_PLUGIN_ROOT}/workflows/wf-explore-plan.js`. Runs in background; you'll be notified. While waiting, do nothing speculative.
 
 4. **Interrupt point — open questions.** The result contains `open_questions` (decisions only the developer can make). If non-empty, push a notification **first**, then surface them via AskUserQuestion (use the provided `options`). Fold answers into the plan: edit `<workspace>/plan.md` yourself — including the machine-readable JSON steps block — or, if an answer invalidates the approach, re-run the workflow with the answers appended to `constraints`.
 
@@ -180,7 +180,11 @@ phase.
    that lints badly is cheaper to fix now than after an implement run. Two `warnings` are worth
    acting on rather than reporting: steps with overlapping files and no dependency (they cost the
    parallelism the plan appears to have), and a step with no `verify` (it can only ever come back
-   `unverified`).
+   `unverified`). It also lints each step's `verify` **command** itself: one that deletes,
+   force-pushes, publishes, deploys, migrates data or reaches an external service; one that is a
+   synthesized shell pipeline where a project-declared script would do; and one aggregated line
+   naming every command it does not recognize, which is surfaced and then **proceeds** — an
+   unfamiliar runner is not a claim that the command is unsafe.
 
    **The three coverage warnings are surfaced, not silently fixed.** They are the only lint output
    that judges the plan against the *spec*, and two of the three are not yours to settle:
@@ -271,8 +275,37 @@ phase.
    `{ phase: "plan", ts, run_id, tier, signal?, agents_projected, cost_total, floors_active }` — `ts`
    is plain `YYYY-MM-DD HH:MM`, matching `updated` (`/dev-status`'s Notes) — append only, never
    rewriting an earlier entry: `/dev-status archive <slug>` keeps this file and
-   deletes the bulk, so it is the copy of the evidence that survives when the ledger does not. Then
-   suggest `/dev-implement <slug>` (or continue yourself if asked).
+   deletes the bulk, so it is the copy of the evidence that survives when the ledger does not.
+
+   **Record the plan's freshness in that same write.** `/dev-implement`'s preflight has to know which
+   tree this plan was written against, and this is the **one** place that contract is stated — the
+   other skill reads these four values, re-runs these same commands against the tree it is about to
+   implement into, and derives nothing a second way. So `state.json` gains a nested `plan_freshness`
+   object beside `stage`: `{ planned_at_sha, steps_sha, spec_sha, plugin_commit }`. Each is one
+   command, run here, at handoff:
+
+   ````bash
+   git rev-parse HEAD                                             # planned_at_sha
+   awk '/^## Machine-readable steps/,0' "<workspace>/plan.md" \
+     | sed -n '/^```json$/,/^```$/p' | sed '1d;$d' | git hash-object --stdin    # steps_sha
+   git hash-object "<workspace>/spec.md"                          # spec_sha
+   head -n 1 "${CLAUDE_PLUGIN_ROOT}/FROZEN_AT"                    # plugin_commit
+   ````
+
+   `steps_sha` hashes the machine-readable steps block **as it stands on disk** — run it after step 4's
+   edits and after anything the developer changed at the checkpoint, because hashing what the workflow
+   returned would certify a plan nobody is going to implement. `git hash-object`, never
+   `shasum`/`sha256sum`: git is already required by this phase, and those two are not portable across
+   macOS and Linux, so the writing skill and the reading skill would compute different digests on
+   different machines.
+
+   Two of the four are conditional, and a value you cannot read is **omitted, never fabricated**:
+   `spec_sha` only when the workspace has a `spec.md`, and `plugin_commit` only when `FROZEN_AT`
+   exists — it is written by `scripts/promote-plugin.sh` into a frozen install, so a run driven from a
+   checkout simply has no plugin commit. At the other end an absent field reads as *unknown* and is
+   skipped; an invented one reads as *checked, and fine*.
+
+   Then suggest `/dev-implement <slug>` (or continue yourself if asked).
 
    **The ledger line — the last of the three write sites.** One `plan` line per invocation, written
    here for medium and large only. The low tiers wrote theirs already; never both. Same

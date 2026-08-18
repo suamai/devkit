@@ -179,6 +179,56 @@ async function main() {
   const chain = await run({ dryRun: true, steps: ['a', 'b', 'c', 'd'].map((id, i, all) => ({ id, goal: id, files: [`${id}.ts`], verify: 'x', depends_on: i ? [all[i - 1]] : [] })) })
   check('a chain of single steps is flagged', chain.schedule.warnings[0].startsWith('4 waves of one step each'), true)
 
+  // The verify-command lint: three categories, denylist-first, still at zero agents. Every step below
+  // owns its own file and its own command, so nothing here is also the overlap or shared-command lint.
+  const LINT_STEPS = [
+    { id: 'rmrf', goal: 'x', files: ['a.ts'], depends_on: [], verify: 'rm -rf build && npm test' },
+    { id: 'pub', goal: 'x', files: ['b.ts'], depends_on: [], verify: 'npm publish' },
+    { id: 'reach', goal: 'x', files: ['c.ts'], depends_on: [], verify: 'curl https://example.com/deploy' },
+    { id: 'data', goal: 'x', files: ['d.ts'], depends_on: [], verify: 'npm run db:migrate' },
+    { id: 'shell', goal: 'x', files: ['e.ts'], depends_on: [], verify: 'cd build && ./configure | tee log' },
+    { id: 'mystery', goal: 'x', files: ['f.ts'], depends_on: [], verify: 'x' },
+  ]
+  const linted = await run({ dryRun: true, steps: LINT_STEPS })
+  const lintOf = (id, needle) => linted.schedule.warnings.filter((w) => w.startsWith(`${id}'s verify command`) && w.includes(needle))
+  // One warning per dangerous step, naming the category it matched AND the command, so the developer
+  // approving the plan reads the thing itself rather than a verdict about it.
+  check('a destructive command is flagged, with its category and itself',
+    lintOf('rmrf', 'destructive filesystem/git').map((w) => w.includes('"rm -rf build && npm test"')), [true])
+  check('a publishing one is flagged', lintOf('pub', 'publish/deploy').length, 1)
+  check('one that reaches out is flagged', lintOf('reach', 'external service').length, 1)
+  // The head is `npm run`, a declared script — the denylist reads the whole command and its segments
+  // precisely so a project runner cannot hide what it was pointed at.
+  check('a declared script that migrates data is flagged behind its head',
+    lintOf('data', 'data migration').length, 1)
+  // ...and the categories stay tellable apart: four dangerous steps, four warnings, no cross-firing.
+  check('four dangerous steps, four warnings',
+    linted.schedule.warnings.filter((w) => w.includes('denylist')).length, 4)
+
+  // A shell program rather than a call to one — three segments here, and a pipe.
+  check('a synthesized pipeline is flagged, and points at a declared script',
+    lintOf('shell', 'shell program').map((w) => w.includes('npm run target')), [true])
+  check('and only that step', linted.schedule.warnings.filter((w) => w.includes('shell program')).length, 1)
+
+  // The third category is ONE line for the whole projection, and it is not a safety verdict: it names
+  // what nobody recognized, shows it, and says the run proceeds anyway.
+  const unrecognized = linted.schedule.warnings.filter((w) => w.includes('no recognized project runner'))
+  check('unrecognized commands are one aggregated line', unrecognized.length, 1)
+  check('  └─ naming every step whose command nothing recognized',
+    ['reach', 'shell', 'mystery'].map((id) => unrecognized[0].includes(`${id} (`)), [true, true, true])
+  check('  └─ and no step whose head IS a runner',
+    ['rmrf', 'pub', 'data'].some((id) => unrecognized[0].includes(`${id} (`)), false)
+  check('  └─ it says the run proceeds, not that anything is unsafe',
+    [unrecognized[0].includes('PROCEEDS'), /unsafe|dangerous/.test(unrecognized[0])], [true, false])
+
+  // The false-positive guard, and the reason the lint reads each step's OWN command: the checkpoint's
+  // joined command is five &&-chained calls, which the pipeline heuristic would flag on sight. A plan
+  // of ordinary npm commands must be silent end to end.
+  check('the joined checkpoint command is never linted, only each step\'s own',
+    [w2.checkpoint.verify_command.split(' && ').length,
+      schedule.warnings.filter((w) => w.includes('denylist') || w.includes('shell program') || w.includes('no recognized project runner'))],
+    [5, []])
+
   // Coverage of the spec's acceptance criteria — the same projection, still at zero agents, so the
   // developer sees an invented id or an unclaimed criterion before approving rather than after the
   // run. `b` and `c` both cover AC-01 on purpose: more than one step per criterion is legal.

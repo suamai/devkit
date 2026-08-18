@@ -539,6 +539,39 @@ ${s.id}: ${s.goal || s.title || ''}
 Return only the verify_run object: raw data for an orchestrator, not prose for a human.`
 }
 
+// The OTHER empty reply, and a different failure entirely: the implementer came back with nothing at
+// all. What is missing is only the RESULT — its code and its notes are usually already in the tree —
+// so the serialization is what gets retried and never the implementation. A second implPrompt would
+// spend the pipeline's most expensive role on a tree the first attempt may already have half-edited,
+// and nothing here can tell which half that was. This agent therefore reads and reports, full stop.
+function resultRetryPrompt(s, expectedNotesPath) {
+  const declaredCheck = s.verify ? `Its declared check was \`${s.verify}\` — that it was DECLARED is not evidence it ran.` : 'The step declared no check.'
+  const diffHint = args.baseline
+    ? `\`git diff ${args.baseline} -- <file>\` for the declared files, plus \`git status --porcelain\` for anything else it touched`
+    : '`git status --porcelain` and `git diff` over the declared files'
+  return `An implementer finished a step and produced NO structured result. The result is the only thing missing: its code and its notes are probably already in the working tree. Reconstruct the report from what is there — that is the whole job.
+
+## The step
+${s.id}: ${s.goal || s.title || ''}
+Declared files: ${(s.files || []).join(', ') || 'undeclared'}
+${declaredCheck}
+
+## What you may and may not do
+- You may NOT implement anything: not the step, not a missing piece of it, not a fix for something you find broken. If the step landed half-done, report it half-done — that is the useful answer.
+- You may NOT edit any tracked file: not source, not tests, not config, not the notes. This is a read.
+- Read the notes at "${expectedNotesPath}" if it exists, and list the workspace's notes directory as well: \`notes_path\` is normally self-reported, so that path is a convention and not a promise — the implementer may have written elsewhere, or under another name.
+- Read what actually changed: ${diffHint}.
+
+## Reconstructing the result
+- \`changed_files\` is what the diff shows, never what the plan asked for.
+- \`summary\` says what landed, and says where the tree left you unsure.
+- \`notes_path\` is the file you actually found; omit it when there is none.
+- \`verify_run.ran\` is FALSE unless the notes or the diff show a command that was actually RUN and what it reported. A command you can see in the plan, or one you believe would pass, is not evidence that anything ran: return \`ran: false\` with a \`not_ran_reason\` naming that absence. You may not run it yourself.
+- \`concerns\` and \`deviations\` only where the notes or the diff state them. Do not invent the implementer's doubts, and do not add review findings of your own — a reviewer runs later, at the checkpoint.
+
+Return the result object only: raw data for an orchestrator, not prose for a human.`
+}
+
 // Steps in the same batch run concurrently (parallel(), up to maxParallelSteps) because their FILES
 // are disjoint — that guarantee says nothing about infra. If two siblings each hit an evidenced
 // infra-error on their first attempt (one registry outage does this to every step that needs it),
@@ -582,6 +615,32 @@ async function runStep(s, batch, depth, ctx) {
   if (brief.too_big && depth >= MAX_SPLIT_DEPTH) log(`step ${s.id} flagged too_big at max split depth — implementing as-is`)
 
   let impl = await agent(implPrompt(s, brief, batch, ctx), { label: `impl:${s.id}`, phase: 'Implement', ...ROLE.impl, schema: IMPL_SCHEMA })
+  // An implementer that returned NOTHING is not an implementer that failed: the work is usually in
+  // the tree and only the report was lost. So the serialization gets exactly one cheap, non-editing
+  // re-run — same budget floor as the infra re-run above, and at the same cheap tier, because it
+  // reads a diff rather than writing code. If that also comes back empty the step is reported
+  // unavailable exactly as before, plus the mark saying the retry already happened: the orchestrator
+  // has its own read-only recovery for this, and it must not pay for the same attempt twice.
+  let resultRecovered = false
+  let resultRetryAttempted = false
+  if (!impl) {
+    if (budget.total && budget.remaining() < 20000) {
+      log(`token budget floor reached — not re-serializing step ${s.id}'s missing result`)
+    } else {
+      log(`step ${s.id}'s implementer returned no structured result — one cheap non-editing attempt to re-serialize it from the tree`)
+      const rescued = await agent(resultRetryPrompt(s, `${workspace}/notes/${s.id}.md`), {
+        label: `result:${s.id}`, phase: 'Implement', ...ROLE.verify, schema: IMPL_SCHEMA,
+      })
+      resultRetryAttempted = true
+      if (rescued) {
+        impl = rescued
+        resultRecovered = true
+        log(`step ${s.id}'s result was reconstructed from the tree — it travels as recovered, not as the implementer's own report`)
+      } else {
+        log(`step ${s.id}'s re-serialization agent was unavailable too — the step is reported without a result`)
+      }
+    }
+  }
   if (!impl) {
     return {
       step: s.id,
@@ -590,6 +649,9 @@ async function runStep(s, batch, depth, ctx) {
       stage: 'implement-result-unavailable',
       expected_notes_path: `${workspace}/notes/${s.id}.md`,
       failure_kind: 'requires-journal-classification',
+      // Only when the attempt was actually PAID FOR. A budget floor that skipped it must not tell the
+      // orchestrator the retry happened, or its own recovery reads as already spent.
+      result_retry_attempted: resultRetryAttempted || undefined,
     }
   }
 
@@ -668,6 +730,9 @@ async function runStep(s, batch, depth, ctx) {
     step: s.id, title: s.title, brief_path: brief.brief_path, impl,
     failed: status === 'failed', stage: status === 'failed' ? 'verify' : undefined,
     status, kind: kind || undefined, attempts,
+    // One field, one meaning: this structured result was RECONSTRUCTED, not returned by the
+    // implementer. The orchestrator's own read-only recovery marks its output the same way.
+    result_recovered: resultRecovered || undefined,
     verify_command: verifyCommand || undefined,
     weak_evidence: weakEvidence || undefined,
     infra_error: infraError || undefined,
@@ -746,6 +811,60 @@ function verifyCommandFor(steps) {
   const commands = (steps || []).map((s) => (s && typeof s.verify === 'string' ? s.verify.trim() : '')).filter(Boolean)
   const unique = [...new Set(commands)]
   return unique.length ? unique.join(' && ') : null
+}
+
+// The verify-command lint: three judgements about ONE step's own `verify` string, as a pure function
+// over it. It is never run over verifyCommandFor()'s output above — that joins every covered step's
+// command with ' && ', so the "this is a shell program, not a call" heuristic below would fire on
+// every checkpoint covering three steps, which is most of them. Per step, or not at all.
+//
+// A DENYLIST, never an allowlist. An allowlist has to warn about everything it cannot prove safe, and
+// in a repo this script has never seen that is everything — the fragile allow-list that is worse than
+// nothing, because a warning on every plan is a warning nobody reads. This is a lint and a prompt for
+// a human, not a sandbox: it names what it recognizes, and the run proceeds either way.
+const VERIFY_SEPARATORS = /&&|\|\||[;|]/
+// Every operator EXCEPT `&&`, which is the one shape a legitimate check has (run this, then that).
+// \u0060 is a backtick — written escaped so the character never appears raw in this file.
+const VERIFY_OPERATORS = /[;|>\u0060]|\$\(/
+const VERIFY_RUNNERS = ['npm', 'pnpm', 'yarn', 'bun', 'npx', 'make', 'cargo', 'go', 'python', 'python3', 'pytest', 'tox', 'poetry', 'uv', 'node', 'deno', 'sh', 'bash', 'just', 'task', 'mvn', 'gradle', 'dotnet', 'rake', 'bundle', 'composer', 'php', 'ruby', 'jest', 'vitest']
+const DANGEROUS_VERIFY = [
+  ['destructive filesystem/git', [/\brm\s+-[a-zA-Z]*r/, /\bgit\s+reset\b[^\n]*--hard\b/, /\bgit\s+clean\b[^\n]*\s-[a-zA-Z]*f/, /\bgit\s+checkout\s+--(\s|$)/, /\bgit\s+branch\b[^\n]*\s-D\b/, /\bchmod\s+-[a-zA-Z]*R/, /\bdd\s+if=/, /\btruncate\b/, /\bfind\b[^\n]*\s-delete\b/]],
+  ['publish/deploy', [/\b(npm|pnpm|yarn|cargo)\s+publish\b/, /\bgit\s+push\b/, /\bdocker\s+push\b/, /\bkubectl\s+(apply|delete)\b/, /\bterraform\s+(apply|destroy)\b/, /\bhelm\s+(upgrade|install)\b/, /\b(serverless|vercel|netlify|fly)\s+deploy\b/, /\bgh\s+release\s+create\b/]],
+  ['data migration', [/\bmigrate\b/, /\balembic\s+upgrade\b/, /\bflyway\b/]],
+  // Bare tool names are anchored at the START of a segment, where they can only be the command being
+  // run: `nc` and `az` are two letters, and `\bnc\b` alone would fire on `node tests/nc.test.js`. A
+  // URL needs no anchor — it is a destination wherever it appears in the line.
+  ['external service', [/^(curl|wget|ssh|scp|nc|aws|gcloud|az)\b/, /https?:\/\//]],
+]
+// The head of a segment: the first token that is not a leading `VAR=value` assignment, with any
+// directory stripped, so `./scripts/ci.sh` is judged as `ci.sh` and `sh scripts/ci.sh` as `sh`.
+function verifyHead(segment) {
+  const tokens = segment.split(/\s+/).filter(Boolean)
+  let i = 0
+  while (i < tokens.length && /^[A-Za-z_][A-Za-z0-9_]*=/.test(tokens[i])) i++
+  const token = tokens[i] || ''
+  return token.slice(token.lastIndexOf('/') + 1)
+}
+function lintVerifyCommand(command) {
+  const trimmed = typeof command === 'string' ? command.trim() : ''
+  if (!trimmed) return null
+  const segments = trimmed.split(VERIFY_SEPARATORS).map((x) => x.trim()).filter(Boolean)
+  // Matched over the whole command AND over each segment, so `npm run db:migrate` is caught even
+  // though its head is a declared script — the head is what the plan shows, not what it does.
+  const surfaces = [trimmed, ...segments]
+  const categories = DANGEROUS_VERIFY
+    .filter(([, patterns]) => patterns.some((re) => surfaces.some((text) => re.test(text))))
+    .map(([name]) => name)
+  return {
+    command: trimmed,
+    categories,
+    // A shell PROGRAM rather than a call to one. Two &&-joined commands is a check; three, or any
+    // other operator, is a script that lives nowhere and that nobody can run by hand the same way.
+    pipeline: segments.length >= 3 || VERIFY_OPERATORS.test(trimmed),
+    // Not a judgement, and never treated as one: nothing here recognized ANY head as a project
+    // runner, which is worth one look and nothing more.
+    unrecognized: !segments.some((seg) => VERIFY_RUNNERS.includes(verifyHead(seg))),
+  }
 }
 
 // The gate is deliberately NOT a review: it answers one question — is the surface the pending steps
@@ -908,9 +1027,24 @@ function projectSchedule() {
       if (!disjoint(a, b)) warnings.push(`wave ${i + 1}: ${a.id} and ${b.id} declare overlapping files and no dependency, so they run sequentially anyway`)
     }
   }
+  // Steps whose command nobody here recognizes are collected and reported ONCE, at the bottom: it is
+  // the one category that says nothing is wrong, and one line per step would drown the two that do.
+  const unrecognizedVerify = []
   for (const s of todoSteps) {
     if (!(s.files || []).length) warnings.push(`${s.id} declares no files: it can never run in parallel, and rule matching has nothing to match`)
     if (!s.verify) warnings.push(`${s.id} has no verify command: it can only ever come back unverified`)
+    const lint = lintVerifyCommand(s.verify)
+    if (!lint) continue
+    if (lint.categories.length) {
+      warnings.push(`${s.id}'s verify command matches the ${lint.categories.join(' and ')} denylist: "${lint.command}". A step's check runs unattended, once per attempt and again at every checkpoint that covers the step, so whatever it does besides checking, it does every time. Approve it only if that is what you meant — this is a lint, not a block.`)
+    }
+    if (lint.pipeline) {
+      warnings.push(`${s.id}'s verify command is a shell program rather than a call: "${lint.command}". Prefer a project-declared script — an npm run target, a Makefile target, a committed script — so the check is the same one a developer runs by hand, and lives somewhere it can be fixed.`)
+    }
+    if (lint.unrecognized) unrecognizedVerify.push(`${s.id} (${lint.command})`)
+  }
+  if (unrecognizedVerify.length) {
+    warnings.push(`no recognized project runner in the verify command of ${unrecognizedVerify.join(', ')}. Nothing is wrong with them — this list is not a safety verdict: the run PROCEEDS, and the commands are shown here so a plan that invented one is seen before an implementer is spent on it.`)
   }
   // One command shared by several steps cannot be per-step evidence for each of them: whichever step
   // runs first makes it green, and every later step's "verified" is then a suite that was already
@@ -1449,12 +1583,14 @@ const gates = {
   // shape's real reason, so `scope` staying `within-plan` there is not a missed block, it is the
   // honest answer to the one question this gate asks.
   //
-  // The design named a SIXTH blocked trigger for this gate — a stale plan — and it is deliberately
-  // not implemented rather than stubbed: nothing in this script's reach represents plan staleness
-  // (no filesystem, no git, no clock), so the branch would have nothing behind it. IDEAS.md #13
-  // (the plan-freshness gate) would ship `planned_at_sha`, which is the field that makes it
-  // computable, and this expression is where its branch goes. docs/architecture.md carries the full
-  // statement — do not invent an argument no caller passes in the meantime.
+  // The design named a SIXTH blocked trigger for this gate — a stale plan — and it stays deliberately
+  // unimplemented, now as a scope line rather than a missing field. `planned_at_sha` EXISTS: it is in
+  // the workspace's `plan_freshness` block, written by /dev-plan at handoff and read by
+  // /dev-implement's preflight — which blocks BEFORE any agent runs, and is why the gate was not
+  // wired here at all: a verdict computed after the fact is strictly the more expensive half. What
+  // this expression still cannot see is a plan going stale MID-run, because no caller passes a
+  // staleness argument and the script has no filesystem, no git and no clock of its own.
+  // docs/architecture.md carries the same statement — do not invent an argument no caller passes.
   scope: unreviewedWaves.length || pendingStepIds.length ? 'incomplete' : 'within-plan',
 }
 const blocking = gates.acceptance === 'failed' || gates.tests === 'failed'

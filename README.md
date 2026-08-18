@@ -16,6 +16,7 @@ A multi-agent development pipeline for Claude Code, packaged as a plugin.
 /dev-status    →  what's running, what's stale, cleanup
                   (archive <slug> keeps the numbers; --calibration reads them back)
 /dev-setup     →  configure a repo to use all of the above
+                  (--check diagnoses an already-configured repo read-only, writing nothing)
 ```
 
 Read `docs/manual.md` to use it, `docs/architecture.md` to change it — including what was

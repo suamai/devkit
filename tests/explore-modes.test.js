@@ -7,9 +7,12 @@ const path = require('path')
 const SRC = fs.readFileSync(path.join(__dirname, '..', 'workflows', 'wf-explore-plan.js'), 'utf8')
   .replace(/^export const meta/m, 'const meta')
 
-function run(args, replies) {
+function run(args, replies, spy) {
   const calls = []
   const logs = []
+  // A rejected run resolves to nothing, so a case whose assertion IS the throw needs the labels by
+  // reference. Same array the resolved value carries — no second bookkeeping path to drift.
+  if (spy) spy.calls = calls
   const agent = async (prompt, opts) => {
     calls.push(opts.label)
     const key = Object.keys(replies).find((k) => opts.label.startsWith(k))
@@ -40,10 +43,12 @@ const EXPLAIN = {
 }
 
 let failed = 0
+let cases = 0
 function check(name, actual, expected) {
   const a = JSON.stringify(actual)
   const e = JSON.stringify(expected)
   const ok = a === e
+  cases++
   if (!ok) failed++
   console.log(`${ok ? 'PASS' : 'FAIL'}  ${name.padEnd(52)} ${a}`)
   if (!ok) console.log(`      expected ${e}`)
@@ -90,6 +95,10 @@ async function main() {
   })
   check('only the uncovered angle is scouted', partial.calls.filter((c) => c.startsWith('scout:')), ['scout:storage'])
   check('old and new findings merge', partial.result.findings.map((f) => f.angle), ['behavior', 'callers', 'storage'])
+  // A reused finding keeps the path an earlier run wrote (this run never touches that file); a fresh
+  // one carries the path THIS run dispatched its scout to.
+  check('reused and fresh findings both carry a path', partial.result.findings.map((f) => f.report_path),
+    [`${WS}/findings/behavior.md`, `${WS}/findings/callers.md`, `${WS}/findings/storage.md`])
 
   // The decomposer must be told what is already on disk, or "propose only new angles" is unanswerable.
   let sawPriors = false
@@ -99,6 +108,82 @@ async function main() {
     synthesize: PLAN,
   })
   check('the decomposer is shown the priors', sawPriors, true)
+
+  // --- Angle dispatch. An angle's `name` is the FILENAME its scout writes its report to, so two
+  // scouts sharing a name share a file and the second overwrites the first. Not hypothetical: this
+  // workflow's own planning run passed `angles` as an array of strings, every `a.name` read back
+  // `undefined`, and five scouts wrote to one findings/undefined.md.
+  const dispatchedIn = (prompts) => prompts.map((p) => (p.match(/as markdown to "([^"]+)"/) || [])[1])
+
+  const fromStrings = []
+  const strings = await run({ ...BASE, angles: ['How the limiter is wired', 'who calls it?'] }, {
+    // No `decompose` reply on purpose: an unlisted label throws in this harness, so the run
+    // completing at all is the proof that caller-supplied angles skip the decomposer.
+    'scout:': (p) => { fromStrings.push(p); return scoutOf('x') },
+    'validate:batch': VALIDATION,
+    synthesize: PLAN,
+  })
+  check('a string angle is slugged into its own file', dispatchedIn(fromStrings),
+    [`${WS}/findings/how-the-limiter-is-wired.md`, `${WS}/findings/who-calls-it.md`])
+  check('  …and never the shared undefined.md', dispatchedIn(fromStrings).some((p) => /undefined/.test(p)), false)
+  // The string is the FOCUS; the slug is only a filename. Losing that turns the scout's assignment
+  // into its own kebab-cased label.
+  check('  …with the string kept verbatim as the focus', /\nFocus: How the limiter is wired\n/.test(fromStrings[0]), true)
+  check('  …and both scouts still dispatched', strings.calls.filter((c) => c.startsWith('scout:')).length, 2)
+
+  const dupes = []
+  await run({ ...BASE, angles: [{ name: 'a', focus: 'x', why: 'w' }, { name: 'a', focus: 'y', why: 'w' }] }, {
+    'scout:': (p) => { dupes.push(p); return scoutOf('a') },
+    'validate:batch': VALIDATION,
+    synthesize: PLAN,
+  })
+  check('two angles named the same get two files', dispatchedIn(dupes), [`${WS}/findings/a.md`, `${WS}/findings/a-2.md`])
+
+  // The decomposer can collide two names exactly like a caller can, so the same normalization has to
+  // cover both branches — fixing only the caller's path leaves the clobbering reachable.
+  const decomposed = []
+  await run(BASE, {
+    decompose: { angles: [{ name: 'dup', focus: 'first', why: 'w' }, { name: 'dup', focus: 'second', why: 'w' }] },
+    'scout:': (p) => { decomposed.push(p); return scoutOf('dup') },
+    'validate:batch': VALIDATION,
+    synthesize: PLAN,
+  })
+  check('and so do two the decomposer named the same', dispatchedIn(decomposed), [`${WS}/findings/dup.md`, `${WS}/findings/dup-2.md`])
+
+  // A malformed angle throws, and throwing costs nothing: caller-supplied angles skip the
+  // decomposer, so nothing has been spawned yet. Guessing the missing half would fabricate the
+  // scout's assignment instead — which is why this is a throw and not a warning.
+  const rejects = async (angles) => {
+    const spy = {}
+    try {
+      await run({ ...BASE, angles }, { ...fullSweep, synthesize: PLAN }, spy)
+      return { message: null, calls: spy.calls }
+    } catch (e) { return { message: e.message, calls: spy.calls } }
+  }
+  const nameless = await rejects([{ focus: 'x' }])
+  check('an angle with no name throws, naming the index', /angles\[0\]/.test(nameless.message || ''), true)
+  check('  …at zero agents', nameless.calls, [])
+  const notArray = await rejects('behavior, callers')
+  check('a non-array angles arg throws', /args\.angles must be an array/.test(notArray.message || ''), true)
+  check('  …also at zero agents', notArray.calls, [])
+
+  // A malformed-but-FALSY angles value (e.g. `{}` — an object literal, so truthy, but `.length` is
+  // undefined, which is falsy) must still be rejected here rather than silently routed into the paid
+  // decompose branch by the pre-existing `!angles || !angles.length` shortcut.
+  const falsyMalformed = await rejects({})
+  check('a falsy non-array angles arg throws too', /args\.angles must be an array/.test(falsyMalformed.message || ''), true)
+  check('  …also at zero agents', falsyMalformed.calls, [])
+
+  // The returned path is the one the SCRIPT dispatched, never the scout's self-report — that field
+  // is exactly how findings/undefined.md propagated into the caller's `findings` array.
+  const drift = await run({ ...BASE, angles: ['storage'] }, {
+    'scout:': { ...scoutOf('storage'), report_path: '/somewhere/else.md' },
+    'validate:batch': VALIDATION,
+    synthesize: PLAN,
+  })
+  check('findings carry the dispatched path', drift.result.findings.map((f) => f.report_path), [`${WS}/findings/storage.md`])
+  check('  …and so does finding_reports', drift.result.finding_reports, [`${WS}/findings/storage.md`])
+  check('  …with the divergence logged, not thrown', drift.logs.some((l) => l.includes('/somewhere/else.md')), true)
 
   // --- Default mode is unchanged: no mode arg means a plan, as before.
   const plain = await run(BASE, { ...fullSweep, synthesize: PLAN })
@@ -171,7 +256,7 @@ async function main() {
   check('  …and it fails when the field disappears',
     stepShapeOf(SRC.replace(/\n( {10})covers: \{/, '\n$1coversRenamed: {')).props.includes('covers'), false)
 
-  console.log(failed ? `\n${failed} FAILED` : `\nall ${28} cases pass`)
+  console.log(failed ? `\n${failed} FAILED` : `\nall ${cases} cases pass`)
   process.exit(failed ? 1 : 0)
 }
 

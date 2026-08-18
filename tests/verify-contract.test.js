@@ -197,6 +197,37 @@ async function main() {
   check('the implementer is asked the baseline question',
     String(noKind.prompts['impl:s1']).includes(BASELINE_QUESTION), true)
 
+  // ---- (i) An implementer that came back with NOTHING is a different failure from one that failed:
+  // the code and the notes are usually in the tree and only the report was lost. So the run buys
+  // exactly ONE cheap re-serialization — never a second implementation, which would duplicate work on
+  // a tree the first attempt may already have half-edited.
+  const noResult = await run({ 'impl:s1': null, 'result:s1': null })
+  const noResultStep = reportFor(noResult.result, 's1')
+  check('an empty implementer reply buys exactly one re-serialization', noResult.calls, ['impl:s1', 'result:s1'])
+  check('  └─ and when that comes back empty too, the step is unavailable',
+    [noResultStep.failed, noResultStep.stage, noResultStep.result_retry_attempted],
+    [true, 'implement-result-unavailable', true])
+  // The mark is what stops the orchestrator's own read-only recovery from paying for this attempt a
+  // second time; the classification it still has to make is named next to it, unchanged.
+  check('  └─ with the classification the orchestrator still owes',
+    [noResultStep.failure_kind, noResultStep.expected_notes_path],
+    ['requires-journal-classification', '/w/notes/s1.md'])
+  const rescuePrompt = String(noResult.prompts['result:s1'])
+  check('  └─ and the retry may neither implement nor edit',
+    [rescuePrompt.includes('may NOT implement anything'), rescuePrompt.includes('may NOT edit any tracked file'),
+      rescuePrompt.includes('/w/notes/s1.md')], [true, true, true])
+
+  // ---- (j) The point of that retry: it can rescue the report, and the run carries on — with the
+  // result marked as reconstructed rather than passed off as the implementer's own.
+  const recovered = await run({ 'impl:s1': null, 'result:s1': implReply('s1', OK('node tests/a.test.js', 'new-test')) })
+  const recoveredStep = reportFor(recovered.result, 's1')
+  check('a rescued result continues the run', recovered.calls, ['impl:s1', 'result:s1', 'impl:s2', 'consistency-check'])
+  check('  └─ marked reconstructed, and judged like any other report',
+    [recoveredStep.result_recovered, recoveredStep.status, recoveredStep.failed, recoveredStep.unverified],
+    [true, 'passed', false, false])
+  check('  └─ and a step whose implementer answered carries no such mark',
+    reportFor(recovered.result, 's2').result_recovered === undefined, true)
+
   console.log(failed ? `\n${failed} FAILED` : `\nall ${cases} cases pass`)
   process.exit(failed ? 1 : 0)
 }
