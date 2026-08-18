@@ -232,7 +232,7 @@ rules directory, or a frozen-install file that is not there — and it is never 
 
 8. **Stale workspaces.** Glob `.dev/*/state.json` and flag any workspace at stage `implementing`
    with no running workflow task, or with an `updated` older than about 24h — the rule `/dev-status`
-   applies (`skills/dev-status/SKILL.md:58`) and the one `hooks/session-start-stale-flows.sh` prints
+   applies (`skills/dev-status/SKILL.md:64`) and the one `hooks/session-start-stale-flows.sh` prints
    at session start. A workspace carrying `archived` is finished on purpose and is never stale. Say
    what continues one (`/dev-implement <slug>`) and what clears it (`/dev-status clean <slug>`), and
    that `/dev-implement` treats a stale workspace as a concurrency lock — that is why a forgotten one

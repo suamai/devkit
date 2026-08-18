@@ -91,7 +91,10 @@ tell a merged flow's now-removed worktree from one still at risk.
    `git worktree prune` to clear — reproduced. If the worktree still holds uncommitted changes the
    command exits 3 and removes nothing: that is a decision surfacing, not a fault. Show git's own
    refusal, and append `--force` only after the developer says that uncommitted work is expendable —
-   never on your own initiative, and never as a retry. Skip this step entirely when there is no
+   never on your own initiative, and never as a retry. Exit 2 ("no worktree is registered…") means
+   it was already removed — most often via this same command, already offered and taken at the end
+   of the isolated run itself (`state.json`'s `worktree` key is not cleared by that) — treat it as
+   already done and continue to step 4, not as a fault. Skip this step entirely when there is no
    `worktree` key; it is the only thing that makes an isolated flow's cleanup different.
 4. Delete the workspace directory and report. Its state file lives inside it, so nothing else needs
    unlinking. If a worktree was removed, name the branch that survived it and give
@@ -127,7 +130,9 @@ space and keeps `state.json`, so the compact `runs` summaries of what that task 
    ```
    Its exit 3 on an uncommitted worktree, and the `--force` that answers it, work exactly as under
    `clean` — step 1 already said what that costs, so this is where the developer confirms it against
-   git's own message rather than against a warning. Then delete the rest:
+   git's own message rather than against a warning. Its exit 2 ("no worktree is registered…") also
+   works exactly as under `clean`: the worktree was already removed, treat it as already done and
+   continue. Then delete the rest:
    ```bash
    find ".dev/<slug>" -mindepth 1 -maxdepth 1 ! -name state.json -exec rm -rf {} +
    ```

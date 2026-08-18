@@ -152,7 +152,7 @@ setup)
   [ ! -e "$path" ] ||
     die "\"$path\" already exists — remove it first (worktree.sh remove $slug), or use a different slug; nothing created" 2
 
-  mkdir -p "$root/.dev/$slug" || die "cannot create $root/.dev/$slug — nothing created" 1
+  mkdir -p "$root/.dev/$slug" || die "cannot create $root/.dev/$slug — nothing created" 2
 
   # The measurement brackets exactly the git call and nothing else, so `worktree_setup_ms` is the
   # cost of the isolation and not the cost of this script's guards.

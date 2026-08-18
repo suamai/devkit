@@ -59,9 +59,15 @@ You orchestrate the implementation phase of a planned dev task. The heavy liftin
    `dev` pair is an ordinary layout, not an exotic one, so check before you create: if
    `git show-ref --verify --quiet refs/heads/dev` succeeds, the prefixed name is impossible. Use the
    flat `<slug>-iso` instead — the same name `scripts/worktree.sh` defaults to, so one slug reads the
-   same whichever path created it — and say in one line which name you used and why. Never retry the
-   failing command, and never silently implement onto the default branch because the branch step
-   failed: that is how the change ends up committed somewhere nobody chose.
+   same whichever path created it. Check that name too before creating it: an earlier `--isolated` run
+   for this same slug can have left branch `<slug>-iso` behind on its own (`worktree.sh remove` keeps
+   the branch by design), and `git checkout -b` would fail on it exactly as it just did on
+   `dev/<slug>`. If `git show-ref --verify --quiet refs/heads/<slug>-iso` succeeds, say so and stop —
+   ask the developer for a branch name rather than inventing a third one yourself, the same way
+   `worktree.sh`'s own conflict messages ask rather than guess. Otherwise say in one line which name
+   you used and why. Never retry the failing command, and never silently implement onto the default
+   branch because the branch step failed: that is how the change ends up committed somewhere nobody
+   chose.
 
    **Under `--isolated`, and only then, this preflight branches.** Everything above still happens
    except one line, and the order matters: capture the baseline **first**, from the primary checkout,
@@ -314,7 +320,9 @@ You orchestrate the implementation phase of a planned dev task. The heavy liftin
        `notes_path` is normally self-reported, so the expected path is a convention and not a promise.
        (b) The result schema field by field: `summary`, `changed_files`, `notes_path`, `verify_run`
        (`ran`, `command`, `passed`, `kind`, `not_ran_reason`), `deviations`, `concerns`. (c) The
-       step's declared `files`. (d) `git diff <baseline> -- <files>`. It reconstructs the structured
+       step's declared `files`. (d) `git diff <baseline> -- <files>` — and on an isolated run,
+       `git -C "<root>" diff <baseline> -- <files>` instead: the code lives in the worktree, not the
+       primary checkout. It reconstructs the structured
        result and nothing else: no edits, no implementation, and **no verification the notes or
        `journal.jsonl` do not evidence** — with no command *and* no result recorded anywhere, it
        returns `ran: false` and a `not_ran_reason` naming that absence rather than a plausible pass.
@@ -357,7 +365,9 @@ You orchestrate the implementation phase of a planned dev task. The heavy liftin
    - `contractGates[].breaks` → gates that fired. High/critical ones already forced a checkpoint;
      low/medium ones were informational and the checkpoint review should have covered them — if one
      survived into `finalCheck.issues`, mention it, it means the gate is more accurate than the review.
-   - `finalCheck.issues` high/critical with `fixed: false` → fix inline or run `wf-review-loop` scoped to the affected files (pass the same `baseline`).
+   - `finalCheck.issues` high/critical with `fixed: false` → fix inline (on an isolated flow, `cd
+     "<root>"` first) or run `wf-review-loop` scoped to the affected files (pass the same `baseline`,
+     and on an isolated flow the same `root`).
    - `stoppedEarly: true` → **run the repo's own check yourself, here, before you report.** A stopped
      run leaves real code in the tree that nothing has executed as a whole, and "we stopped" is not an
      answer to "does what you left me still build?". One Bash call, zero agents. Take the command from

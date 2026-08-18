@@ -122,6 +122,12 @@ function costReport() {
 // at zero agents and zero tokens. So the arg gate has to let a projection through: it needs steps,
 // not a workspace. Without steps it stays the old smoke test.
 const dryRun = !!(args && args.dryRun)
+// Checked BEFORE the no-steps dryRun early return below, and deliberately duplicated further down
+// (at the `root` computed past the steps gate): a dryRun that answers `ok` for a `root` the real run
+// would throw on is worse than no check at all, and wf-review-loop.js validates ahead of its own
+// dryRun return for the same reason — the two scripts have to answer the same malformed input the
+// same way.
+if (args && args.root && !String(args.root).startsWith('/')) throw new Error('args.root must be an absolute path')
 if (!args) throw new Error('args is required')
 if (!dryRun && !args.workspace) throw new Error('args.workspace is required: absolute path to the task workspace')
 if (!args.steps || !args.steps.length) {

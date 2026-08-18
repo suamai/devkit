@@ -498,15 +498,18 @@ A git repo is a **prerequisite** for `/dev-implement`, `/dev-review`, and `/dev-
   presentation asks and you answer merge, cherry-pick, discard, or leave it as is. A successful merge
   or cherry-pick there also sets `worktree_integrated: true` in `state.json`, so `/dev-status` can
   tell a merged flow's since-removed worktree from one whose only copy is still on the branch.
-- `dev/<slug>` is only the **default** branch name, and `scripts/worktree.sh setup` refuses before
-  writing anything when it cannot be created — naming which of the two conflicts it hit, because they
-  need different answers. A branch `dev/<slug>` that already exists takes `dev/<slug>-iso`. A repo
-  whose **default branch is itself named `dev`** takes a flat name outside that prefix entirely
-  (`<slug>-iso`, no `dev/` prefix at all): `refs/heads/dev` is then a file, so git can create no ref
-  under `refs/heads/dev/` at all and `dev/<slug>-iso` fails identically to `dev/<slug>`. This
-  repository is that case, which is why the guard probes every path prefix of the intended name
-  rather than trusting `git check-ref-format`, which passes both. `state.json`'s `worktree_branch`
-  records the name that was actually used, so nothing downstream has to re-derive it.
+- `<slug>-iso` — flat, no `dev/` prefix — is the only **default** `scripts/worktree.sh setup` ever
+  tries; it never attempts a `dev/`-prefixed name on its own, for the ref-directory reason above. It
+  still refuses before writing anything when the name actually in play cannot be created — naming
+  which conflict it hit, because they need different answers. Even the flat default can collide: an
+  earlier isolated run for this slug left `<slug>-iso` behind, or the repo already had that branch,
+  and the message tells the caller to pass an explicit `[branch]` rather than guessing. That explicit
+  name is checked the same way: the guard probes every path prefix of the intended name rather than
+  trusting `git check-ref-format`, because a branch under an existing branch's name collides the same
+  way a `dev/<slug>` would on a repo whose default branch is itself named `dev` — this repository is
+  that case, which is why every alternative the script's own messages suggest is flat, never another
+  prefixed guess. `state.json`'s `worktree_branch` records the name that was actually used, so nothing
+  downstream has to re-derive it.
 - `/dev-pr` compares `base...HEAD` from the exact merge-base. A dirty tree can produce a body draft
   but blocks publication because those bytes are not in the proposed PR.
 - `/dev-review --from-report` requires `HEAD == reviewed_head`, a matching branch **and a clean
