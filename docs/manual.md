@@ -394,19 +394,55 @@ that check fails, one repair and one re-check).
 
 ## Installing, updating, and versions
 
-`sh scripts/install.sh` installs a frozen read-only copy of `HEAD` into `~/.claude/skills/devkit`,
-after running the suite. Update with `git pull` then the same script (`scripts/promote-plugin.sh` is
-the same install without the first-run checks — run it *between* plans, never during one). Restart
-Claude Code either way: skills and workflows register at session start.
+**Installing.** `claude plugin marketplace add suamai/devkit` then `claude plugin install
+devkit@devkit`, and restart — skills and workflows register at session start. Update with
+`claude plugin update devkit` and restart again. If instead you are *editing* devkit,
+`sh scripts/install.sh` installs a frozen read-only copy from a clone; the README explains why that
+route exists and why the two must not both be active at once.
 
-A repo cannot pin a plugin version — every project runs whatever is installed on its next session
-start — so `CHANGELOG.md` is the compatibility story. `/dev-setup` records
+**Putting a team on it.** Do not ask each person to type the install commands. Declare the
+marketplace in the *consuming* project — `claude plugin marketplace add suamai/devkit --scope
+project` and `claude plugin install devkit@devkit --scope project` — and commit the
+`.claude/settings.json` it writes. Whoever clones that project next is prompted to install:
+
+```json
+{
+  "extraKnownMarketplaces": {
+    "devkit": { "source": { "source": "github", "repo": "suamai/devkit" } }
+  },
+  "enabledPlugins": { "devkit@devkit": true },
+  "permissions": { "allow": ["Workflow"] }
+}
+```
+
+`"Workflow"` in `permissions.allow` is what spares everyone the permission prompt on every pipeline
+run. `/dev-setup` adds it per repo anyway; committing it means nobody has to. A private plugin repo
+is fine — installation clones over each person's own git credentials — but they need read access
+first, or they get a git error rather than a plugin one.
+
+**The one line not to commit.** `/dev-setup` offers a `SessionStart` hook and writes a *resolved
+absolute* path to the plugin into the project's settings. That path is correct on one machine and
+wrong on a teammate's. Under a marketplace install you do not need it at all: the plugin ships the
+same hook in its own `hooks/hooks.json`, written against `${CLAUDE_PLUGIN_ROOT}`, and it fires by
+itself. Let it, and decline that half of the step — `/dev-setup --check` will tell you which of the
+two is live, and registering both means the message prints twice.
+
+**What each person gets separately, and what is shared.** Everything the pipeline writes about a
+task — `.dev/<slug>/`, including `notes/` and `findings/` — is per-clone scratch and gitignored, so
+two people on the same repo never collide (two implements in *one* clone are still blocked, on
+purpose). The run ledger is per *developer*, at `~/.claude/devkit/runs.jsonl`, outside every repo.
+The one thing that is genuinely shared is `.claude/rules/*.md`: committed, diffable, and the only
+channel that teaches the pipeline something about your code. It is also the only artifact worth
+reviewing as a team.
+
+Because nothing under `.dev/` is shared, the reasoning behind an implementation does not travel with
+the branch. `/dev-pr`'s `pr.md` is the handoff that does.
+
+**Versions.** A repo cannot pin a plugin version — every project runs whatever is installed on its
+next session start — so `CHANGELOG.md` is the compatibility story. `/dev-setup` records
 `Configured against devkit <version>.` in your `CLAUDE.md`, and a later run compares that to the
 installed plugin and summarises the entries in between. The version moves on behavior changes only,
 never on prose.
-
-`/dev-setup` also offers a `SessionStart` hook that flags any workspace left at `implementing` — an
-implement run that did not finish. It prints nothing when there is nothing to say.
 
 ## Troubleshooting
 
@@ -427,6 +463,9 @@ implement run that did not finish. It prints nothing when there is nothing to sa
 | Working tree is dirty | Commit/stash/discard intentionally; `/dev-pr` will draft but not publish bytes absent from `HEAD` |
 | Flow stuck at `implementing` | `/dev-status` — if no task is running, mark it abandoned. With the `SessionStart` hook installed, sessions tell you at startup instead of waiting to be asked |
 | Two teammates, same repo | Fine — `.dev/` is per-clone. Two implements in *one* clone: blocked, on purpose |
+| Teammate installed the plugin, but has no `/dev-*` commands | Restart Claude Code — plugins register at session start. If they still miss, `claude plugin list` shows whether the install landed and under which marketplace |
+| Teammate cannot install it at all | The plugin repo is cloned with *their* git credentials. A git error here means repo access, not a plugin problem — add them to the repo first |
+| Both a marketplace install and `~/.claude/skills/devkit` exist | Two things claim the name `devkit`. Keep one: remove the copy with `chmod -R u+w ~/.claude/skills/devkit && rm -rf ~/.claude/skills/devkit`, or uninstall the marketplace one with `claude plugin uninstall devkit` |
 | Agents keep missing the same repo quirk | Nothing carries over between cycles. After an implement that found real problems, Claude offers to propose up to three edits to `.claude/rules/*.md` — accept them and every future agent touching those files reads it. You can also ask directly: "turn what we just learned into a rule" |
 
 ## Extending safely

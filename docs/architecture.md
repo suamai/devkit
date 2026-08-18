@@ -439,22 +439,32 @@ early-access gated, so those cases are written but unrun.
 The pipeline is a **Claude Code plugin**. Skills, workflows and these docs live in one place and
 every project sees the same version — there are no per-repo copies to drift.
 
-**Personal use (one developer, many repos).** `claude plugin init` scaffolds at
-`~/.claude/skills/<name>/`, which auto-loads next session as `<name>@skills-dir`. No marketplace, no
-install step: edit the plugin directory and every project picks the change up on restart. Keeping
-that directory in git (or symlinking it to a normal project checkout) gives version history without
-changing how it loads.
+**Two install routes, and the choice is about editing, not scale.** The marketplace route —
+`claude plugin marketplace add <repo>` then `claude plugin install <plugin>@<marketplace>` — is the
+normal one: it clones over the installer's own git credentials (so a private repo works for whoever
+has access), updates with a single command, and can be declared per project. The other route is a
+frozen copy under `~/.claude/skills/<name>/`, where `claude plugin init` scaffolds and what
+`scripts/install.sh` builds; it exists for whoever *edits* the plugin, because it decouples the tree
+being edited from the tree being loaded. Running both at once gives two things claiming the same
+plugin name, which is why leaving the develop route means deleting the copy.
 
-**Team use.** Publish the plugin from a git repo carrying `.claude-plugin/marketplace.json`, then
-have each project declare it in `.claude/settings.json` (`extraKnownMarketplaces` +
-`enabledPlugins`) so a teammate who clones the repo is prompted to install it. This is the one
-mechanic that genuinely changed with the plugin move: previously `.claude/` travelled inside the
-repo and a `git pull` was enough.
+**Team use** is the marketplace route plus one declaration in the consuming repo:
+`extraKnownMarketplaces` + `enabledPlugins` in its committed `.claude/settings.json`, so a teammate
+who clones is prompted to install. This is the one mechanic that genuinely changed with the plugin
+move: previously `.claude/` travelled inside the repo and a `git pull` was enough. What still does
+not travel is `.dev/` — per clone by design — so a team shares its rules and its PR bodies, and
+never its notes.
 
 **Per-repo setup** is what remains, and `/dev-setup` walks it: `.dev/*` in `.gitignore`, a pipeline
 pointer in `CLAUDE.md`, `"Workflow"` in the project's `permissions.allow`, and — the valuable one —
 `.claude/rules/*.md`. Under a plugin a repo cannot fork a prompt, so rules are the only place
 repo-specific knowledge can steer the agents. Treat them accordingly.
+
+All of that is worth committing except one line. The `SessionStart` hook is written with a
+**resolved absolute** plugin path, which is right for one machine and wrong for a teammate's — and
+under a marketplace install it is redundant anyway, because the plugin ships the same hook against
+`${CLAUDE_PLUGIN_ROOT}` in `hooks/hooks.json`. Let the plugin's copy fire and decline that half of
+the step; registering both prints the message twice.
 
 Onboarding notes worth stating once:
 

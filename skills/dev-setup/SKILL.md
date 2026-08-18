@@ -96,7 +96,11 @@ skipped and nothing in the repo is touched. See **Read-only check (--check)** be
    Write the **resolved absolute path** in place of `<plugin-root>` (expand `${CLAUDE_PLUGIN_ROOT}`
    yourself and paste the result) — that variable is plugin context, and a project settings file is
    not. The plugin also ships the same hook in `hooks/hooks.json` for installs that load plugin
-   hooks; if it is already firing, say so and skip this rather than registering it twice. Verify by
+   hooks; if it is already firing, say so and skip this rather than registering it twice. Under a
+   marketplace install that is the normal case, and preferring it is not merely tidier: the absolute
+   path you would write here is correct on this machine and wrong on a teammate's, while
+   `.claude/settings.json` is usually committed. So where you do write it, say plainly that it is the
+   one line of this checklist that should not be shared. Verify by
    running the script directly — it exits silently on a clean repo, so a silent run is a pass, and an
    error means the path is wrong.
 

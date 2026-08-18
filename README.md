@@ -54,14 +54,42 @@ Fan-out is the cheap part. The parts that carry their weight:
 
 ## Install
 
-Personal use, no marketplace needed — the plugin auto-loads from `~/.claude/skills/`:
+Two routes, and they are not interchangeable. Pick by whether you intend to *edit* devkit.
+
+### Use it — from the marketplace
+
+The normal route, and the only one that survives past one machine. This repo carries
+`.claude-plugin/marketplace.json`, so it **is** a marketplace:
+
+```bash
+claude plugin marketplace add suamai/devkit
+claude plugin install devkit@devkit
+```
+
+Restart Claude Code, then run `/dev-setup` inside any project. Update later with
+`claude plugin update devkit` and restart — no clone, no scripts, no re-running anything by hand.
+Both commands also exist in-session as `/plugin marketplace add …` and `/plugin install …`.
+
+Installation clones over the installer's **own git credentials**, so a private repo works for
+whoever has read access and fails for everyone else with a git error rather than a plugin one. Put
+teammates on the repo before pointing them here.
+
+To put a whole team on it, declare the marketplace in the *consuming* project instead of asking each
+person to type commands — `docs/manual.md` → "Installing, updating, and versions" has the
+`.claude/settings.json` block to commit, and the one line you must *not* commit.
+
+### Develop it — a frozen copy from a clone
+
+Only if you are changing devkit itself:
 
 ```bash
 git clone https://github.com/suamai/devkit.git ~/projects/devkit
 sh ~/projects/devkit/scripts/install.sh
 ```
 
-Restart Claude Code; it loads as `devkit@skills-dir`. Then run `/dev-setup` inside any project.
+Restart Claude Code; it loads as `devkit@skills-dir`. Update with `git pull` then re-run
+`install.sh` — or `scripts/promote-plugin.sh`, the same install without the first-run checks, which
+you run *between* plans and never during one.
 
 That installs a **frozen, read-only copy** of `HEAD`, not a symlink, and runs the suite before it
 will. A symlink is the obvious shortcut and it is wrong here, because this repo is also the thing
@@ -70,15 +98,17 @@ step that edits a workflow changes the workflow of the run editing it, and a run
 a designed outcome, not a crash — leaves the tooling half-edited for the next session. If you
 already have the symlink, `install.sh` replaces it.
 
-To update: `git pull`, then re-run `install.sh` (or `scripts/promote-plugin.sh`, which is the same
-install without the first-run checks — run it *between* plans, never during one). `CHANGELOG.md` says
-what changed since the version `/dev-setup` recorded in your project's `CLAUDE.md`.
+Also run `sh scripts/install-hooks.sh` — an opt-in `pre-commit` running the suite. It is never
+installed for you, and CI runs the same suite on every push. Before publishing a release,
+`claude plugin validate .` checks the manifests and `claude plugin tag` cuts a `devkit--v<version>`
+tag only if `plugin.json` and the marketplace entry agree.
 
-Editing devkit itself? Also run `sh scripts/install-hooks.sh` — an opt-in `pre-commit` running the
-suite. It is never installed for you, and CI runs the same suite on every push.
+Do not run both routes at once: a copy under `~/.claude/skills/devkit` and a marketplace install
+compete for the same `devkit` name. To leave the develop route, remove the copy — it is deliberately
+read-only, so `chmod -R u+w ~/.claude/skills/devkit && rm -rf ~/.claude/skills/devkit`.
 
-For a team, publish from a repo carrying `.claude-plugin/marketplace.json` and have each project
-declare `extraKnownMarketplaces` + `enabledPlugins` in its `.claude/settings.json`.
+`CHANGELOG.md` says what changed since the version `/dev-setup` recorded in your project's
+`CLAUDE.md`.
 
 ## Layout
 

@@ -29,10 +29,25 @@ Full rationale: `docs/architecture.md` → "Authoring a bespoke workflow" and "C
   individual agents inside a `parallel()`.
 - `workflow()` nests **one level only**. `wf-implement` already calls `wf-review-loop`, so as a child
   it needs `review: false`.
-- The three fenced shared blocks — `policy()`, the per-phase cost block, and the repo-rule matching
-  block — are **byte-identical across every script**, because a self-contained script cannot import a
-  helper. `tests/policy.test.js` and `tests/rules.test.js` fail when they drift, by design: editing
-  one copy means editing all of them in the same commit.
+- A self-contained script cannot import a helper, so several blocks are **byte-identical copies**,
+  each pinned by a test that fails on drift. Editing one copy means editing all of them in the same
+  commit. They are not all fenced and they do not all span the same files, so check before you edit:
+
+  | Copied | In | Pinned by | Sliced how |
+  |---|---|---|---|
+  | `policy()` | all 3 | `tests/policy.test.js` | by signature |
+  | `MODELS`, `EFFORTS`, `ROLE_NAMES`, `PROFILE_SHIFT` | all 3 | `tests/policy.test.js` | by line prefix |
+  | per-phase cost (`metered`/`costReport`) | all 3 | `tests/policy.test.js` | fenced |
+  | repo-rule matching, and its `GLOB_TOKENS`/`pathScope` primitives | implement + review-loop | `tests/rules.test.js` | fenced / by anchor |
+  | verify classification | implement + review-loop | `tests/verify-gate.test.js` | by anchor, per-file end |
+  | `root`, `GIT`, `RUN_FROM`, `ROOT_NOTE` | implement + review-loop | `tests/isolation.test.js` | by line prefix |
+
+  Two traps the table is meant to spare you. `policy()` is extracted by *signature*, so moving it is
+  free while editing its body or its constants is not — and the constants are a separate row because
+  `wf-implement` forwards `profile`/`models`/`efforts` into the nested `wf-review-loop`, which
+  re-validates against its own copy: a role added to one alone is accepted, then throws a wave later.
+  And the last three rows are absent from `wf-explore-plan.js` entirely, so "every script" is the
+  wrong mental model.
 - Parts of this file are read as **text** by the suite: a guard slices the region between two anchors
   (`const reviewBlocked =` → the next `\n  if (`, in `tests/schedule.test.js`; `  review: ` →
   `? 'blocked'`, in `tests/delivery-verdict.test.js`) and asserts what the slice mentions. A line
