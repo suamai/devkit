@@ -13,7 +13,7 @@ different artifact, a new gate — and never on prose that restates behavior alr
 
 ### Added
 - **`/dev-implement <slug> --isolated`: one whole flow in a git worktree of its own.** The flag
-  creates `.dev/<slug>/worktree` on branch `dev/<slug>`, branched explicitly from the baseline the
+  creates `.dev/<slug>/worktree` on branch `<slug>-iso`, branched explicitly from the baseline the
   preflight just captured, and runs the entire flow against it — implementers, contract gates, review
   checkpoints and the final consistency check all get that absolute path in their prompts, so every
   `git`, build and test command they issue names the worktree instead of your checkout. The primary
@@ -47,13 +47,20 @@ different artifact, a new gate — and never on prose that restates behavior alr
   workspace deliberately stays in the primary checkout so `/dev-status`, the lock glob and the hook
   keep seeing it. `state.json` gains `worktree` and `worktree_branch` as flat top-level strings.
 
-  `dev/<slug>` is only the default branch name, and `scripts/worktree.sh setup` refuses before
-  writing anything when that ref cannot be created, naming which conflict it hit: an existing
-  `dev/<slug>` takes `dev/<slug>-iso`, while a repo whose **default branch is itself named `dev`**
-  takes a flat name outside that prefix entirely (`<slug>-iso`, no `dev/` prefix), because
-  `refs/heads/dev` is then a file and git can create no ref under `refs/heads/dev/` at all. The
-  guard probes every path prefix of the intended branch name — `git check-ref-format` accepts both
-  cases and is no help here — and `state.json` records the branch that was actually used.
+  **The worktree branch is flat on purpose.** `<slug>-iso` carries no `dev/` prefix, because git
+  stores a branch as a file under `refs/heads/` — so any repository that already has a branch named
+  `dev` can hold nothing under `refs/heads/dev/`, and a `main` + `dev` pair is an ordinary layout
+  rather than an exotic one. A `dev/<slug>` default would have failed on every such repo. Where a
+  branch name is nonetheless blocked (an explicit `[branch]` argument, or a name taken already),
+  `scripts/worktree.sh setup` refuses **before writing anything** and names which conflict it hit,
+  suggesting a flat name outside the blocking prefix. The guard probes every path prefix of the
+  intended name — `git check-ref-format` accepts these cases and is no help — and `state.json`
+  records the branch actually used.
+
+  The same conflict is now checked on the **non-isolated** path, which has always branched to
+  `dev/<slug>` and never verified that it could: in a repo with a `dev` branch it failed with
+  `fatal: cannot lock ref` (exit 128) against prose that did not anticipate it. That was a
+  pre-existing bug, surfaced by this work.
 
   Four tests ship with it: `tests/worktree.test.js` drives the lifecycle against real `git` in a
   throwaway repo and asserts the primary checkout is untouched across all of it,

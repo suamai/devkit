@@ -481,13 +481,18 @@ A git repo is a **prerequisite** for `/dev-implement`, `/dev-review`, and `/dev-
 - Before implementing, the skill captures a **baseline** (`git rev-parse HEAD`) and passes it down:
   reviewers judge `git diff <baseline> -- <files>`, so introduced defects are distinguishable from
   pre-existing ones. Review without a baseline reviews whole files — much weaker.
-- On the default branch, the skill branches to `dev/<slug>` first. After a completed implement it
-  makes a **phase commit** (`impl(<slug>): <title>`) — the rollback/review boundary.
+- On the default branch, the skill branches to `dev/<slug>` first — checking that the name is
+  creatable, because a repository that already has a branch named `dev` can hold nothing under
+  `refs/heads/dev/` (refs are files), and a `main` + `dev` pair is an ordinary layout. Where it is
+  blocked the skill uses the flat `<slug>-iso` instead, the same name the worktree script defaults
+  to. After a completed implement it makes a **phase commit** (`impl(<slug>): <title>`) — the
+  rollback/review boundary.
 - **`--isolated` moves that whole story into a worktree.** `/dev-implement <slug> --isolated` creates
-  `.dev/<slug>/worktree` on branch `dev/<slug>`, branched explicitly **from the captured baseline**, so
-  `git diff <baseline>` means the same thing to every agent asked to judge the change. The primary
-  checkout is neither branched nor switched — the skill skips the `dev/<slug>` checkout above
-  entirely, because once the worktree owns that branch a second `git checkout -b` on it fails. The
+  `.dev/<slug>/worktree` on branch `<slug>-iso` — flat by default, for the ref-directory reason
+  above — branched explicitly **from the captured baseline**, so `git diff <baseline>` means the same
+  thing to every agent asked to judge the change. The primary checkout is neither branched nor
+  switched: the skill skips the branch step above entirely, so the two names never race for one
+  slug. The
   phase commit is made *inside* the worktree, which demotes it from integration to "the commit that
   makes this branch mergeable": nothing reaches the primary checkout until the pre-integration
   presentation asks and you answer merge, cherry-pick, discard, or leave it as is. A successful merge

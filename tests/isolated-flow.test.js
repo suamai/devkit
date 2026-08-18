@@ -69,6 +69,16 @@ check('and it has a remove subcommand', /\bremove\b/.test(script), true)
 // trusting that a script with `remove` also has the other verb.
 check('and a setup subcommand', /\bsetup\b/.test(script), true)
 
+// The default branch name is a value the script owns and the skill restates — both paths now offer
+// the same flat `<slug>-iso` when `dev/<slug>` is impossible, so extract it rather than trusting the
+// two to have been edited together.
+const DEFAULT_BRANCH = (script.match(/branch=\$\{4:-([^}]+)\}/) || [])[1]
+check('worktree.sh defaults the branch to a flat name', DEFAULT_BRANCH, '$slug-iso')
+check('and it carries no "dev/" prefix', /(^|[^-\w])dev\//.test(String(DEFAULT_BRANCH)), false)
+// The skill has to offer that same shape where it names a fallback, or its advice sends the
+// developer to a branch the script would not have chosen.
+check('/dev-implement offers the same flat shape', /<slug>-iso/.test(implement), true)
+
 // ---- 3. AC-01: the state keys, named by the skill that WRITES them and the skill that READS them.
 // A key only one side knows is a field that silently never round-trips.
 for (const key of ['worktree', 'worktree_branch']) {
@@ -122,9 +132,14 @@ const prose = (text) => {
 }
 const MENTIONS_ROOT = /worktree|<root>|`root`/i
 const NAMES_ISOLATION = /isolated|isolation/i
+// `worktree.sh` is stripped first: the claim this guards against is "the flow runs in a worktree"
+// stated without its condition, and naming the SCRIPT is not that claim. The non-isolated preflight
+// legitimately points at `scripts/worktree.sh` for a branch name it shares, and counting a filename
+// as an unconditional instruction would force that paragraph to pretend it is about isolation. The
+// mutation cases below are what keep this from becoming a hole: the real regression still fails.
 const unconditional = (text) => prose(text)
   .split(/\n\s*\n/)
-  .filter((p) => MENTIONS_ROOT.test(p) && !NAMES_ISOLATION.test(p))
+  .filter((p) => MENTIONS_ROOT.test(p.replace(/worktree\.sh/g, '')) && !NAMES_ISOLATION.test(p))
 check('no unconditional worktree instruction in /dev-implement', unconditional(implement).length, 0)
 // Mutation proof: a paragraph that says the flow runs in a worktree without naming the flag is
 // exactly the regression this assertion exists to catch.
@@ -133,6 +148,13 @@ check('and an unconditional one would be caught',
 // ...while the same sentence qualified by the flag is fine.
 check('and a conditional one is not',
   unconditional('Under --isolated the run happens in a worktree at <root>.').length, 0)
+// And the strip above does not open a hole: a paragraph naming the script AND making the
+// unconditional claim is still caught, because the claim survives the filename being removed.
+check('naming worktree.sh does not launder a real claim',
+  unconditional('Run worktree.sh; the flow then runs in a worktree at <root>.').length, 1)
+// A paragraph that only names the script is the case the strip exists for.
+check('but naming worktree.sh alone is fine',
+  unconditional('Use the branch name scripts/worktree.sh defaults to.').length, 0)
 
 console.log(failed ? `\n${failed} FAILED` : `\nall ${cases} cases pass`)
 process.exit(failed ? 1 : 0)

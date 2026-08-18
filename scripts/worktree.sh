@@ -96,7 +96,14 @@ case "$cmd" in
 
 setup)
   baseline=$3
-  branch=${4:-dev/$slug}
+  # FLAT by default, with no `dev/` prefix. `dev/<slug>` was the original design and it is a trap:
+  # git stores a branch as a file under refs/heads/, so a repository holding a branch named `dev`
+  # can never create anything under refs/heads/dev/ — and a `main` + `dev` pair is an ordinary
+  # convention, not an exotic one. A default that fails on a common layout is a default that makes
+  # every run in those repositories pass an explicit [branch]. The `-iso` suffix keeps it obvious
+  # which branches an isolated flow created, and keeps it clear of the `dev/<slug>` names the
+  # non-isolated path still uses in the primary checkout, so the two can coexist for one slug.
+  branch=${4:-$slug-iso}
   [ -n "$baseline" ] || die 'setup: missing <baseline-sha> — usage: setup <slug> <baseline-sha> [branch]' 2
   [ "$#" -le 4 ] || die 'setup: too many arguments — usage: setup <slug> <baseline-sha> [branch]' 2
 
@@ -119,9 +126,10 @@ setup)
   #   fatal: cannot lock ref 'refs/heads/dev/x': 'refs/heads/dev' exists; cannot create ...
   # `git check-ref-format` does NOT catch this — the name is well-formed, it is the repository that
   # cannot hold it — and it is a DIFFERENT failure from "branch already exists" above. Probe the real
-  # refs and name the conflict, because the default branch here is `dev/<slug>` and in a repo like
-  # this one it can never be created. NOTE the suggested escape: a `dev/<slug>-iso` would collide on
-  # the very same `dev` prefix, so what is offered is a FLAT name with no prefix at all.
+  # refs and name the conflict. The default is flat now, so this fires for a CALLER-SUPPLIED branch
+  # (`/dev-implement` offers a prefixed one when the flat default is taken) rather than for the
+  # default itself. NOTE the suggested escape: appending `-iso` to a prefixed name would collide on
+  # the very same prefix, so what is offered is a FLAT name with no prefix at all.
   prefix=''
   rest=$branch
   while :; do
@@ -180,7 +188,7 @@ remove)
     awk -v p="$path" '$1=="worktree" && substr($0,10)==p { print "yes"; exit }')
   [ -n "$registered" ] || die "no worktree is registered at \"$path\" — nothing removed" 2
 
-  # Report the branch git actually has checked out there, never the `dev/<slug>` default: a run whose
+  # Report the branch git actually has checked out there, never the `<slug>-iso` default: a run whose
   # default collided was created with an explicit [branch], and naming the wrong one would point the
   # developer's follow-up deletion at somebody else's branch.
   branch=$(git worktree list --porcelain | awk -v p="$path" '

@@ -127,7 +127,9 @@ actually ran rather than from prose.
 
 ### 2. Implement — `/dev-implement <slug>`
 
-Preflight: requires git; branches to `dev/<slug>` if you're on the default branch; captures the
+Preflight: requires git; branches to `dev/<slug>` if you're on the default branch (or to the flat
+`<slug>-iso` when your repo already has a branch named `dev`, which makes `dev/<slug>` impossible);
+captures the
 baseline SHA; refuses to run if another implement is active in this clone. Then the workflow runs
 in the background: ambiguous/oversized steps get a scout; implementers write code and **run each
 step's verification**; up to five disjoint steps run in parallel by default. What that verification

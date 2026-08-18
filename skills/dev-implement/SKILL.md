@@ -52,6 +52,17 @@ You orchestrate the implementation phase of a planned dev task. The heavy liftin
    branch, create and switch to `dev/<slug>`. Ensure `.dev/` is gitignored. Capture the baseline —
    reviewers judge diffs since it.
 
+   **`dev/<slug>` is not always creatable, and this is where that bites first.** Git stores a branch
+   as a file under `refs/heads/`, so a repository that already has a branch named `dev` can hold
+   nothing under `refs/heads/dev/` — `git checkout -b dev/<slug>` then fails with
+   `fatal: cannot lock ref 'refs/heads/dev/<slug>': 'refs/heads/dev' exists` (exit 128). A `main` +
+   `dev` pair is an ordinary layout, not an exotic one, so check before you create: if
+   `git show-ref --verify --quiet refs/heads/dev` succeeds, the prefixed name is impossible. Use the
+   flat `<slug>-iso` instead — the same name `scripts/worktree.sh` defaults to, so one slug reads the
+   same whichever path created it — and say in one line which name you used and why. Never retry the
+   failing command, and never silently implement onto the default branch because the branch step
+   failed: that is how the change ends up committed somewhere nobody chose.
+
    **Under `--isolated`, and only then, this preflight branches.** Everything above still happens
    except one line, and the order matters: capture the baseline **first**, from the primary checkout,
    exactly as above — it is the base ref the worktree is created at, which is what makes

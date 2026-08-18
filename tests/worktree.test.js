@@ -126,7 +126,7 @@ check('setup exits 0', setup.status, 0)
 check('setup prints exactly one JSON line and nothing else on stdout', oneJsonLine(setup.stdout), true)
 const line = parse(setup.stdout) || {}
 check('path is the worktree nested in the flow workspace', line.path, path.join(repo, '.dev', 'demo', 'worktree'))
-check('branch defaults to dev/<slug>', line.branch, 'dev/demo')
+check('branch defaults to the FLAT <slug>-iso', line.branch, 'demo-iso')
 check('baseline is the resolved commit, not the shorthand asked for', line.baseline, baseline)
 check('setup_ms is a non-negative number', typeof line.setup_ms === 'number' && line.setup_ms >= 0, true)
 check('disk_kb is a positive number', typeof line.disk_kb === 'number' && line.disk_kb > 0, true)
@@ -211,21 +211,31 @@ check('and leaves it exactly where it was', fs.existsSync(dirtyPath), true)
 const forced = run(repo, ['remove', 'dirty', '--force'])
 check('--force removes it', forced.status, 0)
 check('and even then the branch survives',
-  gitQuiet(repo, ['rev-parse', '--verify', '--quiet', 'refs/heads/dev/dirty']) !== null, true)
+  gitQuiet(repo, ['rev-parse', '--verify', '--quiet', 'refs/heads/dirty-iso']) !== null, true)
 check('an unknown option is refused rather than ignored', run(repo, ['remove', 'dirty', '--wipe']).status, 2)
 
-// ---- 8. The ref-directory conflict. A repository whose default branch is literally `dev` — this one
-// is — cannot hold a branch named `dev/<slug>` at all: refs are files, so `refs/heads/dev` blocks the
+// ---- 8. The ref-directory conflict. A repository holding a branch named `dev` cannot hold any
+// branch under `refs/heads/dev/` at all: refs are files, so the file `refs/heads/dev` blocks the
 // directory `refs/heads/dev/`. That is a DIFFERENT failure from "branch already exists", it is not
 // caught by `git check-ref-format`, and a throwaway repo defaulting to `main` would never show it.
+//
+// The DEFAULT branch name is flat (`<slug>-iso`) precisely so this cannot fire on it — a `main` +
+// `dev` layout is ordinary, and a default that dies there is a default nobody can use. So the
+// conflict is provoked the only way it still reaches a caller: an explicit prefixed [branch], which
+// is what `/dev-implement` passes when the flat default is already taken.
 const devRepo = makeRepo('default-branch-dev', 'dev')
 const devBaseline = git(devRepo, ['rev-parse', 'HEAD'])
 fs.appendFileSync(path.join(devRepo, 'tracked.txt'), 'an uncommitted local edit\n')
 const devBefore = snapshot(devRepo)
-const collide = run(devRepo, ['setup', 'iso', devBaseline])
-check('a repo whose branch IS `dev` cannot hold `dev/<slug>`, and setup refuses up front', collide.status, 2)
+// First: the flat default is unaffected by the `dev` branch, which is the whole point of the change.
+const flatOk = run(devRepo, ['setup', 'flat', devBaseline])
+check('the FLAT default works in a repo whose branch is `dev`', flatOk.status, 0)
+check('and takes the flat name', (parse(flatOk.stdout) || {}).branch, 'flat-iso')
+run(devRepo, ['remove', 'flat'])
+const collide = run(devRepo, ['setup', 'iso', devBaseline, 'dev/iso'])
+check('an explicit `dev/<slug>` is refused up front in that repo', collide.status, 2)
 check('naming the ref that blocks it', collide.stderr.includes('refs/heads/dev'), true)
-check('and creating nothing at all', fs.existsSync(path.join(devRepo, '.dev')), false)
+check('and creating nothing at all', fs.existsSync(path.join(devRepo, '.dev', 'iso')), false)
 check('AC-03: the primary is untouched by the refusal',
   [snapshot(devRepo).tracked, snapshot(devRepo).status, snapshot(devRepo).head],
   [devBefore.tracked, devBefore.status, devBefore.head])
@@ -241,7 +251,7 @@ const rescuedLine = parse(rescued.stdout) || {}
 check('on exactly the branch that was suggested', rescuedLine.branch, suggestion)
 check('at the baseline', git(rescuedLine.path || devRepo, ['rev-parse', 'HEAD']), devBaseline)
 const rescuedRemoved = parse(run(devRepo, ['remove', 'iso']).stdout) || {}
-check('and remove reports the branch git really had there, not the dev/<slug> default',
+check('and remove reports the branch git really had there, not the default',
   rescuedRemoved.branch_kept, suggestion)
 
 // The mirror image, in a repo of its own so exactly one ref can be the blocker: with `dev/only`
@@ -265,7 +275,7 @@ check('setup works under a path with a space and a non-ASCII character', oddSetu
 check('and the JSON line still parses, path intact', (parse(oddSetup.stdout) || {}).path, path.join(oddRepo, '.dev', 'odd', 'worktree'))
 const oddRemoved = run(oddRepo, ['remove', 'odd'])
 check('remove finds that registration too', oddRemoved.status, 0)
-check('and reports its branch', (parse(oddRemoved.stdout) || {}).branch_kept, 'dev/odd')
+check('and reports its branch', (parse(oddRemoved.stdout) || {}).branch_kept, 'odd-iso')
 
 // ---- 9. Outside a git repository nothing is examined at all — a distinct exit code from a refused
 // request. Expected is computed from git, so this stays honest on a machine where os.tmpdir() itself
