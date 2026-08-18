@@ -68,7 +68,11 @@ different artifact, a new gate — and never on prose that restates behavior alr
   them without the flag, `tests/stale-flows-hook.test.js` covers the hook including its silence
   contract, and `tests/isolated-flow.test.js` holds the two skills and the script to one contract.
   The end-to-end claim — dirty a tracked file, run a whole isolated flow, find it unchanged — is a
-  by-hand acceptance check: no test in this repo executes a `SKILL.md`.
+  by-hand acceptance check: no test in this repo executes a `SKILL.md`. It **was** performed for this
+  release, against the installed plugin: with a tracked file deliberately modified first, a complete
+  isolated flow left the primary checkout's `HEAD`, its full `git status --porcelain` and that file's
+  bytes all unchanged, and the work existed only in the worktree. Re-run it on any release that
+  touches the isolated path; a green suite does not cover it and never will.
 
 ### Fixed
 - **The suite no longer re-initialises your repository when it runs from a git hook.** git exports
