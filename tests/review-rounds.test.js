@@ -249,6 +249,20 @@ async function main() {
     [scoped.prompts['re-review r2'].includes('src/caller-i-updated.ts'),
       scoped.result.undeclared_files.includes('src/caller-i-updated.ts')],
     [true, false])
+  // The script compares PRESENCE and nothing else, and dirtiness is monotonic inside a run — a path
+  // dirty in round 1 is still dirty in round 3 whether or not anyone edited it since — so it cannot
+  // tell a silent re-edit from a file that has just been dirty all along. The re-reviewer can: it has
+  // a shell and can read the diff. These assert the ask actually reaches it, since a prompt-level
+  // mitigation that silently stopped being rendered would look exactly like one nobody complied with.
+  check('the re-review is told to reconcile the declaration against the tree itself',
+    [scoped.prompts['re-review r2'].includes('Reconcile the fixer'),
+      scoped.prompts['re-review r2'].includes('status --porcelain')],
+    [true, true])
+  check('  └─ and it is handed the declaration to check, not just a reading list',
+    (scoped.prompts['re-review r2'].split('Reconcile the fixer')[1] || '').includes('src/caller-i-updated.ts'), true)
+  // Content, never presence: without this the agent reports the whole change under review every round.
+  check('  └─ and told a merely-dirty in-scope file is not a discrepancy',
+    scoped.prompts['re-review r2'].includes('merely dirty because it is part of the change under review'), true)
   // The counters below are read off the verifier's clusters, so the instruction to carry `origin`
   // through clustering is the only thing standing between a dropped field and a reported rate of 0.
   check('the verifier is told to carry origin through clustering',

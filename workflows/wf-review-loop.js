@@ -542,6 +542,18 @@ function rereviewPrompt(confirmed, applied, skipped, round, ctx = {}) {
   const touched = [...new Set([
     ...applied.map((a) => a.file), ...confirmed.map((f) => f.file), ...(ctx.declared || []),
   ].filter(Boolean).map(normalizePath))]
+  // The fixer's own claim about what it touched, kept separate from `touched` above: that one is a
+  // reading list, this one is an assertion the re-reviewer is asked to CHECK against the tree.
+  const declared = [...new Set((ctx.declared || []).filter(Boolean).map(normalizePath))]
+  // Detection this script cannot do itself. `git status --porcelain` — the only signal it gets — says
+  // whether a path DIFFERS from HEAD, never what changed inside it, and nothing commits mid-run, so a
+  // path dirty at round 1 is still dirty at round 3 whether or not anyone edited it since. Presence is
+  // monotonic; the orchestrator therefore cannot tell a silent re-edit from a file that has been dirty
+  // all along, and `known` excludes both identically. The re-reviewer has a shell AND judgement: it can
+  // read the diff and compare it against what the fixer said it did. So the check is asked of the agent
+  // rather than computed — a mitigation, not a contract, and the honest place to put it until the check
+  // agent reports a per-path content signature the script could compare on its own.
+  const RECONCILE_NOTE = `\n## Reconcile the fixer's report against the tree — you can do this and the orchestrator cannot\nThe fixer declared it touched ${declared.length ? 'these files this round:\n' + declared.map((f) => '- ' + f).join('\n') : 'NOTHING this round.'}\n\nRun \`${GIT} status --porcelain\` yourself, and read \`${GIT} diff\` for whatever looks relevant. The orchestrator that built this prompt sees only whether a path differs from HEAD, never what changed inside it — and nothing commits mid-run, so a path that was dirty in an earlier round is still dirty now whether or not anyone has touched it since. It cannot tell an undeclared edit from a file that has simply been dirty all along. You can: you can read the diff.\n\nExactly two things are discrepancies, and nothing else here is:\n- The tree shows a change to a file the declaration above does not name, and nothing earlier in this run accounts for it.\n- A file the declaration DOES name, whose actual diff is not what the fixer said it did to it: more than claimed, elsewhere in the file, or a change with a different effect.\n\nA file that is merely dirty because it is part of the change under review is NOT a discrepancy. Judge the CONTENT against the fixer's account, never the presence of the path.\n`
   // Files the round changed that its own report never mentioned. Nothing else in this prompt
   // describes them, which is precisely why they go first rather than into the list below.
   const undeclared = [...new Set((ctx.undeclared || []).filter(Boolean))]
@@ -569,10 +581,12 @@ Plus whatever callers, types or tests you need to judge the fixes.
 ${BASELINE_NOTE}${ROOT_NOTE}
 ## Original intent of the change
 ${intent}
-${CONTEXT_NOTE}${historyNote(ctx.history, HISTORY_REVIEW_ROLE)}${DISAGREEMENT_NOTE}
-## Answer only these two questions
+${CONTEXT_NOTE}${historyNote(ctx.history, HISTORY_REVIEW_ROLE)}${DISAGREEMENT_NOTE}${RECONCILE_NOTE}
+## Answer only these three questions
 1. Is each confirmed defect actually resolved in the current code? A fix that is partial, moved the bug, or was reported as applied but is not in the code is still a finding — report it with its original title and \`origin: "unresolved"\`.
 2. Did the fixes introduce anything new — broken callers of a changed signature, a new error path, an invariant the fix violated, a behavior change beyond the fix's mandate? Report those as new findings with \`origin: "introduced-by-fix"\`. Set \`origin: "pre-existing"\` only for a defect these fixes demonstrably could not have caused — if the fixes could have caused it, it is not pre-existing.
+
+3. Does the tree match the fixer's account of it? Report each discrepancy from the reconcile section above as a finding with \`origin: "introduced-by-fix"\`, naming the file and what the diff shows that the report does not. An edit nobody declared is an edit nobody reviewed — that is the defect, whether or not the edit itself turns out to be sound, because every later scope decision in this run trusts that declaration. Say so explicitly when you find none: a silent third answer is indistinguishable from not having looked.
 
 Round 1's ground stays closed: do not go looking for pre-existing defects the fixes never touched, and do not re-litigate what an earlier round dismissed. But question 2 is not confined to the files listed above — anything these fixes could have broken is in scope WHEREVER it lives: a caller in another module, a test that encodes the behavior the fix changed, a type or schema that still declares the old shape, a doc or prompt that still describes it. Follow each change outward until it stops reaching anything, then stop. Report nothing if the fixes are sound — an empty findings array is the expected outcome of a good fix round.
 
@@ -1051,6 +1065,12 @@ while (round < roundLimit) {
         ...fixVerify,
         attempts: recheck.attempts,
         output_summary: `${fixVerify.output_summary || 'the check failed'} | a repair was applied but the recheck never ran: ${recheck.not_ran_reason}`,
+        // Dropped, not carried over: `changed_files` here is the PRE-repair check's git status, and
+        // the repair may have touched files (declared or not) that snapshot cannot know about.
+        // Reporting it downstream would claim a freshness (`scope_source: 'diff'`) this round does not
+        // have — the scope degrades to the fixer/repair's own self-report instead, exactly as it does
+        // when no check ran at all.
+        changed_files: undefined,
       }
       fixVerify.repaired = true
       log(`round ${round}: repaired ${repaired.length} file(s) after the failed check — recheck ${fixVerify.passed === true ? 'passed' : 'still not green'}`)
@@ -1088,6 +1108,17 @@ while (round < roundLimit) {
   // must judge when one did.
   carryDeclared = declaredThisRound
   if (reportedDiff.length) {
+    // `known` only ever grows: `args.files` is this run's static original scope and `fixTouched`
+    // accumulates every round's declared-or-undeclared touches, so a path that has EVER been in
+    // scope, or EVER been flagged undeclared once, is exempt here in every later round too. That is
+    // deliberate for the common case a dirty working tree keeps reporting the same untouched paths
+    // every round (see `carryUndeclared` feeding `fixTouched` below) — without it, both this and the
+    // churn signature above would fire on tree dirtiness rather than on a genuine repeated edit.
+    // Accepted cost: this script has no shell and nothing here carries a content signal for a path —
+    // only its PRESENCE in `git status --porcelain` — so a path already `known` that a later round's
+    // fixer silently re-edits is indistinguishable from one nobody has touched since. Closing that
+    // gap needs the check agent to report something that changes when a file's content does (a hash,
+    // a diff stat), which nothing here asks for today.
     const known = new Set([
       ...(args.files || []).filter(Boolean).map(normalizePath),
       ...allApplied.map((a) => a.file).filter(Boolean).map(normalizePath),

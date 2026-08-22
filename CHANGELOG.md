@@ -42,7 +42,22 @@ different artifact, a new gate — and never on prose that restates behavior alr
   round — now also reports `git status --porcelain`, the loop diffs that against everything the run
   had declared, and the paths nobody declared are handed to the next re-review first, under a
   heading saying the fixer did not report them. They are returned as `undeclared_files`, and
-  `scope_source` records whether the scope came from that diff or fell back to the self-report.
+  `scope_source` records whether the scope came from that diff or fell back to the self-report. When
+  a check fails, a repair is accepted, and the recheck that would refresh this diff cannot itself run
+  (an unavailable agent, a budget floor crossed mid-repair), the round no longer keeps that stale
+  pre-repair snapshot as if it were current — `scope_source` degrades to `self-report` there too, the
+  same honest fallback as when no check ran at all, rather than a diff that predates the repair.
+  One gap in that detection is **not** closed and is worth knowing about: `git status --porcelain`
+  reports whether a path differs from `HEAD`, never what changed inside it, and nothing commits
+  mid-run — so a path dirty in an earlier round stays dirty whether or not anyone has touched it
+  since, and the loop cannot tell a silent re-edit from a file that has simply been dirty all along.
+  It therefore exempts every path already in the review's scope or already flagged once. Closing that
+  needs a per-path content signature the check agent does not report today. Until it does, the
+  re-review is handed the fixer's declaration and told to run `git status` and read the diff
+  **itself** — it has a shell and judgement, and can compare what the diff shows against what the
+  fixer said it did, which the orchestrator cannot. A discrepancy either way is a finding: an edit
+  nobody declared is an edit nobody reviewed. That is a mitigation carried by a prompt, not a
+  guarantee carried by the code, and it is recorded here as such.
 
 ### Added
 - **An oscillation stop.** The loop now halts itself, before spawning another fixer, when the same
