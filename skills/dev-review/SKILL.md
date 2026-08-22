@@ -116,6 +116,12 @@ There is no dedicated remediation machinery to reach for; that is deliberate.
 
 4. **Report.** Lead with the outcome: clean or not, in how many rounds. Then canonical confirmed findings (including merged reviewer titles), fixes applied, fixes skipped and why, and whether the loop ended `clean: true` (an explicit post-fix pass found nothing) or stopped for one of the other reasons `rounds_end` gives.
 
+   A run invoked with `apply: false` that ends with confirmed findings always reports
+   `rounds_end: 'blocked'` — that is the expected outcome of a report-only pass, not a stuck fix. Say
+   so plainly rather than leaving the reader to infer it: `blocked` carries the same word whether the
+   caller asked for a report only or a fix genuinely could not land, and only the report can tell
+   those apart.
+
    Reaching the round limit no longer means an unreviewed fix. The last permitted round is
    report-only — it finds, verifies and reports, and hands nothing to a fixer — so a `max-rounds` exit
    is a tree that *was* reviewed after its last edit, with findings deliberately left unfixed. Name
@@ -134,8 +140,13 @@ There is no dedicated remediation machinery to reach for; that is deliberate.
    at report time: a `clean: true` reached that way is still a run that broke the tree once, and the
    developer should not have to find that in the diff.
 
-   Four more fields change what the report has to say, and none of them is a detail:
+   Five more fields change what the report has to say, and none of them is a detail:
 
+   - `scope_source` says where the last fix round's re-review scope came from: `diff` when the check
+     agent actually read the tree with `git status`, `self-report` when no check ran there and the
+     scope degraded to the fixer's own `changed_files` plus the confirmed findings' files. Call out
+     `self-report` explicitly — that is the degraded case the field exists to flag, closely related to
+     `undeclared_files` below (which is only ever populated when the source is `diff`).
    - `oscillating: true` means the loop stopped **itself**: one defect was reported fixed in two
      separate rounds and came back anyway, or one file was rewritten by three separate fix rounds.
      That is not a budget running out, and another round is not the answer to it — say what kept

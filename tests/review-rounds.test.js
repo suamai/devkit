@@ -189,6 +189,18 @@ async function main() {
   check('  └─ and the run had rounds left to spend', repeated.result.rounds < ROUND_DEFAULT, true)
   check('  └─ while what it stopped over is still reported', repeated.result.unresolved_after_fix, 2)
 
+  // The "repeated" signature above only works because `identityOf` can match round 3's confirmed
+  // finding against round 1's applied fix by `id` — nothing forces an independent verify:batch call
+  // to reuse an earlier round's id on its own, so round 2's verifier must be HANDED round 1's id and
+  // told to reuse it rather than invent a fresh one.
+  check('round 2\'s verifier is shown the id an earlier round already assigned',
+    [repeated.prompts['verify:batch r2'].includes('"id": "f1"'), repeated.prompts['verify:batch r2'].includes('reuse')],
+    [true, true])
+  // Round 1 here goes straight to the fixer (seeded), so no verify:batch call exists to check — the
+  // call list assertion above already confirms that.
+  check('  └─ and round 3\'s verifier is shown it too, not just the immediately preceding round',
+    repeated.prompts['verify:batch r3'].includes('"id": "f1"'), true)
+
   // The threshold is NOT "applied once and confirmed again": a partial fix re-reported under its
   // original title is the expected output of the re-review's first question, and stopping there
   // would converge by looking away. Round 2 must therefore still fix.
@@ -332,6 +344,39 @@ async function main() {
     { 'fix r1': fixOf('f1', 'src/a.ts'), 're-review r2': null })
   check('  └─ and the same event on an earlier round carries the identical verdict',
     [unavailableEarly.result.rounds_end, unavailableEarly.result.rounds], ['blocked', 2])
+
+  // ---- 11. Oscillation signature 2 must come from what a fix round actually touched, not from a
+  // dirty tree. `src/scope-unrelated.ts` is part of the original scope and sits in every check
+  // agent's `git status` for three straight fix rounds — but no fixer ever declares or applies
+  // against it, so it must never make the churn signature fire. Four DISTINCT files get fixed across
+  // four DISTINCT rounds so signature 1 (a repeated id) cannot be what proves this either.
+  const dirtyTree = await run(
+    { ...BASE, verifyCommand: CMD, maxRounds: 5, files: ['src/scope-unrelated.ts'], seedFindings: seed('f1', 'src/a.ts') },
+    {
+      'fix r1': fixOf('f1', 'src/a.ts'),
+      'check r1': { ran: true, command: CMD, passed: true, changed_files: ['src/a.ts', 'src/scope-unrelated.ts'] },
+      're-review r2': { findings: [finding('f2', 'src/b.ts')] },
+      'verify:batch r2': { findings: [confirmedFinding('f2', 'src/b.ts')] },
+      'fix r2': fixOf('f2', 'src/b.ts'),
+      'check r2': { ran: true, command: CMD, passed: true, changed_files: ['src/a.ts', 'src/b.ts', 'src/scope-unrelated.ts'] },
+      're-review r3': { findings: [finding('f3', 'src/c.ts')] },
+      'verify:batch r3': { findings: [confirmedFinding('f3', 'src/c.ts')] },
+      'fix r3': fixOf('f3', 'src/c.ts'),
+      'check r3': { ran: true, command: CMD, passed: true, changed_files: ['src/a.ts', 'src/b.ts', 'src/c.ts', 'src/scope-unrelated.ts'] },
+      're-review r4': { findings: [finding('f4', 'src/d.ts')] },
+      'verify:batch r4': { findings: [confirmedFinding('f4', 'src/d.ts')] },
+      // By round 4 the check has reported `src/scope-unrelated.ts` as differing from HEAD in three
+      // separate rounds — the raw-diff bug would have stopped the loop right here, before this call.
+      'fix r4': fixOf('f4', 'src/d.ts'),
+      'check r4': { ran: true, command: CMD, passed: true, changed_files: ['src/a.ts', 'src/b.ts', 'src/c.ts', 'src/d.ts', 'src/scope-unrelated.ts'] },
+      're-review r5': { findings: [] },
+    })
+  check('a file dirty for three rounds but touched by no fixer does not read as churn',
+    [dirtyTree.calls.includes('fix r4'), dirtyTree.result.oscillating], [true, undefined])
+  check('  └─ the run reaches its real outcome instead of a false oscillation stop',
+    [dirtyTree.result.rounds_end, dirtyTree.result.rounds, dirtyTree.result.fix_rounds], ['clean', 5, 4])
+  check('  └─ and the untouched scope file is never reported undeclared either — it was known from the start',
+    dirtyTree.result.undeclared_files, undefined)
 
   // Every verdict this file exercises is one the script still declares, and the vocabulary is read
   // off the source — so a member renamed there breaks this rather than testing a word that moved.

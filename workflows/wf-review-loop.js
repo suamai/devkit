@@ -5,7 +5,7 @@ export const meta = {
   phases: [
     { title: 'Review', detail: 'two complementary lenses over the change; later rounds re-review only what the fixes touched' },
     { title: 'Verify', detail: 'cluster and verify all findings in one batch; critical findings get one second opinion' },
-    { title: 'Fix', detail: 'apply confirmed fixes; critical defects escalate one model tier' },
+    { title: 'Fix', detail: 'apply confirmed fixes; critical defects or a second fix round escalate one model tier' },
     { title: 'Check', detail: "run the repo's own executable check on the fixed tree; a failed check buys one bounded repair attempt, itself re-reviewed" },
   ],
 }
@@ -259,6 +259,12 @@ const FIX_RULE_ROLE = "They are binding for the code you write here: a fix that 
 // this is not the cross-cycle memory docs/architecture.md rejects.
 const HISTORY_FIX_ROLE = 'If you are about to change one of these again, say so in the matching `what` and say why. A defect that survived an earlier fix means that fix was wrong or incomplete — not that it should be undone: every one of them was independently confirmed and nothing has refuted it since, so reverting one is a regression with a plausible cover story.'
 const HISTORY_REVIEW_ROLE = 'A defect an earlier round already applied a fix for, reported again now, is the strongest signal in this run: the fix did not hold. Say that plainly rather than reporting it as fresh. And a file this run has now edited two or three times is where to look hardest — repeated edits to one place are where a later fix quietly undoes an earlier one.'
+// The loop matches a defect across rounds by `id` alone (see `identityOf` below) — so if this
+// round's cluster is the same semantic defect as one an earlier round already confirmed and handed
+// to a fixer, reusing THAT id is what makes "still here after two fixes" visible at all. Nothing
+// else enforces this: two independent verify:batch calls have no reason to invent the same slug for
+// the same defect on their own.
+const HISTORY_VERIFY_ROLE = 'If a cluster you produce here is the same semantic defect as one of these earlier rounds\' confirmed findings, reuse that finding\'s exact `id` — do not invent a new one for it. A fresh id for an old defect makes a fix that already failed once look freshly found instead of still unresolved.'
 function historyNote(history, role) {
   if (!history || !history.length) return ''
   return `\n## What earlier rounds of this run already did\n${JSON.stringify(history, null, 2)}\n${role}\n`
@@ -573,7 +579,7 @@ Round 1's ground stays closed: do not go looking for pre-existing defects the fi
 Do NOT modify any files. Your final output is raw data for an orchestrator.`
 }
 
-function verifyPrompt(found, round) {
+function verifyPrompt(found, round, history) {
   return `You are the batched adversarial verifier for review round ${round}.
 
 Raw findings from complementary reviewers:
@@ -582,13 +588,13 @@ ${JSON.stringify(found, null, 2)}
 Context:
 Scope: ${args.scope}
 Intent: ${intent}
-${BASELINE_NOTE}${ROOT_NOTE}${CONTEXT_NOTE}${refutedNote()}
+${BASELINE_NOTE}${ROOT_NOTE}${CONTEXT_NOTE}${refutedNote()}${historyNote(history, HISTORY_VERIFY_ROLE)}
 
 First SEMANTICALLY CLUSTER reports with the same root cause, even when titles or cited files differ. Produce one canonical finding per root defect and list the merged titles. Then independently verify every cluster against current code: confirm only when the code supports the claim, the failure is reachable, and no existing guard/test/invariant neutralizes it. Preserve only the highest justified severity. Uncertainty means confirmed=false.
 
 For every cluster you CONFIRM — and only those — fill \`fix_context\` and \`fix_locality\` from the reading you have just done: the callers that break if the cited behavior changes, the invariant that must still hold, the tests that encode the behavior today, and what else a correct fix has to touch. \`fix_locality\` is \`contract\` when a fix changes a surface other code consumes and \`local\` when it is contained in the file you cited. You have already paid for this reading; the agent that fixes this has not, and it is the agent that breaks a caller when it has to guess.
 
-Carry each finding's \`origin\` through into the cluster you produce, unchanged; when you merge findings whose origins differ, the cluster takes the strongest attribution (\`introduced-by-fix\` over \`unresolved\` over \`pre-existing\`). Dropping the field is not neutral: the run counts regressions off YOUR output, so a cluster that loses its origin is counted as no regression at all.
+Carry each finding's \`origin\` through into the cluster you produce, unchanged; when you merge findings whose origins differ, re-check the evidence for both rather than mechanically taking the stronger label — the cluster's origin is whichever attribution (\`introduced-by-fix\` over \`unresolved\` over \`pre-existing\`) the code actually supports, not whichever one merging happened to preserve. Dropping the field is not neutral either: the run counts regressions off YOUR output, so a cluster that loses its origin is counted as no regression at all.
 
 That context is for the fixer and it NEVER makes a finding more likely to be real. Confirm on evidence exactly as you would if these fields did not exist, leave them off everything you refute, and do not inflate a blast radius to make a cluster look serious — severity is judged on the failure, not on the size of the fix.
 
@@ -786,9 +792,13 @@ const allSkipped = []
 // produces. This is what fixPrompt and rereviewPrompt read.
 const history = []
 // The files each fix round is known to have touched — the fixer's declared `changed_files`, the
-// files its `applied` entries name, and whatever the post-fix `git status` reported. Deliberately
-// NOT part of `history`: this feeds the oscillation signature and the "already known" set, and
-// putting a file list in the prompt payload every round would only make the prompt bigger.
+// files its `applied` entries name, and whatever the post-fix `git status` reported that nothing
+// already known accounted for (`carryUndeclared` below). Deliberately NOT the raw `git status`
+// snapshot: on a dirty tree that reports the WHOLE uncommitted diff every round, so folding it in
+// unfiltered would make a file merely dirty before this run started look "touched" by every fix
+// round that followed it — exactly the false signal the churn check below must not fire on.
+// Deliberately NOT part of `history` either: this feeds the oscillation signature and the "already
+// known" set, and putting a file list in the prompt payload every round would only make it bigger.
 const fixTouched = [] // [{ round, files: [...] }]
 // Paths the check agent's git status reported that nothing in the run had declared. Accumulated
 // across rounds because it is evidence about the run, not about one round of it.
@@ -872,7 +882,7 @@ while (round < roundLimit) {
   const refutedFrom = allRefuted.length
   const verified = preVerified
     ? { findings: found.map((f) => ({ ...f, confirmed: true })) }
-    : await metered('verify', () => agent(verifyPrompt(found, round), { label: `verify:batch r${round}`, phase: 'Verify', ...ROLE.verify, schema: VERIFIED_FINDINGS_SCHEMA }))
+    : await metered('verify', () => agent(verifyPrompt(found, round, history), { label: `verify:batch r${round}`, phase: 'Verify', ...ROLE.verify, schema: VERIFIED_FINDINGS_SCHEMA }))
   if (!verified) { stopReason = END_BLOCKED; break }
   let confirmed = verified.findings.filter((f) => f.confirmed)
   allRefuted.push(...verified.findings.filter((f) => !f.confirmed))
@@ -967,7 +977,12 @@ while (round < roundLimit) {
   // "this defect already survived a fix round" is that same evidence, arrived at by experiment.
   const fixModel = confirmed.some((f) => f.severity === 'critical') || round >= 2 ? escalate(ROLE.fix.model) : ROLE.fix.model
   fixRounds++
-  const fix = await metered('fix', () => agent(fixPrompt(confirmed, { history }), { label: `fix r${round}`, phase: 'Fix', ...ROLE.fix, model: fixModel, schema: FIX_SCHEMA }))
+  // `touched` widens rule matching to files earlier rounds are already known to have reached
+  // (`fixTouched`, built up as the loop runs) — not just this round's confirmed-finding files — so a
+  // rule scoped to collateral territory (a test, a caller) the blast-radius mandate below pushed an
+  // earlier round into still reaches the fixer here, even though none of THIS round's findings cite
+  // it. Empty on round 1, where there is no earlier round to have touched anything yet.
+  const fix = await metered('fix', () => agent(fixPrompt(confirmed, { history, touched: fixTouched.flatMap((t) => t.files) }), { label: `fix r${round}`, phase: 'Fix', ...ROLE.fix, model: fixModel, schema: FIX_SCHEMA }))
   if (fix) {
     allApplied.push(...fix.applied)
     allSkipped.push(...fix.skipped)
@@ -1077,7 +1092,7 @@ while (round < roundLimit) {
       ...(args.files || []).filter(Boolean).map(normalizePath),
       ...allApplied.map((a) => a.file).filter(Boolean).map(normalizePath),
       ...declaredThisRound,
-      ...fixTouched.flatMap((t) => t.files), // prior rounds' reported diffs, already normalized
+      ...fixTouched.flatMap((t) => t.files), // prior rounds' declared + undeclared touches, already normalized
     ])
     carryUndeclared = reportedDiff.filter((p) => !known.has(p))
     scopeSource = 'diff'
@@ -1094,7 +1109,14 @@ while (round < roundLimit) {
     carryUndeclared = []
     scopeSource = 'self-report'
   }
-  fixTouched.push({ round, files: [...new Set([...declaredThisRound, ...reportedDiff])] })
+  // NOT `reportedDiff`: on a dirty tree that is the WHOLE uncommitted diff, present again every
+  // round regardless of whether this round's fixer changed anything — feeding it in raw would make
+  // the churn signature above fire off tree dirtiness rather than off three genuinely separate fix
+  // rounds. `carryUndeclared` is `reportedDiff` already netted against everything the run knows
+  // about (original scope, prior applies, this round's own declaration, prior rounds' touches), so
+  // a file only lands here when THIS round plausibly changed it: the fixer said so, or the tree
+  // shows it and nothing already accounts for it.
+  fixTouched.push({ round, files: [...new Set([...declaredThisRound, ...carryUndeclared])] })
 
   // Two agents ran the same command on the same tree and disagreed about it. Only the disagreement
   // travels — agreement is the normal case and adds nothing a re-reviewer can act on.

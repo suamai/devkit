@@ -152,7 +152,9 @@ that a rule now has to survive review by someone who can say no.
           → Check (sonnet): verifyCommand → classified fix_verify, gating clean the way a step's
             verify_run gates a step; a failed check buys one repair + one re-check, and whatever the
             repair touched joins the re-review's scope; its `git status` is also what tells the next
-            round which files the fixer changed without reporting them
+            round which files the fixer changed without reporting them — the return's `scope_source`
+            says whether that scope came from this diff or, with no check agent, degraded to the
+            fixer's own self-report
           → explicit post-fix re-review
 
 /dev-pr [base] [--review] [--draft] [--body-only]
