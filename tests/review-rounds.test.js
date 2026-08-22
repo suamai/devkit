@@ -236,55 +236,29 @@ async function main() {
       'check r2': { ran: true, command: CMD, passed: true, changed_files: ['src/a.ts', 'src/helper.ts', 'src/b.ts', 'src/other.ts'] },
       're-review r3': { findings: [] },
     })
-  // src/helper.ts is in NO agent's report — only git saw it. Under the old scope it was read by
-  // nobody, which is exactly where an unintended edit hides.
-  check('a file only the check agent reported reaches the next re-review',
-    scoped.prompts['re-review r2'].includes('src/helper.ts'), true)
-  check('  └─ and the fixer\'s own report did not name it',
-    JSON.stringify(scoped.prompts['fix r1']).includes('src/helper.ts'), false)
-  // The other half of the same seam. A file the fixer HONESTLY declares but has no `applied` entry
-  // for is not undeclared — being declared is what excludes it — so if the reading list ignored
-  // `changed_files` it appeared in no list at all, and declaring a collateral edit bought nothing.
+  // The seam this closes: a file the fixer HONESTLY declares in changed_files but has no `applied`
+  // entry for — the caller it updated, the test it corrected. FIX_SCHEMA promises the fixer that what
+  // it lists there is what the next round reads, and before this it was in no list at all.
   check('a file the fixer declared but did not apply against is read too',
-    [scoped.prompts['re-review r2'].includes('src/caller-i-updated.ts'),
-      scoped.result.undeclared_files.includes('src/caller-i-updated.ts')],
-    [true, false])
-  // The script compares PRESENCE and nothing else, and dirtiness is monotonic inside a run — a path
-  // dirty in round 1 is still dirty in round 3 whether or not anyone edited it since — so it cannot
-  // tell a silent re-edit from a file that has just been dirty all along. The re-reviewer can: it has
-  // a shell and can read the diff. These assert the ask actually reaches it, since a prompt-level
-  // mitigation that silently stopped being rendered would look exactly like one nobody complied with.
-  check('the re-review is told to reconcile the declaration against the tree itself',
-    [scoped.prompts['re-review r2'].includes('Reconcile the fixer'),
-      scoped.prompts['re-review r2'].includes('status --porcelain')],
-    [true, true])
-  check('  └─ and it is handed the declaration to check, not just a reading list',
-    (scoped.prompts['re-review r2'].split('Reconcile the fixer')[1] || '').includes('src/caller-i-updated.ts'), true)
-  // Content, never presence: without this the agent reports the whole change under review every round.
-  check('  └─ and told a merely-dirty in-scope file is not a discrepancy',
-    scoped.prompts['re-review r2'].includes('merely dirty because it is part of the change under review'), true)
+    scoped.prompts['re-review r2'].includes('src/caller-i-updated.ts'), true)
+  // The limitation, pinned so nobody mistakes it for a capability. A tree-derived second source was
+  // built here and removed: `git status` reports whether a path DIFFERS from HEAD and never what
+  // changed inside it, so on a dirty tree it named the whole uncommitted diff every round and could
+  // not tell an undeclared edit from a file that had simply been dirty all along. What is left is a
+  // self-report: an edit the fixer does not declare is not detected, and this asserts exactly that.
+  check('a file ONLY the check agent saw does not reach the re-review — undeclared is undetected',
+    [scoped.prompts['re-review r2'].includes('src/helper.ts'),
+      JSON.stringify(scoped.prompts['fix r1']).includes('src/helper.ts')],
+    [false, false])
+  check('  └─ and the check agent is no longer asked to read the tree at all',
+    scoped.prompts['check r1'].includes('status --porcelain'), false)
   // The counters below are read off the verifier's clusters, so the instruction to carry `origin`
   // through clustering is the only thing standing between a dropped field and a reported rate of 0.
   check('the verifier is told to carry origin through clustering',
     scoped.prompts['verify:batch r2'].includes('origin'), true)
-  // Round 2's diff repeats round 1's paths. A path the run has already accounted for is not
-  // undeclared a second time — otherwise every later round re-reports the whole tree.
-  check('a path an earlier round already accounted for is not undeclared again',
-    [scoped.prompts['re-review r3'].includes('src/other.ts'), scoped.prompts['re-review r3'].includes('src/helper.ts')],
-    [true, false])
-  check('  └─ and the run reports both, once each',
-    [scoped.result.undeclared_files, scoped.result.scope_source], [['src/helper.ts', 'src/other.ts'], 'diff'])
-  check('the check agent is the one told to read the tree',
-    [scoped.prompts['check r1'].includes('status --porcelain'), scoped.prompts['fix r1'].includes('status --porcelain')], [true, false])
-  check('  └─ and it is honest about what it found', scoped.result.regressions_introduced, 1)
+  check('  └─ and the run is honest about what it attributed', scoped.result.regressions_introduced, 1)
 
-  // With no check agent there is no diff, so the scope degrades to the self-report — and the return
-  // says which of the two this run got instead of leaving the caller to guess. `undeclared_files` is
-  // asserted over the SERIALIZED return, because "absent" means absent from what a caller reads, and
-  // an undefined compared against an undefined would pass over a field that was never computed.
   const serialized = (r) => JSON.parse(JSON.stringify(r.result))
-  check('no check means the scope is the fixer\'s own report',
-    [floored.result.scope_source, 'undeclared_files' in serialized(floored)], ['self-report', false])
   check('  └─ and a run that did not oscillate says nothing about it',
     ['oscillating' in serialized(floored), 'oscillating' in serialized(repeated)], [false, true])
 
@@ -389,8 +363,6 @@ async function main() {
     [dirtyTree.calls.includes('fix r4'), dirtyTree.result.oscillating], [true, undefined])
   check('  └─ the run reaches its real outcome instead of a false oscillation stop',
     [dirtyTree.result.rounds_end, dirtyTree.result.rounds, dirtyTree.result.fix_rounds], ['clean', 5, 4])
-  check('  └─ and the untouched scope file is never reported undeclared either — it was known from the start',
-    dirtyTree.result.undeclared_files, undefined)
 
   // Every verdict this file exercises is one the script still declares, and the vocabulary is read
   // off the source — so a member renamed there breaks this rather than testing a word that moved.

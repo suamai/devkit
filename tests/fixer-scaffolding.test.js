@@ -42,10 +42,6 @@ function pin(list, fragment) {
 // The prohibition, read off `repairPrompt` where it has always lived. The bullet marker is the only
 // thing dropped: `fixPrompt` states it as a paragraph.
 const ANTI_WEAKENING = pin(extract('function repairPrompt(').split('\n'), 'expected-to-fail').replace(/^- /, '')
-// The heading of the section that only exists when the fixer changed files it did not report. An
-// anchor, so it fails loudly if the heading moves instead of asserting absence of nothing.
-const UNDECLARED_HEADING = (RAW.match(/## Files the fixer changed[^\\]*/) || [])[0]
-if (!UNDECLARED_HEADING) throw new Error('could not find the undeclared-files heading in wf-review-loop.js')
 
 // ---- Harness: tests/seeded-review.test.js's by-label stub, plus the schema each agent was handed.
 function run(args, replies) {
@@ -165,11 +161,6 @@ async function main() {
   // Round 1 has no fixes to attribute anything to, so a sweep must not ask for the field at all.
   check('a round-1 sweep is never asked to set one',
     sweep.schemas['review:runtime-contracts r1'].properties.findings.items.required.includes('origin'), false)
-
-  // The undeclared-files section exists for the round that reports a diff the fixer did not — until
-  // the loop passes one (the next step), it must be absent rather than empty.
-  check('no undeclared files → the section is absent',
-    r.prompts['re-review r2'].includes(UNDECLARED_HEADING), false)
 
   // ---- 7. The repair agent writes code under the same rules the fixer does.
   const red = await run(BASE, {

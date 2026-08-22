@@ -140,13 +140,8 @@ There is no dedicated remediation machinery to reach for; that is deliberate.
    at report time: a `clean: true` reached that way is still a run that broke the tree once, and the
    developer should not have to find that in the diff.
 
-   Five more fields change what the report has to say, and none of them is a detail:
+   Three more fields change what the report has to say, and none of them is a detail:
 
-   - `scope_source` says where the last fix round's re-review scope came from: `diff` when the check
-     agent actually read the tree with `git status`, `self-report` when no check ran there and the
-     scope degraded to the fixer's own `changed_files` plus the confirmed findings' files. Call out
-     `self-report` explicitly — that is the degraded case the field exists to flag, closely related to
-     `undeclared_files` below (which is only ever populated when the source is `diff`).
    - `oscillating: true` means the loop stopped **itself**: one defect was reported fixed in two
      separate rounds and came back anyway, or one file was rewritten by three separate fix rounds.
      That is not a budget running out, and another round is not the answer to it — say what kept
@@ -157,10 +152,6 @@ There is no dedicated remediation machinery to reach for; that is deliberate.
      at. The round budget can no longer cause this; a post-fix check that stayed red and a fix the
      fixer skipped still can. Say it in one line — the developer should not have to find unjudged
      edits in the diff.
-   - `undeclared_files` are paths the post-fix `git status` reported changed that nothing in the run
-     had declared — the fixer edited them and did not say so. Any round that followed read them
-     first, under a heading saying exactly that, so they are not by themselves unreviewed; list them
-     anyway, because they are the honest measure of how far a fix actually reached.
    - `fix_self_check` is the fixer's **own** run of the check, classified exactly as `fix_verify` is
      and gating nothing (`clean` rests on the independent check alone). Report it when it disagrees
      with `fix_verify`: a fixer claiming green over a check that came back red is worth naming out

@@ -36,28 +36,22 @@ different artifact, a new gate — and never on prose that restates behavior alr
   must run it itself and report the result as `self_check`; that claim gates nothing (the
   independent check agent still decides `clean`), so a fixer cannot clear its own gate, but it
   catches its own regression while it can still fix it.
-- **The re-review stopped reading only what the fixer admitted to changing.** Its file scope was the
-  fixer's self-report, so a caller or helper edited incidentally and left unmentioned was read by
-  nobody. The post-fix check agent — which already has a shell and already runs after every fix
-  round — now also reports `git status --porcelain`, the loop diffs that against everything the run
-  had declared, and the paths nobody declared are handed to the next re-review first, under a
-  heading saying the fixer did not report them. They are returned as `undeclared_files`, and
-  `scope_source` records whether the scope came from that diff or fell back to the self-report. When
-  a check fails, a repair is accepted, and the recheck that would refresh this diff cannot itself run
-  (an unavailable agent, a budget floor crossed mid-repair), the round no longer keeps that stale
-  pre-repair snapshot as if it were current — `scope_source` degrades to `self-report` there too, the
-  same honest fallback as when no check ran at all, rather than a diff that predates the repair.
-  One gap in that detection is **not** closed and is worth knowing about: `git status --porcelain`
-  reports whether a path differs from `HEAD`, never what changed inside it, and nothing commits
-  mid-run — so a path dirty in an earlier round stays dirty whether or not anyone has touched it
-  since, and the loop cannot tell a silent re-edit from a file that has simply been dirty all along.
-  It therefore exempts every path already in the review's scope or already flagged once. Closing that
-  needs a per-path content signature the check agent does not report today. Until it does, the
-  re-review is handed the fixer's declaration and told to run `git status` and read the diff
-  **itself** — it has a shell and judgement, and can compare what the diff shows against what the
-  fixer said it did, which the orchestrator cannot. A discrepancy either way is a finding: an edit
-  nobody declared is an edit nobody reviewed. That is a mitigation carried by a prompt, not a
-  guarantee carried by the code, and it is recorded here as such.
+- **The re-review reads every file the fixer declared, not just the ones it fixed.** Its scope was
+  `applied` plus the confirmed findings' files, so a caller or test the fixer updated as part of a
+  fix — exactly what the blast-radius mandate now pushes it to touch — was read by nobody unless it
+  happened to be a defect site. `changed_files` is now **required** on the fixer's report, and what
+  it lists is what the next round reads, which is what that field's description promises it.
+  What this deliberately does **not** do is detect an edit the fixer never declares. A second,
+  tree-derived source was built for that and removed before release: `git status --porcelain` reports
+  whether a path differs from `HEAD` and never what changed inside it, and nothing commits mid-run —
+  so on a dirty tree it names the whole uncommitted diff every round, and each checkpoint of a
+  `/dev-implement` run would see the previous checkpoints' still-uncommitted files as though this
+  round had produced them. It could not tell an undeclared edit from a file that had simply been
+  dirty all along, in either direction: it missed real ones and invented false ones, and the false
+  ones would have landed as `origin: introduced-by-fix`, corrupting the regression rate this release
+  adds. Closing it properly needs a per-path content signature nothing here reports today. Until
+  then the scope is a self-report and is documented as one — an edit the fixer declares is read, and
+  an edit it does not declare is not detected.
 
 ### Added
 - **An oscillation stop.** The loop now halts itself, before spawning another fixer, when the same
