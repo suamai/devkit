@@ -40,10 +40,12 @@ const reportsHonestPair = (r) =>
   typeof r.raw === 'number' && typeof r.clustered === 'number' && r.raw >= r.clustered
 
 let failed = 0
+let cases = 0
 function check(name, actual, expected) {
   const a = JSON.stringify(actual)
   const e = JSON.stringify(expected)
   const ok = a === e
+  cases++
   if (!ok) failed++
   console.log(`${ok ? 'PASS' : 'FAIL'}  ${name.padEnd(52)} ${a}`)
   if (!ok) console.log(`      expected ${e}`)
@@ -75,14 +77,35 @@ async function main() {
     reportsHonestPair({ ...seeded.result, clustered: seeded.result.raw + 1 }), false)
 
   // --- The honesty gate is unchanged. Skipping find/verify must not skip the proof.
+  //
+  // `BASE` allows two rounds, so round 2 IS the last permitted one: it finds and verifies the
+  // regression and reports it, and no fixer runs — a fix applied there would sit at HEAD with
+  // nothing left to judge it. `fix r2` is deliberately not stubbed, so a loop that spawned one
+  // anyway fails here rather than costing an agent.
   const stillBroken = await run({ ...BASE, seedFindings: SEED }, {
     'fix r1': FIXED_BOTH,
     're-review r2': { findings: [{ id: 'f3', title: 'the fix broke the retry path', file: 'src/a.ts', line: 14, severity: 'high' }] },
     'verify:batch r2': { findings: [{ id: 'f3', title: 'the fix broke the retry path', file: 'src/a.ts', line: 14, severity: 'high', confirmed: true }] },
-    'fix r2': { applied: [{ id: 'f3', what: 'restored' }], skipped: [] },
   })
   check('a post-fix regression is not clean', stillBroken.result.clean, false)
-  check('round 2 verifies normally', stillBroken.calls, ['fix r1', 're-review r2', 'verify:batch r2', 'fix r2'])
+  check('round 2 verifies normally', stillBroken.calls, ['fix r1', 're-review r2', 'verify:batch r2'])
+  check('  └─ and the last permitted round fixes nothing',
+    [stillBroken.calls.includes('fix r2'), stillBroken.result.rounds_end], [false, 'max-rounds'])
+  check('  └─ while the finding is still reported, not swallowed',
+    stillBroken.result.confirmed.map((f) => f.id), ['f1', 'f2', 'f3'])
+
+  // One more round and round 2 stops being the last one, so it fixes normally — the rule is about
+  // the LAST permitted round, never about round 2.
+  const threeRounds = await run({ ...BASE, maxRounds: 3, seedFindings: SEED }, {
+    'fix r1': FIXED_BOTH,
+    're-review r2': { findings: [{ id: 'f3', title: 'the fix broke the retry path', file: 'src/a.ts', line: 14, severity: 'high' }] },
+    'verify:batch r2': { findings: [{ id: 'f3', title: 'the fix broke the retry path', file: 'src/a.ts', line: 14, severity: 'high', confirmed: true }] },
+    'fix r2': { applied: [{ id: 'f3', title: 'the fix broke the retry path', file: 'src/a.ts', what: 'restored' }], skipped: [], changed_files: ['src/a.ts'] },
+    're-review r3': { findings: [] },
+  })
+  check('a round that is not the last one still fixes',
+    threeRounds.calls, ['fix r1', 're-review r2', 'verify:batch r2', 'fix r2', 're-review r3'])
+  check('  └─ and the run reaches clean', [threeRounds.result.clean, threeRounds.result.rounds_end], [true, 'clean'])
 
   // A fix the fixer refuses can never be reported clean, seeded or not.
   const refused = await run({ ...BASE, seedFindings: SEED }, {
@@ -111,8 +134,10 @@ async function main() {
   const junk = await run({ ...BASE, seedFindings: [null, {}, SEED[0]] }, { 'fix r1': { applied: [{ id: 'f1' }], skipped: [] }, 're-review r2': { findings: [] } })
   check('entries with no id or title are dropped', junk.result.confirmed.length, 1)
 
-  console.log(failed ? `\n${failed} FAILED` : `\nall ${14} cases pass`)
+  console.log(failed ? `\n${failed} FAILED` : `\nall ${cases} cases pass`)
   process.exit(failed ? 1 : 0)
 }
 
-main()
+// A label the stub does not know throws rather than returning something plausible, which is the
+// point — but an unhandled rejection is a bad way to read it, so it is caught and printed.
+main().catch((e) => { console.error(e); process.exit(1) })

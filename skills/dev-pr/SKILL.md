@@ -145,8 +145,12 @@ the exact format below. Refuted findings stay for audit but never become fix inp
 ````
 
 Preserve each canonical finding's `id`, `severity`, `title`, `merged_titles`, `file`, `line`,
-`description`, `reasoning`, and `suggested_fix`. Outcome is `blocked` when any confirmed finding is
-high/critical, `needs-attention` for low/medium only, otherwise `clean`.
+`description`, `reasoning`, `suggested_fix`, and — when the loop set them — `origin` and
+`fix_context`. The list is closed: a field not named here does not reach the report, and
+`/dev-review --from-report` replays the report, so a finding dropped here reaches the fixer stripped
+of the callers, invariant, tests and blast radius the verifier already established and charged for.
+Outcome is `blocked` when any confirmed finding is high/critical, `needs-attention` for low/medium
+only, otherwise `clean`.
 
 - High/critical: block PR publication and offer `/dev-review --from-report <report-path>`, which
   feeds the confirmed findings straight to the fixer without re-finding them. If the findings need

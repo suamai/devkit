@@ -11,7 +11,7 @@ export const meta = {
 }
 
 // args: { workspace, steps, completed?, baseline?, root?, planPath?, notes?, review?=true,
-//         reviewRounds?=3, reviewLoopPath?, scoutMode?='adaptive', maxParallelSteps?=5,
+//         reviewRounds?=4, reviewLoopPath?, scoutMode?='adaptive', maxParallelSteps?=5,
 //         gate?=true, checkpointFileThreshold?=20, checkpointMaxWaves?=3, rules?, criteria?,
 //         profile?, models?, efforts?, dryRun? }
 //   dryRun: with `steps`, returns the computed schedule (waves, parallel groups, scouts, matched
@@ -980,7 +980,10 @@ async function reviewCheckpoint(pending, checkpointNumber) {
     // the cross-step consistency check is the run's only other executor, and a run that stops early
     // never reaches it (see the `stoppedEarly` guard below).
     verifyCommand: verifyCommandFor(pending.steps) || undefined,
-    maxRounds: args.reviewRounds ?? 3,
+    // The loop's LAST permitted round is report-only, so N rounds buy N-1 fix rounds. Four keeps the
+    // three fix rounds a checkpoint used to get, at the cost of one targeted re-review agent on the
+    // runs that reach it. wf-review-loop.js states the same default and both prose sites restate it.
+    maxRounds: args.reviewRounds ?? 4,
     // The policy travels with the call: a cheap implement whose reviews run at full price is not
     // a cheap run. Role names are pipeline-wide, so review-loop reads the same object.
     profile: args.profile,
@@ -1220,7 +1223,11 @@ for (const wave of allWaves) {
   // would catch that.
   const checkpointEntry = { checkpoint: checkpointNumber, waves: [...pending.waves], steps: pending.steps.map((s) => s.id), reason, review }
   checkpointReviews.push(checkpointEntry)
-  const summary = review ? { clean: review.clean, rounds: review.rounds, confirmed: (review.confirmed || []).length, applied: (review.applied || []).length, skipped: (review.skipped || []).length } : null
+  // Narrow on purpose — it is written onto every leaf report and only a few of its keys reach the
+  // cross-step consistency prompt. `oscillating` and `regressions_introduced` earn their place there:
+  // a checkpoint whose loop stopped itself, or whose fixes kept breaking things, is a different fact
+  // about the code than "not clean", and the final checker is the last agent that can act on it.
+  const summary = review ? { clean: review.clean, rounds: review.rounds, confirmed: (review.confirmed || []).length, applied: (review.applied || []).length, skipped: (review.skipped || []).length, oscillating: review.oscillating === true, regressions_introduced: review.regressions_introduced || 0 } : null
   for (const report of flat(pending.reports)) report.review = summary
   for (const f of (review && review.refuted) || []) {
     priorRefuted.push({ title: f.title, file: f.file, line: f.line, why_refuted: f.reasoning })
@@ -1288,15 +1295,20 @@ for (const wave of allWaves) {
   const checkCleared = !!(fixVerify && fixVerify.unverified !== true && fixVerify.passed === true)
   const checkFailed = checkRan && !checkCleared
   const checkVerdict = !checkRan ? 'did not run' : checkCleared ? 'passed' : fixVerify.failed === true ? 'FAILED' : 'UNPROVEN (claimed to run without substantiating a pass)'
+  // `oscillating` is named here for the same reason `checkFailed` is: it already blocks in practice
+  // (a loop that stopped itself leaves its confirmed findings unaddressed), but reading that off a
+  // count says nothing about WHY, and "the loop kept fixing the same thing" is the one stop cause a
+  // developer must not resolve by re-running. Explicitness, not a new gate.
+  const reviewOscillating = !!(review && review.oscillating === true)
   const reviewBlocked =
     args.review !== false &&
     (!review ||
-      (review.clean !== true && (review.skipped_for_budget || unaddressed.length > 0 || unfixedSevere.length > 0 || checkFailed)))
+      (review.clean !== true && (review.skipped_for_budget || unaddressed.length > 0 || unfixedSevere.length > 0 || checkFailed || reviewOscillating)))
   if (review && review.clean !== true && !reviewBlocked) {
     log(`checkpoint ${checkpointNumber} review not clean, but every confirmed finding was applied or skipped with a reason, no high/critical one was left unfixed and the post-fix check ${checkVerdict} — continuing to dependent waves`)
   }
   if (reviewBlocked && review && review.clean !== true) {
-    log(`checkpoint ${checkpointNumber} blocked: ${unaddressed.length} unaddressed finding(s), ${unfixedSevere.length} unfixed high/critical, post-fix check ${checkVerdict}`)
+    log(`checkpoint ${checkpointNumber} blocked: ${unaddressed.length} unaddressed finding(s), ${unfixedSevere.length} unfixed high/critical, post-fix check ${checkVerdict}${reviewOscillating ? ', and the review loop stopped itself as oscillating — the same defect or file kept coming back, so another round is not the answer' : ''}`)
   }
   // Persisted at the moment it was made. The identity matching above exists only here, so
   // `gates.review` at the return reads this decision rather than re-deriving it — and the counts
@@ -1473,11 +1485,13 @@ if (!stoppedEarly) {
 Plan: "${planPath}" (read it). Workspace: "${workspace}" — per-step briefs in briefs/, implementer notes in notes/.
 ${ROOT_NOTE}
 Step reports (compact; read the notes/ files where detail matters):
-${JSON.stringify(leafReports.map((r) => ({ step: r.step, title: r.title, failed: r.failed || false, skipped_for_budget: r.skipped_for_budget || false, summary: r.impl && r.impl.summary, changed_files: r.impl && r.impl.changed_files, deviations: r.impl && r.impl.deviations, concerns: r.impl && r.impl.concerns, verify_run: r.impl && r.impl.verify_run, status: r.status, kind: r.kind, attempts: r.attempts, weak_evidence: r.weak_evidence || false, unverified: r.unverified || false, unverified_reason: r.unverified_reason || undefined, review_clean: r.review && r.review.clean })), null, 2)}
+${JSON.stringify(leafReports.map((r) => ({ step: r.step, title: r.title, failed: r.failed || false, skipped_for_budget: r.skipped_for_budget || false, summary: r.impl && r.impl.summary, changed_files: r.impl && r.impl.changed_files, deviations: r.impl && r.impl.deviations, concerns: r.impl && r.impl.concerns, verify_run: r.impl && r.impl.verify_run, status: r.status, kind: r.kind, attempts: r.attempts, weak_evidence: r.weak_evidence || false, unverified: r.unverified || false, unverified_reason: r.unverified_reason || undefined, review_clean: r.review && r.review.clean, review_oscillating: r.review && r.review.oscillating, review_regressions_introduced: r.review && r.review.regressions_introduced })), null, 2)}
 
 Steps marked \`unverified\` have no substantiated executable check of their own — either none ran, or one was claimed without a command or a pass/fail result. Their behavior rests entirely on the suite you are about to run and on the checkpoint reviews — if the suite does not actually exercise them, say so in an issue rather than reporting a clean composition. Open \`concerns\` the reviews did not resolve are also yours to settle or escalate.
 
 Steps marked \`weak_evidence\` passed a check that was already green BEFORE them (\`kind: existing-suite\`), so their command proves they broke nothing and nothing more: where such a step's goal was to add behavior, the suite you run is the first thing that could exercise it — check that it does, and raise an issue if it does not. Steps with \`status: "infra-error"\` never had their check run at all (the toolchain, not the code, failed, and one re-run did not clear it); nothing has executed them, so whatever you can establish about them here is all the evidence that exists.
+
+A step whose \`review_oscillating\` is true had its checkpoint's review loop stop itself — the same defect or file kept coming back across rounds, so a developer's decision is what it needs, not another pass; a \`review_clean: true\` next to it does not mean that got resolved. \`review_regressions_introduced\` is how many confirmed findings a later round attributed to that checkpoint's own fixes, counted across the whole loop even where a still-later round cleared them — a nonzero count is churn worth weighing when you judge how these steps compose, not something \`review_clean: true\` erases.
 
 Steps were implemented by separate agents, possibly in parallel. Check the SEAMS between them: do the pieces actually compose — imports/exports, function signatures vs call sites, naming consistency, duplicated helpers that should be one, config/registration each step assumed another would do, plan requirements no step ended up covering. Per-step verify_run covered steps individually, not the composition: run the repo's build/typecheck/test suite if available and report it in suite_run.${uncoveredNote}
 

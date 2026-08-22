@@ -71,7 +71,7 @@ const DEFAULTS = {
   scoutMode: defaultOf('workflows/wf-implement.js', /const scoutMode = args\.scoutMode \|\| '(\w+)'/),
 }
 
-// Prose spells the name three ways — `maxParallelSteps` (default 5), `reviewRounds: N` (default 3 —
+// Prose spells the name three ways — `maxParallelSteps` (default 5), `reviewRounds: N` (default 4 —
 // …), `scoutMode: "always" | …` (default adaptive: …) — so the anchor is the name followed by a
 // backtick or a colon. `non-default` is English, not a claim about a value; excluding it is the
 // difference between a useful test and one that cries wolf until it gets deleted.
@@ -163,6 +163,17 @@ function deliveryVerdicts() {
   return m[1].split(',').map((v) => v.trim().replace(/'/g, ''))
 }
 
+// Same shape, same reason: `rounds_end` is COMPUTED by wf-review-loop at every break site, so no
+// schema declares it, and the skill that writes the ledger line now transcribes it instead of
+// re-deriving it. That transcription is only as good as this comparison — a member added to the
+// script while `skills/dev-review/SKILL.md` still lists the old five is a verdict the report cannot
+// explain and the calibration reader silently buckets as unknown.
+function roundsEnds() {
+  const m = read('workflows/wf-review-loop.js').match(/const ROUNDS_END = \[([^\]]+)\]/)
+  if (!m) throw new Error('workflows/wf-review-loop.js: could not extract ROUNDS_END — has the declaration moved or been renamed?')
+  return m[1].split(',').map((v) => v.trim().replace(/'/g, ''))
+}
+
 // Prose spells them as `risk: "contract" | "local"`. Compare the sets, not the formatting — and
 // judge EVERY such statement in a file, not just the first one, since a document restates a set
 // wherever it explains it. A statement naming a single member (`delivery_verdict: 'blocked'` in an
@@ -191,6 +202,14 @@ const OPTION_SETS = [
   // five more pinned statements would be five more things to maintain exactly forever, which is the
   // decision docs/architecture.md records.
   ['delivery_verdict', deliveryVerdicts()],
+  // Why the review loop stopped. `clean` and `max-rounds` mean the tree was last seen reviewed;
+  // `blocked` and `oscillating` mean it was not, and the two call for different answers — a fix, or
+  // a decision. A skill listing a stale set turns that distinction into a guess.
+  ['rounds_end', roundsEnds()],
+  // Where a confirmed finding came from. `regressions_introduced` — the ledger row this whole loop
+  // is calibrated against — is a count of ONE member of this set, so a renamed member is a metric
+  // that quietly reports zero forever.
+  ['origin', enumOf('workflows/wf-review-loop.js', 'origin')],
 ]
 // Pure over text, so the mutation proof below is just a second call on a COPY rather than a rewrite
 // of something the repo owns.
@@ -228,6 +247,15 @@ const severities = ['workflows/wf-implement.js', 'workflows/wf-review-loop.js']
   .flat()
 check('every severity enum is identical', [...new Set(severities)].length, 1)
 check('and the blocking pair still exists', severities[0].split(',').filter((s) => s === 'high' || s === 'critical'), ['high', 'critical'])
+
+// `origin` is declared TWICE in wf-review-loop.js — once for what a reviewer may report, once for
+// what survives clustering — and the run's regression counts are taken from the verified copy. A
+// member present in one declaration only is a label a reviewer can emit and the verifier can never
+// carry through, which reads downstream as "the fixes introduced nothing". The count is asserted
+// too, so a rename that hides one declaration fails here instead of passing on a set of one.
+const origins = [...read('workflows/wf-review-loop.js').matchAll(/origin: \{ type: 'string', enum: \[([^\]]+)\]/g)].map((m) => m[1].replace(/[' ]/g, ''))
+check('origin is declared in both finding schemas', origins.length, 2)
+check('and the two declarations agree', [...new Set(origins)].length, 1)
 
 // ---- 5. The one soft guide that is a number: step size. Stated in the synthesizer prompt and in
 // the architecture diagram, nowhere else, and they have to agree or the diagram teaches the wrong

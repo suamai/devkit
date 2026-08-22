@@ -9,6 +9,78 @@ different artifact, a new gate — and never on prose that restates behavior alr
 `.claude-plugin/plugin.json` and `.claude-plugin/marketplace.json` state it (the latter twice);
 `tests/contract-drift.test.js` fails if they disagree, or if the shipped version has no entry here.
 
+## 0.11.0 — 2026-08-21
+
+### Fixed
+- **The review loop can no longer exit leaving fixes at `HEAD` that nobody reviewed.** The last
+  permitted round is now **report-only**: it finds, verifies and reports, and hands nothing to a
+  fixer. Previously a round that found, verified and fixed at exactly `maxRounds` exited with those
+  edits unjudged — documented as expected behavior, and the single most reliable way for a fixer's
+  regression to reach a branch. Budget for it: **N rounds buy N-1 fix rounds**, so the round default
+  moves **3 → 4** (`wf-review-loop`'s `maxRounds`, `wf-implement`'s `reviewRounds`) to buy back the
+  fix round the new rule removes; a run that reaches the fourth round pays one extra targeted
+  re-review agent, not a second wide sweep. `/dev-review --from-report` moves **2 → 3** rather than
+  following the default: a seeded run starts a round further along, and at 2 it would have lost the
+  ability to repair its own seeded fix's regression. `maxRounds: 1` with `apply: true` is floored at
+  2 and logged, since one report-only round is not what a caller asking for fixes meant.
+  Two exits can still leave unreviewed edits — a post-fix check that stayed red, and a fix the fixer
+  skipped — and the result now says so in `unreviewed_fixes` instead of leaving it to be found in
+  the diff.
+- **The fixer gets the scaffolding every other code-writing role already had.** It was the only one
+  running with no path-scoped repo rules, no blast-radius mandate and no instruction to run
+  anything. It now receives the matched `.claude/rules/*.md` (the same `rulesNote` `/dev-implement`
+  builds, byte-identical and pinned by a test), is ordered to enumerate the callers, tests, types and
+  docs that encode a behavior **before** changing it — with "updating what your own edit broke is
+  never out of scope" stated in as many words — and is forbidden by name from deleting, skipping or
+  weakening a test, assertion, type or lint rule to reach green. When a `verifyCommand` exists it
+  must run it itself and report the result as `self_check`; that claim gates nothing (the
+  independent check agent still decides `clean`), so a fixer cannot clear its own gate, but it
+  catches its own regression while it can still fix it.
+- **The re-review stopped reading only what the fixer admitted to changing.** Its file scope was the
+  fixer's self-report, so a caller or helper edited incidentally and left unmentioned was read by
+  nobody. The post-fix check agent — which already has a shell and already runs after every fix
+  round — now also reports `git status --porcelain`, the loop diffs that against everything the run
+  had declared, and the paths nobody declared are handed to the next re-review first, under a
+  heading saying the fixer did not report them. They are returned as `undeclared_files`, and
+  `scope_source` records whether the scope came from that diff or fell back to the self-report.
+
+### Added
+- **An oscillation stop.** The loop now halts itself, before spawning another fixer, when the same
+  defect was reported fixed in two separate rounds and is confirmed again, or when one file has been
+  rewritten by three distinct fix rounds. It returns `oscillating: true` and
+  `rounds_end: "oscillating"`, and names what kept coming back. The thresholds are deliberately not
+  "fixed once and still here" — a partial fix re-reported under its original title is the expected
+  output of a re-review, and stopping there would converge by looking away. The answer to this
+  verdict is a plan, not another round, and both `/dev-review` and `/dev-implement` now say so.
+- **The fix model escalates by round as well as by severity.** One combined rule —
+  `critical || round >= 2` — buys the fixer one rung above the run's fix tier. A defect that already
+  survived one fix is evidence the work is hard that the run paid for, rather than a severity label
+  someone typed. The base stays relative, not a hardcoded opus, so the lever still exists under a
+  cheap profile.
+- **Cross-round memory inside a single run.** The fixer and the re-reviewer now see a compact
+  history of every earlier round (what was confirmed, applied, skipped, refuted), and the refutation
+  note is recomputed per round over the run's own refutations as well as the caller's — so the
+  verifier stops re-litigating what an earlier round already dismissed, and undoing an earlier fix
+  has to be argued for. This is state inside one invocation; nothing crosses a run boundary.
+- **Regression instrumentation, end to end.** A round-2-or-later re-review labels each finding's
+  `origin` (`introduced-by-fix`, `unresolved`, `pre-existing`); the loop returns
+  `regressions_introduced`, `unresolved_after_fix` and `fix_rounds` (the rounds that actually spawned
+  a fixer — the only honest denominator); the `review` and `implement` ledger lines carry them; and
+  `/dev-status --calibration` prints a new row 8, regressions per fix round, with `n=0` rather than a
+  confident zero on a ledger that predates the fields. The batched verifier also emits `fix_context`
+  and `fix_locality` for clusters it has already confirmed — context it was paying for and throwing
+  away. `/dev-pr --review` reports now preserve `fix_context` (alongside `origin`), so a
+  `--from-report` replay carries it; `fix_locality` does not survive that round trip today — a
+  deliberate, revisitable scope choice, not an oversight.
+
+### Changed
+- **More `/dev-implement` checkpoints will stop the run rather than continue past it.** Findings from
+  the new report-only last round are `unaddressed`, which blocks a checkpoint, and an oscillating
+  loop now blocks explicitly and is named as its own stop cause in the report. This is the intended
+  trade: unjudged code no longer feeds the dependent waves. A run stopped this way resumes with
+  `/dev-implement <slug> --continue` after the findings are dealt with — except an oscillation, where
+  re-running the same machinery on the same defect is exactly what the stop exists to prevent.
+
 ## 0.10.0 — 2026-08-18
 
 ### Fixed
