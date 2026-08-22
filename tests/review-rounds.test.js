@@ -224,7 +224,7 @@ async function main() {
     [churn.result.oscillating, churn.result.rounds_end, churn.calls.includes('fix r4')], [true, 'oscillating', false])
   check('  └─ two rounds over one file is not', churn.calls.includes('fix r3'), true)
 
-  // ---- 7. The re-review's file scope comes from the diff, not from the fixer's self-report.
+  // ---- 7. The re-review's file scope IS the fixer's self-report — and only that.
   const scoped = await run(
     { ...BASE, verifyCommand: CMD, files: ['src/a.ts'], seedFindings: seed('f1', 'src/a.ts') },
     {

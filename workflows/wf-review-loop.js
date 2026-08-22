@@ -180,9 +180,11 @@ const maxRounds = args.maxRounds || 4
 const roundLimit = apply && maxRounds < 2 ? 2 : maxRounds
 if (roundLimit !== maxRounds) log(`maxRounds ${maxRounds} with apply: true would make every round report-only — raising the round limit to ${roundLimit} so the fixes get re-reviewed`)
 // Why the loop stopped, as one literal so the prose that restates it can be compared against it
-// (tests/contract-drift.test.js), mirroring wf-implement's DELIVERY_VERDICTS. The order is the
-// precedence the return applies: budget outranks the round limit, because a budget exit that landed
-// on the last round would otherwise be filed as convergence that never happened.
+// (tests/contract-drift.test.js), mirroring wf-implement's DELIVERY_VERDICTS. The order here is the
+// vocabulary's listing order and NOTHING else — precedence lives in the ternary at the return, which
+// tests budget BEFORE the round limit so a budget exit that landed on the last round is not filed as
+// convergence that never happened. Reordering this array changes the prose it is compared against,
+// never what the loop reports.
 const ROUNDS_END = ['clean', 'oscillating', 'max-rounds', 'blocked', 'budget']
 const [END_CLEAN, END_OSCILLATING, END_MAX_ROUNDS, END_BLOCKED, END_BUDGET] = ROUNDS_END
 // The command one agent runs after a round applies fixes. `false` is an explicit opt-out and a blank
@@ -485,8 +487,6 @@ const FIX_VERIFY_SCHEMA = {
     passed: { type: 'boolean', description: 'REQUIRED when ran=true: whether that command actually succeeded' },
     output_summary: { type: 'string', description: 'on failure: the failing target and the essential error line, plus whether it looks caused by the applied fixes or pre-existing. No logs.' },
     not_ran_reason: { type: 'string', description: 'required when ran=false: why no executable check was possible. A round whose check never ran cannot be reported clean, so "no time" or "it looked correct" is not a reason.' },
-    // Independent of `ran`: a check that could not run at all still leaves a tree that git can read,
-    // and that reading is the only unmediated view of the round the loop ever gets.
   },
   description: 'result of ACTUALLY RUNNING the check — reading the code does not count',
 }
@@ -633,11 +633,12 @@ Return the structured report. The next round explicitly re-reviews the result.`
 // RUN something and report what happened, because "every finding was applied" and "the tree still
 // works" are different claims and only one of them was ever checked.
 //
-// It also reports the DIFF, for one reason that has nothing to do with the check: this agent is the
-// only one in the loop with a shell, and until it read `git status` the next round's file scope was
-// whatever the fixer chose to declare. A file edited in passing and not listed was read by nobody.
-// Spawning an agent just to run `git status` would break "skipping spawns NOTHING" (runFixCheck);
-// asking the one that is already running costs a line.
+// It runs the command and nothing else. It used to report `git status` as well, so the next round's
+// file scope did not rest entirely on what the fixer chose to declare — removed before release,
+// because `git status` reports whether a path DIFFERS from HEAD and never what changed inside it,
+// which on a tree nothing commits to mid-run cannot separate a silent edit from one that has been
+// dirty since round 1. It missed real undeclared edits and invented false ones. The scope is the
+// fixer's declaration now, and `FIX_SCHEMA.changed_files` is where that is stated.
 function checkPrompt(round, command, fix, selfCheck) {
   // The fixer was told to run the same command before reporting. Naming its claim here is not an
   // invitation to agree with it — an agent handed an expected answer will find it — so the framing
@@ -720,12 +721,10 @@ function classifyCheck(impl, attempt = 1) {
     failed: verifyFailed,
     unverified,
     attempts: attempt,
-    // Carried through, never judged — and deliberately inside the RETURN LITERAL rather than
-    // computed above it: everything from `const verify` down to the opening of this literal is
-    // byte-compared against wf-implement.js's copy of the same truth table
-    // (tests/verify-gate.test.js), so a line added inside that slice is drift in a gate, not a new
-    // field. Absent for an impl-shaped caller — an implementer's verify_run has no such field —
-    // which is why it is optional everywhere.
+    // Nothing else belongs here, and nothing at all belongs ABOVE this literal: everything from
+    // `const verify` down to the opening brace is byte-compared against wf-implement.js's copy of the
+    // same truth table (tests/verify-gate.test.js), so a line added inside that slice is drift in a
+    // gate rather than a new field.
   }
 }
 
@@ -800,8 +799,6 @@ let oscillating = false
 // are indistinguishable afterwards (a budget floor on the last round looks exactly like the round
 // limit), and a verdict reconstructed from the wreckage is free to disagree with what happened.
 let stopReason = null
-// What the last re-review's file scope was built from. `self-report` until a check agent actually
-// reads the tree, because that is the honest name for the fixer's own list.
 let lastSelfCheck = null // the last fix round's classified SELF-claim — reported, never gated on
 let fixedInRound = 0 // the last round that changed code
 let reviewedThroughRound = 0 // the last round whose changes a re-review actually judged
