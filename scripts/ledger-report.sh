@@ -239,6 +239,15 @@ function handle(line,   F, O, C, CO, B, BO, FI, FO, VE, VO, phase, tier, profile
     if (isnum(FI["raw_titles"]) && isnum(FI["clusters"])) {
       cl_raw += FI["raw_titles"]; cl_clu += FI["clusters"]; cl_n++
     }
+    # Both fields or neither. `regressions_introduced` is a finding count and rides inside
+    # `findings`; `fix_rounds` is a round count and sits top-level beside `rounds` — so a line can
+    # carry one without the other, and taking the half it has would either divide by a denominator
+    # nobody recorded or read a missing numerator as a fix phase that broke nothing. A line written
+    # before either field existed contributes to neither sum nor rg_n, which is what lets the row
+    # say n=0 instead of a confident zero.
+    if (isnum(FI["regressions_introduced"]) && isnum(F["fix_rounds"])) {
+      rg_reg += FI["regressions_introduced"]; rg_rounds += F["fix_rounds"]; rg_n++
+    }
   }
 
   if (F["verification"] != "" && parse(F["verification"], VE, VO) > 0) {
@@ -382,6 +391,15 @@ function report(   i) {
 
   tokens()
   agentsrow()
+
+  # A rate, not a total: regressions per fix round is the number that falls when the fixer stops
+  # breaking things, while a raw count falls just as well by reviewing less. An explicit 0
+  # introduced is a real sample and belongs in n; a line that predates the field is not one. The
+  # zero denominator is guarded the way row 1 guards its zero clusters — the counts are still worth
+  # printing, the ratio is not a number.
+  if (rg_n == 0) norow("8. Regression rate")
+  else if (rg_rounds == 0) row("8. Regression rate", rg_n, sprintf("%d introduced, 0 fix rounds", rg_reg))
+  else row("8. Regression rate", rg_n, sprintf("%.2f regressions per fix round (%d introduced / %d fix rounds)", rg_reg / rg_rounds, rg_reg, rg_rounds))
 
   printf "\n%s\n", "Caveats"
   printf "  %s\n", "- wf-implement `steps` covers scouting and implementation together: agents in a wave"

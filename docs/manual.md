@@ -88,7 +88,7 @@ A task can be promoted explicitly by saying “treat this as large”.
 | `/dev-status clean <slug>` | Preview, confirm, then delete a task workspace (its state file goes with it). |
 | `/dev-status clean pr/<branch>` | Preview, confirm, then delete one standalone PR workspace. Bare `pr` never deletes all PR workspaces. |
 | `/dev-status archive <slug>` | Preview, confirm, then delete everything in a task workspace *except* `state.json`: the bulk goes, the compact per-run summaries survive. Not offered for `pr/<branch>` workspaces — they carry no state file to keep. |
-| `/dev-status --calibration` | Print the calibration checklist from your run ledger — clustering ratio, split rate, round convergence, escalation rate, unverified steps, tokens per phase, projected vs. actual agents — each row with its sample size, medians rather than means. Says so plainly when there is no ledger yet. |
+| `/dev-status --calibration` | Print the calibration checklist from your run ledger — clustering ratio, split rate, round convergence, escalation rate, unverified steps, tokens per phase, projected vs. actual agents, regressions per fix round — each row with its sample size, medians rather than means. Says so plainly when there is no ledger yet. |
 
 Implementation tuning is supplied in the request as intent rather than relying on rigid flag
 parsing: for example “implement `<slug>` with review disabled”, “use one review round”, “never run

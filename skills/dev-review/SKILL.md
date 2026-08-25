@@ -30,7 +30,7 @@ one, which silently drops a defect.
      baseline: <the report's merge-base>,
      seedFindings: <the report's confirmed array, verbatim>,
      priorRefuted: <the report's refuted array>,
-     apply: true, maxRounds: 2, verifyCommand: <the repo's own check, or false>
+     apply: true, maxRounds: 3, verifyCommand: <the repo's own check, or false>
    } })
    ```
    `seedFindings` makes round 1 skip finding and verifying and go straight to the fixer; the explicit
@@ -41,16 +41,22 @@ one, which silently drops a defect.
    code minutes before a fresh `/dev-pr --review` looks at it, so it is the worst place to learn later
    that the fixes stopped the suite.
 
+   `maxRounds: 3` — one lower than a standalone review's limit, because a seeded run starts a round
+   further along: round 1 is the seeded fix, round 2 fixes whatever that fix broke, and round 3 is the
+   report-only last round that judges the result. Two rounds would delete the middle one, leaving this
+   path unable to repair its own regression — which is precisely the failure a seeded fix is most
+   likely to produce, since it edits code nobody has reviewed since the report was written.
+
 4. **Report and re-gate.** Say which findings were fixed, which were skipped and why, and the
    clean/not-clean verdict. Then require a fresh `/dev-pr --review`: the old report stays as
    evidence, but only a review of the *current* `HEAD` can clear the publication gate.
    Write the ledger line here too — the same `review` line step 4 of the Process describes, plus
    `"seeded":true`. Round 1 skips finding and clustering entirely and maps every seeded finding 1:1,
-   so `raw` and `clustered` are equal by construction **for that round alone**. But `maxRounds: 2`
-   means a real, non-seeded round 2 re-review still runs whenever round 1 leaves anything to check,
-   and its own find+cluster can add unequal raw/clustered increments to the same cumulative totals —
-   so the ledger line's overall ratio reports 1.0 only when round 2 also finds nothing new. When it
-   does find something, a ratio above 1.0 is the honest number, not a bug to chase.
+   so `raw` and `clustered` are equal by construction **for that round alone**. But `maxRounds: 3`
+   means real, non-seeded rounds 2 and 3 still run whenever round 1 leaves anything to check, and
+   their own find+cluster can add unequal raw/clustered increments to the same cumulative totals —
+   so the ledger line's overall ratio reports 1.0 only when the later rounds also find nothing new.
+   When one of them does find something, a ratio above 1.0 is the honest number, not a bug to chase.
 
 **When this is the wrong tool.** If the findings need an approach decision, span several subsystems,
 or must be applied in a specific order, they are ordinary work — say so and offer
@@ -102,13 +108,26 @@ There is no dedicated remediation machinery to reach for; that is deliberate.
    developer says something like "skip the suite" or "don't run it each round." Omitting it is the same
    opt-out said less explicitly — honest rather than silent, because the result then says no check ran
    and why.
-   `maxRounds` default 3. Custom `lenses` when the developer asks for a specific focus (e.g. security-only) — they replace the two general lenses, never the appended `repo-conventions` one. If the workflow name does not resolve (the plugin has not loaded in this session yet), invoke with `scriptPath` pointing at `${CLAUDE_PLUGIN_ROOT}/workflows/wf-review-loop.js`.
+   `maxRounds` default 4. Custom `lenses` when the developer asks for a specific focus (e.g. security-only) — they replace the two general lenses, never the appended `repo-conventions` one. If the workflow name does not resolve (the plugin has not loaded in this session yet), invoke with `scriptPath` pointing at `${CLAUDE_PLUGIN_ROOT}/workflows/wf-review-loop.js`.
 
    Round 1 is the wide two-lens sweep; rounds 2+ are one targeted agent that only asks whether the
    fixes held and whether they broke anything. So a higher `maxRounds` is much cheaper than it looks —
    the wide net is paid once.
 
-4. **Report.** Lead with the outcome: clean or not, in how many rounds. Then canonical confirmed findings (including merged reviewer titles), fixes applied, fixes skipped and why, and whether the loop ended `clean: true` (an explicit post-fix pass found nothing) or hit `maxRounds` (fixes applied but final state not re-verified; offer one more round).
+4. **Report.** Lead with the outcome: clean or not, in how many rounds. Then canonical confirmed findings (including merged reviewer titles), fixes applied, fixes skipped and why, and whether the loop ended `clean: true` (an explicit post-fix pass found nothing) or stopped for one of the other reasons `rounds_end` gives.
+
+   A run invoked with `apply: false` that ends with confirmed findings always reports
+   `rounds_end: 'blocked'` — that is the expected outcome of a report-only pass, not a stuck fix. Say
+   so plainly rather than leaving the reader to infer it: `blocked` carries the same word whether the
+   caller asked for a report only or a fix genuinely could not land, and only the report can tell
+   those apart.
+
+   Reaching the round limit no longer means an unreviewed fix. The last permitted round is
+   report-only — it finds, verifies and reports, and hands nothing to a fixer — so a `max-rounds` exit
+   is a tree that *was* reviewed after its last edit, with findings deliberately left unfixed. Name
+   them; they are the deliverable of that round. A rerun with a higher `maxRounds` is how they get
+   fixed, and saying so is more honest than "one more round would have finished it", which the loop
+   has no evidence for.
 
    Report `fix_verify` in one line as well: whether a check ran, which command it ran, and whether it
    passed — or, when it did not run, the reason the result gives. No `fix_verify` at all means no round
@@ -121,11 +140,34 @@ There is no dedicated remediation machinery to reach for; that is deliberate.
    at report time: a `clean: true` reached that way is still a run that broke the tree once, and the
    developer should not have to find that in the diff.
 
+   Three more fields change what the report has to say, and none of them is a detail:
+
+   - `oscillating: true` means the loop stopped **itself**: one defect was reported fixed in two
+     separate rounds and came back anyway, or one file was rewritten by three separate fix rounds.
+     That is not a budget running out, and another round is not the answer to it — say what kept
+     coming back, and offer `/dev-plan "fix the findings in <scope>"`, a decision about the design
+     rather than one more attempt at the same edit. Re-running the loop unchanged is the one response
+     this verdict exists to rule out.
+   - `unreviewed_fixes: true` means the loop exited with fixes at `HEAD` that no later round looked
+     at. The round budget can no longer cause this; a post-fix check that stayed red and a fix the
+     fixer skipped still can. Say it in one line — the developer should not have to find unjudged
+     edits in the diff.
+   - `fix_self_check` is the fixer's **own** run of the check, classified exactly as `fix_verify` is
+     and gating nothing (`clean` rests on the independent check alone). Report it when it disagrees
+     with `fix_verify`: a fixer claiming green over a check that came back red is worth naming out
+     loud, and averaging the two would hide precisely that.
+
+   `regressions_introduced` and `unresolved_after_fix` count confirmed findings by their
+   `origin: introduced-by-fix | unresolved | pre-existing` — an attribution only a round 2-or-later
+   re-review can make, since there have to be fixes to attribute anything to. A run that never
+   re-reviewed therefore reports 0 because it had no basis for the label, not because nothing broke;
+   when the numbers matter, say which of the two it was.
+
    Then append one `review` line to the ledger — once per invocation, after the report:
 
 ```bash
 sh "${CLAUDE_PLUGIN_ROOT}/scripts/ledger-append.sh" <<'JSON'
-{"phase":"review","rounds":2,"clean":true,"rounds_end":"clean","concurrent":"unknown","findings":{"raw_titles":11,"clusters":7,"confirmed":4,"refuted":3,"applied":4,"skipped":0},"cost":{"by_phase":{"review":90000,"verify":30000,"fix":40000,"check":12000},"total":172000,"budget_total":null,"floors_active":false}}
+{"phase":"review","rounds":2,"fix_rounds":1,"clean":true,"rounds_end":"clean","concurrent":"unknown","findings":{"raw_titles":11,"clusters":7,"confirmed":4,"refuted":3,"applied":4,"skipped":0,"regressions_introduced":0},"cost":{"by_phase":{"review":90000,"verify":30000,"fix":40000,"check":12000},"total":172000,"budget_total":null,"floors_active":false}}
 JSON
 ```
 
@@ -133,15 +175,19 @@ JSON
    not close a quoted heredoc, and the script then sees a two-line body and refuses it.
 
    All of it comes off the loop's own return — the envelope is the script's half, and the shared
-   vocabulary lives in `docs/architecture.md` → "The run ledger". `rounds` and `clean` go in verbatim.
-   `rounds_end` is *why* the loop stopped: `clean` when it went clean; otherwise `budget` when the
-   journal names a token-budget floor; otherwise `max-rounds` when `rounds` reached the round limit;
-   otherwise `blocked` (a skipped fix, or a post-fix check that did not clear). Budget is tested before
-   the round limit because a budget exit landing on the last round would otherwise be filed as
-   convergence that never happened. In `findings`, `raw_titles` is the return's `raw` and `clusters` its
-   `clustered` — the loop's own scalars — while `confirmed`/`refuted`/`applied`/`skipped` are those
-   arrays' lengths; never reconstruct the first two from `merged_titles`, which omits every raw finding
-   the verifier dropped without clustering. `cost` goes in **verbatim**; add `profile` only when the
+   vocabulary lives in `docs/architecture.md` → "The run ledger". `rounds` and `clean` go in verbatim,
+   and so does `rounds_end`: the loop computes why it stopped and returns it, one of
+   `rounds_end: clean | oscillating | max-rounds | blocked | budget`, so write it as given rather than
+   re-deriving it — the script applies the precedence (budget outranks the round limit, because a
+   budget exit landing on the last round would otherwise be filed as convergence that never happened),
+   and one answer computed in one place is what makes the vocabulary checkable at all.
+   `fix_rounds` goes in verbatim too: the rounds that actually spawned a fixer, which is the
+   denominator a regression rate needs and something `rounds` — report-only and clean rounds
+   included — cannot be. In `findings`, `raw_titles` is the return's `raw` and `clusters` its
+   `clustered` — the loop's own scalars — `regressions_introduced` is the return's scalar of that
+   name, and `confirmed`/`refuted`/`applied`/`skipped` are those arrays' lengths. Never reconstruct
+   `raw_titles` or `clusters` from `merged_titles`, which omits every raw finding the verifier
+   dropped without clustering. `cost` goes in **verbatim**; add `profile` only when the
    developer overrode it. `concurrent` is `"unknown"` unless you actually checked (TaskList showed no
    other workflow running) — never a guessed `false`.
 

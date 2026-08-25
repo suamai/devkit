@@ -27,11 +27,27 @@ function primitives(src, file) {
 const IMPL = wf('wf-implement.js')
 const REVIEW = wf('wf-review-loop.js')
 
+// `rulesNote` renders the matched rules into a prompt; it sits OUTSIDE the fence because it is not
+// part of the matcher, so nothing above compares it. Brace-matched from each file and fail-closed if
+// the name moves — the shape tests/fix-verify.test.js uses.
+function rulesNoteOf(src, file) {
+  const at = src.indexOf('function rulesNote(')
+  if (at === -1) throw new Error(`${file}: function rulesNote( not found — has it been renamed?`)
+  let depth = 0
+  for (let i = src.indexOf('{', at); i < src.length; i++) {
+    if (src[i] === '{') depth++
+    else if (src[i] === '}' && --depth === 0) return src.slice(at, i + 1)
+  }
+  throw new Error(`${file}: unbalanced braces after function rulesNote(`)
+}
+
 let failed = 0
+let cases = 0
 function check(name, actual, expected) {
   const a = JSON.stringify(actual)
   const e = JSON.stringify(expected)
   const ok = a === e
+  cases++
   if (!ok) failed++
   console.log(`${ok ? 'PASS' : 'FAIL'}  ${name.padEnd(50)} ${a}`)
   if (!ok) console.log(`      expected ${e}`)
@@ -119,6 +135,15 @@ check('a dot is literal, not any-char', [m('src/a.ts', 'src/a.ts'), m('src/a.ts'
 // the only thing that keeps the copies one algorithm instead of two.
 check('shared matcher is byte-identical', fenced(IMPL, 'wf-implement.js') === fenced(REVIEW, 'wf-review-loop.js'), true)
 check('its primitives are too', primitives(IMPL, 'wf-implement.js') === primitives(REVIEW, 'wf-review-loop.js'), true)
+// The third copy: the review loop hands the same note to its fixer and its repair agent that
+// wf-implement hands an implementer. Two renderings of one repo's rules would be two contracts.
+const IMPL_NOTE = rulesNoteOf(IMPL, 'wf-implement.js')
+const REVIEW_NOTE = rulesNoteOf(REVIEW, 'wf-review-loop.js')
+check('rulesNote is byte-identical', IMPL_NOTE === REVIEW_NOTE, true)
+// Mutation proof, on an in-memory copy: without it this comparison could stop testing anything and
+// keep passing. Nothing on disk is touched.
+check('  └─ and the comparison goes red when the copy drifts',
+  IMPL_NOTE === REVIEW_NOTE.replace('READ THEM', 'READ THEM SOMETIME'), false)
 
-console.log(failed ? `\n${failed} FAILED` : `\nall ${17} cases pass`)
+console.log(failed ? `\n${failed} FAILED` : `\nall ${cases} cases pass`)
 process.exit(failed ? 1 : 0)

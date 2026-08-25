@@ -66,6 +66,16 @@ knowledge belongs in the repo itself (`CLAUDE.md`, `docs/`, `.claude/rules/*.md`
 PR-reviewable and travels with git. Adding a pull-side memory channel is a possible extension
 (see "Extending"), not something the pipeline currently depends on.
 
+**A script's memory of its own run is not that channel.** `wf-review-loop` carries a compact history
+across its own rounds — what each round confirmed, applied, skipped and refuted — so the fixer can
+see that it already fixed this once, and the verifier stops re-litigating what an earlier round
+dismissed. That is one invocation's local state: created after the run starts, handed only to agents
+that run inside it, and gone with the return. Nothing an agent learns there is discoverable by a
+later run, which is where this section draws its line, and a loop that cannot remember its own
+previous round is not push-only architecture — it is an amnesiac that pays to rediscover the same
+finding. The ledger keeps the line too: its regression counts are aggregated for a human report and
+never enter a prompt (see "The run ledger").
+
 There *is* a write path, and it deliberately ends at a human. `/dev-implement` step 11 offers — only
 when a run produced confirmed findings or a note recording a rediscovered convention — at most three
 proposed edits to `.claude/rules/*.md`, each citing its evidence, which the developer approves as a
@@ -132,7 +142,13 @@ that a rule now has to survive review by someone who can say no.
                   path-scoped rule matches the files — APPENDED to custom lenses, not replaced by them)
           → one verifier semantically clusters and checks all findings in a batch
           → critical clusters alone get one second opinion
-          → Fix confirmed (fix tier; critical escalates one rung)
+          → an oscillation stops the loop HERE, before any fixer: one defect reported fixed in two
+            rounds and confirmed again, or one file rewritten by three fix rounds — checked first,
+            so a last round that is also oscillating reports the reason that matters
+          → and the LAST permitted round stops here too, report-only: it never hands anything to a
+            fixer, so the loop cannot exit leaving fixes at HEAD that nobody reviewed. N rounds buy
+            N-1 fix rounds
+          → Fix confirmed (fix tier; critical OR round >= 2 escalates one rung)
           → Check (sonnet): verifyCommand → classified fix_verify, gating clean the way a step's
             verify_run gates a step; a failed check buys one repair + one re-check, and whatever the
             repair touched joins the re-review's scope
@@ -174,7 +190,12 @@ or a repo, shifts them.
   honest statement that none ran — a bare claim to have run one blocks `clean` exactly as a bare
   `verify_run` degrades a step to `unverified`. The one repair attempt a failed check buys may never
   revert a confirmed fix or weaken a test, an assertion or a type to reach green; its files join the
-  next re-review's scope, so the repair is itself reviewed rather than trusted.
+  next re-review's scope, so the repair is itself reviewed rather than trusted. The **last permitted
+  round applies no fixes** — it finds, verifies and reports — so exhausting the round budget leaves a
+  tree that was reviewed after its last edit, with the surviving findings reported unfixed instead of
+  fixed unjudged. Unreviewed fixes at HEAD are now only reachable through a post-fix check that stayed
+  red or a fix the fixer skipped, and the return says so in `unreviewed_fixes` rather than leaving it
+  to be discovered in the diff.
 - A step's verification outcome is **typed**, because "did it pass" flattens four different answers
   into one: `status: passed | failed | not-run | infra-error`. `infra-error` is the only one an
   implementer may *claim* — no reply shape reveals that a registry was down — so it is honored only
@@ -331,7 +352,7 @@ models:  { impl: "sonnet", … }         override one role; beats the profile
 efforts: { decompose: "low", … }       same, over [low, medium, high, xhigh, max]
 ```
 
-Four decisions are worth knowing about, because each one is a place this could have gone wrong:
+Five decisions are worth knowing about, because each one is a place this could have gone wrong:
 
 - **Roles, not phase names.** `impl`, `review`, `gate`, `synth`… are a vocabulary shared across the
   whole pipeline, so one object survives `workflow()` nesting: `wf-implement` forwards its cost args
@@ -352,6 +373,12 @@ Four decisions are worth knowing about, because each one is a place this could h
 - **Escalation is relative.** A critical review finding buys the fixer one rung above the run's fix
   tier, not a hardcoded opus — otherwise "critical gets a better model" quietly means nothing under
   a cheap profile, which is exactly when it matters most.
+- **A second fix round buys the same one rung**, on that same relative base: `critical || round >= 2`,
+  one `escalate()` for both. A defect that already survived one fix is evidence the work is hard
+  whatever its severity, and it is evidence the run paid for rather than a severity label a reviewer
+  typed. One rung and not two, because the ladder has three: a second `escalate()` stacked on the
+  first is a no-op at the top and, under a cheap profile, spends the whole ladder on the first repeat
+  — which is exactly the "hardcoded opus" this bullet's predecessor rejects, arrived at sideways.
 
 `policy()` is copied verbatim into every workflow script: they are self-contained by construction and
 cannot import a shared helper. `tests/policy.test.js` asserts the copies are byte-identical, so the
@@ -746,7 +773,7 @@ inside a top-level string, is a row that gets mis-read quietly. Omit any field y
   `scouts_projected`, `agents_projected`. A `--explain` run adds `mode: "explain"` and carries **no**
   `tier` — nothing was triaged — which is also why the escalation row counts only lines that have one.
 - implement: `tier`, `waves`, `parallel_groups`, `steps_leaf`, `splits`, `scouts_ran`, `gates`,
-  `gate_breaks`, `checkpoints`, `review_rounds`, `agents_projected`, `unreviewed_waves`,
+  `gate_breaks`, `checkpoints`, `review_rounds`, `fix_rounds`, `agents_projected`, `unreviewed_waves`,
   `delivery_verdict`, `result_recovered`, `findings`, `verification`. `result_recovered` is a
   top-level boolean, written only on a run where at least one step's structured result had to be
   reconstructed instead of returned — omitted otherwise, so the store counts recoveries rather than
@@ -768,13 +795,23 @@ inside a top-level string, is a row that gets mis-read quietly. Omit any field y
   shares with the primary checkout is never counted. They are top-level for the same reason every
   other scalar is, and specifically **not** inside `cost`, which means tokens everywhere in this file
   — a millisecond summed into a token total is a corrupt row that nothing downstream can detect.
-- review: `seeded`, `rounds`, `clean`, `rounds_end` (`clean|max-rounds|blocked|budget`), `findings`
+- review: `seeded`, `rounds`, `fix_rounds`, `clean`, `findings`,
+  `rounds_end: clean | oscillating | max-rounds | blocked | budget` — the loop's own computed verdict,
+  written verbatim, never re-derived by the skill. `fix_rounds` counts only the rounds that spawned a
+  fixer: report-only and clean rounds fix nothing, so `rounds` is the wrong denominator for a rate.
+  `/dev-implement` writes the same two names, summed over its checkpoints
 - pr: `reviewed`, `outcome` (`clean|needs-attention|blocked`), `rounds`, `findings`, `published`
 - debug: `hypotheses`, `refuted`, `repro` (`"yes"|"no"`), `tier`, `signal`
-- `findings` = `{ raw_titles, clusters, confirmed, refuted, applied, skipped }`, all numbers.
+- `findings` = `{ raw_titles, clusters, confirmed, refuted, applied, skipped,
+  regressions_introduced }`, all numbers.
   `raw_titles` and `clusters` are wf-review-loop's own `raw` / `clustered` scalars, read off the
   return — never reconstructed from `merged_titles`, which silently omits every raw finding the
-  verifier dropped without clustering.
+  verifier dropped without clustering. `regressions_introduced` counts the confirmed findings a
+  round-2-or-later re-review attributed to the fixes themselves, off the same return's scalar — its
+  `origin: introduced-by-fix | unresolved | pre-existing`, a label nothing but a re-review can set,
+  because there must be fixes before anything can be attributed to them. It pairs with top-level
+  `fix_rounds`: write both or neither, since the report divides one by the other and a line carrying
+  a numerator with no denominator (or the reverse) is dropped rather than guessed at.
 - `verification` = `{ steps, passed, unverified_honest, unverified_unevidenced, unverified_infra,
   weak_evidence, kind_missing }`, all numbers.
 
@@ -842,6 +879,14 @@ rather than printing a number. Read them as calibration input, never as a target
   Both sides are floors computed the same way, so the delta is not "the estimate was wrong" — it is
   what the plan did not foresee: oversized steps that split, gate breaks forcing a checkpoint, extra
   review rounds. A delta that is consistently large is a planning signal, not a budgeting one.
+
+- **Regression rate**: `findings.regressions_introduced` over top-level `fix_rounds`, counted only on
+  lines carrying both — how many new defects a fix round introduces. This is the number that falls
+  when the fixer stops breaking things, and a raw count is not: a count falls just as well by
+  reviewing less, so read it beside the clustering ratio and the confirmed count, which is where
+  "converged by looking away" shows up instead. Only a round-2-or-later re-review can attribute a
+  regression at all, so a population of one-round runs honestly reports 0 and a rising rate on a
+  population that grew more rounds is not necessarily a worse fixer.
 
 ## Authoring a bespoke workflow
 

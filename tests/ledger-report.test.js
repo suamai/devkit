@@ -48,9 +48,12 @@ const IMPLEMENT = [
   { phase: 'implement', slug: 'd', tier: 'medium', steps_leaf: 4, splits: 0, scouts_ran: 1, gates: 1, checkpoints: 1, agents_projected: 10, concurrent: false, findings: { raw_titles: 6, clusters: 2, confirmed: 1, refuted: 1, applied: 1, skipped: 0 }, verification: { steps: 3, passed: 3, unverified_honest: 0, unverified_unevidenced: 0, unverified_infra: 0, weak_evidence: 0, kind_missing: 0 }, cost: { by_phase: { steps: 16000, review: 6000 }, total: 22000, budget_total: null, floors_active: false } },
 ]
 const REVIEW = [
-  { phase: 'review', rounds: 1, clean: true, rounds_end: 'clean', profile: 'cheap', findings: { raw_titles: 6, clusters: 3, confirmed: 2, refuted: 1, applied: 2, skipped: 0 }, cost: { by_phase: { review: 8000 }, total: 8000, budget_total: null, floors_active: false } },
+  // Two of these four carry the regression pair (`fix_rounds` top-level, `regressions_introduced`
+  // inside findings) and two carry neither — so row 8's n= is what proves a line missing the field
+  // is not counted as a fix phase that introduced nothing.
+  { phase: 'review', rounds: 1, clean: true, rounds_end: 'clean', profile: 'cheap', fix_rounds: 4, findings: { raw_titles: 6, clusters: 3, confirmed: 2, refuted: 1, applied: 2, skipped: 0, regressions_introduced: 2 }, cost: { by_phase: { review: 8000 }, total: 8000, budget_total: null, floors_active: false } },
   { phase: 'review', rounds: 2, clean: true, rounds_end: 'clean', findings: { raw_titles: 4, clusters: 2, confirmed: 1, refuted: 1, applied: 1, skipped: 0 }, cost: { by_phase: { review: 12000 }, total: 12000, budget_total: null, floors_active: false } },
-  { phase: 'review', rounds: 3, clean: false, rounds_end: 'max-rounds', findings: { raw_titles: 9, clusters: 3, confirmed: 3, refuted: 0, applied: 2, skipped: 1 }, cost: { by_phase: { review: 20000 }, total: 20000, budget_total: null, floors_active: false } },
+  { phase: 'review', rounds: 3, clean: false, rounds_end: 'max-rounds', fix_rounds: 8, findings: { raw_titles: 9, clusters: 3, confirmed: 3, refuted: 0, applied: 2, skipped: 1, regressions_introduced: 3 }, cost: { by_phase: { review: 20000 }, total: 20000, budget_total: null, floors_active: false } },
   { phase: 'review', rounds: 1, clean: true, rounds_end: 'clean', seeded: true, findings: { raw_titles: 3, clusters: 1, confirmed: 1, refuted: 0, applied: 1, skipped: 0 }, cost: { by_phase: { review: 6000 }, total: 6000, budget_total: null, floors_active: false } },
 ]
 const GARBAGE = 'this is not json at all'
@@ -124,6 +127,11 @@ check('the shipped floor formula gives', floors, [19, 13, 6, 11])
 check('projected agents, median of 8 10 12 18', row(report.out, 'projected by the plan'), 'projected by the plan n=4 11')
 check('observed floor, median of 6 11 13 19', row(report.out, 'observed floor'), 'observed floor n=4 12')
 
+// 8. Only 2 of the 12 lines carry both fields: regressions 2+3 = 5 over fix rounds 4+8 = 12 → 0.42.
+// The other ten carry neither, and n=2 rather than n=12 is what says they were left out instead of
+// being read as fix phases that introduced nothing.
+check('regressions per fix round', row(report.out, '8. Regression rate'), '8. Regression rate n=2 0.42 regressions per fix round (5 introduced / 12 fix rounds)')
+
 // AC-04: the caveat is a number, not a sentence. false on 5 of the 12 cost-carrying lines.
 check('concurrency caveat carries its count', row(report.out, '7 of 12'), '7 of 12 token samples ran with concurrent true or unknown — their cost.by_phase may be inflated.')
 
@@ -169,6 +177,13 @@ writeLedger(ledgerText([PLAN, mutatedFindings, REVIEW]))
 const afterFindings = run(home, [])
 check('mutating raw_titles moves the ratio', row(afterFindings.out, '1. Clustering ratio'), '1. Clustering ratio n=7 3.00 raw titles per semantic cluster (60 raw / 20 clusters)')
 
+const mutatedReview = clone(REVIEW)
+mutatedReview[0].findings.regressions_introduced = 8 // was 2 → 11 over the same 12 fix rounds → 0.92
+writeLedger(ledgerText([PLAN, IMPLEMENT, mutatedReview]))
+const afterRegressions = run(home, [])
+check('mutating regressions_introduced moves the rate', row(afterRegressions.out, '8. Regression rate'), '8. Regression rate n=2 0.92 regressions per fix round (11 introduced / 12 fix rounds)')
+check('and it did move', row(afterRegressions.out, '8. Regression rate') === row(report.out, '8. Regression rate'), false)
+
 // ---- unq() must decode a \uXXXX escape (scripts/ledger-report.sh), not drop the backslash and
 // leak the raw hex digits into the report. Expected comes from JSON.parse on the same fixture line,
 // never restated by hand.
@@ -204,6 +219,37 @@ check('a multi-signal line still counts as one escalated run',
   row(mReport.out, '4. Escalation rate'),
   '4. Escalation rate n=3 100% went past small (3/3)')
 fs.rmSync(mHome, { recursive: true, force: true })
+
+// ---- a ledger from before the field existed must say n=0, not a confident zero — and half a pair
+// is not a sample either: `fix_rounds` alone has no numerator, `regressions_introduced` alone has no
+// denominator, and counting either would put a made-up number where the missing one belongs.
+const gHome = fs.mkdtempSync(path.join(os.tmpdir(), 'devkit-ledger-noregression-'))
+fs.mkdirSync(path.join(gHome, '.claude', 'devkit'), { recursive: true })
+const gBase = { phase: 'review', rounds: 1, clean: true, rounds_end: 'clean', findings: { raw_titles: 3, clusters: 1, confirmed: 1, refuted: 0, applied: 1, skipped: 0 }, cost: { by_phase: { review: 5000 }, total: 5000, budget_total: null, floors_active: false } }
+const gOnlyRounds = clone(gBase); gOnlyRounds.fix_rounds = 3
+const gOnlyRegressions = clone(gBase); gOnlyRegressions.findings.regressions_introduced = 2
+fs.writeFileSync(path.join(gHome, '.claude', 'devkit', 'runs.jsonl'),
+  [gBase, gOnlyRounds, gOnlyRegressions].map((o) => JSON.stringify(o)).join('\n') + '\n')
+const gReport = run(gHome, [])
+check('a ledger with no regression field says n=0', row(gReport.out, '8. Regression rate'), '8. Regression rate n=0 — no data')
+// …and n=0 because nothing carried the pair, not because the three lines went unread: the row that
+// reads the same findings objects still counts all three, 9 raw over 3 clusters.
+check('while the rest of those lines is still read', row(gReport.out, '1. Clustering ratio'), '1. Clustering ratio n=3 3.00 raw titles per semantic cluster (9 raw / 3 clusters)')
+fs.rmSync(gHome, { recursive: true, force: true })
+
+// ---- and the zero denominator, which is not the same thing: every sampled line recorded the pair
+// and every one of them recorded zero fix rounds (a ledger where every review went clean in round
+// one). There is no rate to print, only the counts — awk treats a division by zero as fatal, so the
+// guard is what keeps the whole report from dying on a real ledger.
+const zHome = fs.mkdtempSync(path.join(os.tmpdir(), 'devkit-ledger-nofixrounds-'))
+fs.mkdirSync(path.join(zHome, '.claude', 'devkit'), { recursive: true })
+const zLine = clone(gBase); zLine.fix_rounds = 0; zLine.findings.regressions_introduced = 0
+fs.writeFileSync(path.join(zHome, '.claude', 'devkit', 'runs.jsonl'),
+  [zLine, zLine].map((o) => JSON.stringify(o)).join('\n') + '\n')
+const zReport = run(zHome, [])
+check('no fix rounds at all prints the counts, not a rate', row(zReport.out, '8. Regression rate'), '8. Regression rate n=2 0 introduced, 0 fix rounds')
+check('and the report still exits 0', zReport.status, 0)
+fs.rmSync(zHome, { recursive: true, force: true })
 
 fs.rmSync(home, { recursive: true, force: true })
 fs.rmSync(bare, { recursive: true, force: true })

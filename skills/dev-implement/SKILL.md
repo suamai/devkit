@@ -214,7 +214,7 @@ You orchestrate the implementation phase of a planned dev task. The heavy liftin
    is not a failure: it yields `acceptance: "n/a"`, and a plan with no spec behaves exactly as before.
    `notes`: anything the developer said since the plan was written. `reviewLoopPath`:
    `${CLAUDE_PLUGIN_ROOT}/workflows/wf-review-loop.js`. Optional: `review: false`,
-   `reviewRounds: N` (default 3 — rounds after the first are one targeted agent, so this is cheaper
+   `reviewRounds: N` (default 4 — rounds after the first are one targeted agent, so this is cheaper
    than it looks), `scoutMode: "always" | "adaptive" | "never"` (default adaptive: the plan's
    `context_confidence` decides, heuristic as fallback), `maxParallelSteps` (default 5), `gate: false`,
    `checkpointFileThreshold` (default 20), `checkpointMaxWaves` (default 3); `profile`/`models`/`efforts` (see Cost below — `impl` runs once per step and is the pipeline's largest single cost).
@@ -362,6 +362,13 @@ You orchestrate the implementation phase of a planned dev task. The heavy liftin
      the round its re-review, so nothing judged that tree. `ran: false` with a reason is the opt-out and
      does not block. Absent means the checkpoint's review never applied a fix, so there was nothing to
      check — not that a check passed.
+   - `checkpointReviews[].review.oscillating` → the loop stopped **itself** at that checkpoint,
+     because one defect was reported fixed in two rounds and came back, or one file was rewritten by
+     three fix rounds. A **third** stop cause, distinct from an unaddressed finding and from a check
+     that did not clear: the findings may all be addressable and the check may be green, and the loop
+     still stopped because repeating the fix was not converging. Report what kept coming back and let
+     the developer decide the approach — `--continue` re-runs the same machinery on the same defect,
+     which is the one response this verdict exists to rule out.
    - `contractGates[].breaks` → gates that fired. High/critical ones already forced a checkpoint;
      low/medium ones were informational and the checkpoint review should have covered them — if one
      survived into `finalCheck.issues`, mention it, it means the gate is more accurate than the review.
@@ -487,7 +494,7 @@ You orchestrate the implementation phase of a planned dev task. The heavy liftin
 
 ```bash
 sh "${CLAUDE_PLUGIN_ROOT}/scripts/ledger-append.sh" <<'JSON'
-{"phase":"implement","slug":"<slug>","tier":"medium","run_id":"<lastRunId>","baseline":"<baseline>","waves":3,"parallel_groups":1,"steps_leaf":7,"splits":0,"scouts_ran":2,"gates":2,"gate_breaks":0,"checkpoints":2,"review_rounds":3,"agents_projected":19,"unreviewed_waves":0,"stopped":false,"delivery_verdict":"ready","concurrent":false,"findings":{"raw_titles":14,"clusters":9,"confirmed":5,"refuted":4,"applied":5,"skipped":0},"verification":{"steps":7,"passed":6,"unverified_honest":1,"unverified_unevidenced":0,"unverified_infra":0,"weak_evidence":2,"kind_missing":0},"cost":{"by_phase":{"steps":180000,"gate":9000,"review":120000,"check":11000},"total":320000,"budget_total":null,"floors_active":false}}
+{"phase":"implement","slug":"<slug>","tier":"medium","run_id":"<lastRunId>","baseline":"<baseline>","waves":3,"parallel_groups":1,"steps_leaf":7,"splits":0,"scouts_ran":2,"gates":2,"gate_breaks":0,"checkpoints":2,"review_rounds":3,"fix_rounds":2,"agents_projected":19,"unreviewed_waves":0,"stopped":false,"delivery_verdict":"ready","concurrent":false,"findings":{"raw_titles":14,"clusters":9,"confirmed":5,"refuted":4,"applied":5,"skipped":0,"regressions_introduced":1},"verification":{"steps":7,"passed":6,"unverified_honest":1,"unverified_unevidenced":0,"unverified_infra":0,"weak_evidence":2,"kind_missing":0},"cost":{"by_phase":{"steps":180000,"gate":9000,"review":120000,"check":11000},"total":320000,"budget_total":null,"floors_active":false}}
 JSON
 ```
 
@@ -517,13 +524,19 @@ JSON
    - `scouts_ran` = `ls <workspace>/briefs | wc -l`: only scouts that actually ran leave a brief
    - `gates` = `contractGates.length`; `gate_breaks` = the total of `contractGates[].breaks.length`
    - `checkpoints` = `checkpointReviews.length`; `review_rounds` = the sum of
-     `checkpointReviews[].review.rounds`
+     `checkpointReviews[].review.rounds`; `fix_rounds` = the sum of
+     `checkpointReviews[].review.fix_rounds` — top-level beside `review_rounds`, and a different
+     number: only the rounds that actually spawned a fixer, which is the denominator a regression rate
+     divides by and something `review_rounds` (report-only and clean rounds included) cannot be
    - `findings` sums `checkpointReviews[].review` across checkpoints: `confirmed`/`refuted`/`applied`/
-     `skipped` are those arrays' lengths, `raw_titles` sums `review.raw` and `clusters` sums
-     `review.clustered` — the review loop's own scalars, stored verbatim under each checkpoint. Never
-     reconstruct either from `merged_titles`: that count silently omits every raw finding the verifier
-     dropped without clustering. A review object carrying neither field (an older run) omits **both**
-     rather than substituting a derivation.
+     `skipped` are those arrays' lengths, `raw_titles` sums `review.raw`, `clusters` sums
+     `review.clustered`, and `regressions_introduced` sums `review.regressions_introduced` — the
+     review loop's own scalars, stored verbatim under each checkpoint. Never reconstruct `raw_titles`
+     or `clusters` from `merged_titles`: that count silently omits every raw finding the verifier
+     dropped without clustering. A review object carrying neither of those (an older run) omits
+     **both** rather than substituting a derivation. `findings.regressions_introduced` and top-level
+     `fix_rounds` are a numerator and a denominator and travel as a pair: write both or neither,
+     since a line carrying one half is dropped by the calibration report rather than halved.
    - `verification` restates step 6's own counts: `steps` = `steps_leaf`, `passed` = the leaf reports
      whose verification status is `passed`, and the three unverified reasons split exactly as step 6
      splits them, partitioning `unverifiedSteps` with no overlap — `unverified_infra` =

@@ -39,6 +39,7 @@ Full rationale: `docs/architecture.md` → "Authoring a bespoke workflow" and "C
   | `MODELS`, `EFFORTS`, `ROLE_NAMES`, `PROFILE_SHIFT` | all 3 | `tests/policy.test.js` | by line prefix |
   | per-phase cost (`metered`/`costReport`) | all 3 | `tests/policy.test.js` | fenced |
   | repo-rule matching, and its `GLOB_TOKENS`/`pathScope` primitives | implement + review-loop | `tests/rules.test.js` | fenced / by anchor |
+  | `rulesNote` | implement + review-loop | `tests/rules.test.js` | by signature |
   | verify classification | implement + review-loop | `tests/verify-gate.test.js` | by anchor, per-file end |
   | `root`, `GIT`, `RUN_FROM`, `ROOT_NOTE` | implement + review-loop | `tests/isolation.test.js` | by line prefix |
 
@@ -46,8 +47,10 @@ Full rationale: `docs/architecture.md` → "Authoring a bespoke workflow" and "C
   free while editing its body or its constants is not — and the constants are a separate row because
   `wf-implement` forwards `profile`/`models`/`efforts` into the nested `wf-review-loop`, which
   re-validates against its own copy: a role added to one alone is accepted, then throws a wave later.
-  And the last three rows are absent from `wf-explore-plan.js` entirely, so "every script" is the
-  wrong mental model.
+  And the last four rows are absent from `wf-explore-plan.js` entirely, so "every script" is the
+  wrong mental model. `rulesNote` sits OUTSIDE the repo-rule fence in both files — it renders the
+  matched rules, it does not match them — so the fenced comparison says nothing about it and it is
+  pinned by its own case.
 - Parts of this file are read as **text** by the suite: a guard slices the region between two anchors
   (`const reviewBlocked =` → the next `\n  if (`, in `tests/schedule.test.js`; `  review: ` →
   `? 'blocked'`, in `tests/delivery-verdict.test.js`) and asserts what the slice mentions. A line
