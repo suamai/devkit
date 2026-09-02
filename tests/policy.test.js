@@ -17,12 +17,16 @@ function extract(src, signature) {
 }
 
 const IMPL = wf('wf-implement.js')
-// The four constants `policy()` validates against. Extracted per FILE rather than once from
-// wf-implement, because each script carries its own copy and the copies are a contract — see the
-// drift check further down, which is the reason this is a function at all.
-const CONST_NAMES = ['const MODELS =', 'const EFFORTS =', 'const ROLE_NAMES =', 'const PROFILE_SHIFT =']
+// The three ladders `policy()` validates against, plus the PROFILES table it looks tiers up in.
+// Extracted per FILE rather than once from wf-implement, because each script carries its own copy
+// and the copies are a contract — see the drift check further down, which is the reason this is a
+// function at all. PROFILES is multi-line, so it is brace-matched by `extract()` like `policy()`
+// itself: a line-prefix capture would hand `const PROFILES = {` to `new Function` and throw at
+// collection time instead of failing an assertion.
+const CONST_NAMES = ['const MODELS =', 'const EFFORTS =', 'const ROLE_NAMES =']
 const constsOf = (src, file) => CONST_NAMES
   .map((c) => src.split('\n').find((l) => l.startsWith(c)) || (() => { throw new Error(`${file}: missing ${c}`) })())
+  .concat(extract(src, 'const PROFILES ='))
   .join('\n')
 const CONSTS = constsOf(IMPL, 'wf-implement.js')
 
@@ -34,13 +38,15 @@ function build(args) {
 }
 const escalate = new Function(`${CONSTS}\n${extract(wf('wf-review-loop.js'), 'function escalate(')}\nreturn escalate`)()
 
-const IMPL_ROLES = { scout: { model: 'sonnet' }, impl: { model: 'opus' }, gate: { model: 'sonnet' }, check: { model: 'opus' } }
+const IMPL_ROLES = ['scout', 'impl', 'gate', 'check', 'run']
 
 let failed = 0
+let cases = 0
 function check(name, actual, expected) {
   const a = JSON.stringify(actual)
   const e = JSON.stringify(expected)
   const ok = a === e
+  cases++
   if (!ok) failed++
   console.log(`${ok ? 'PASS' : 'FAIL'}  ${name.padEnd(52)} ${a}`)
   if (!ok) console.log(`      expected ${e}`)
@@ -53,26 +59,32 @@ function throws(name, args, defaults, fragment) {
 const models = (resolved) => Object.keys(resolved).map((r) => `${r}=${resolved[r].model}`).join(' ')
 
 // --- Defaults must reproduce what the workflow shipped with: passing nothing changes nothing.
-check('no args → today\'s split', models(build({}).policy(IMPL_ROLES)), 'scout=sonnet impl=opus gate=sonnet check=opus')
+check('no args → today\'s split', models(build({}).policy(IMPL_ROLES)), 'scout=sonnet impl=opus gate=sonnet check=opus run=sonnet')
 check('no args → no effort key at all', build({}).policy(IMPL_ROLES).impl, { model: 'opus' })
-check('default profile is a no-op', models(build({ profile: 'default' }).policy(IMPL_ROLES)), 'scout=sonnet impl=opus gate=sonnet check=opus')
+check('default profile is a no-op', models(build({ profile: 'default' }).policy(IMPL_ROLES)), 'scout=sonnet impl=opus gate=sonnet check=opus run=sonnet')
 
-// --- profile shifts one rung and clamps at both ends of the ladder.
-check('cheap shifts down', models(build({ profile: 'cheap' }).policy(IMPL_ROLES)), 'scout=haiku impl=sonnet gate=haiku check=sonnet')
-check('max shifts up, clamped at opus', models(build({ profile: 'max' }).policy(IMPL_ROLES)), 'scout=opus impl=opus gate=opus check=opus')
+// --- A profile selects a COLUMN of the table, per role — not a uniform rung. `cheap` buys back the
+// authoring and command-running roles and deliberately leaves the gate (a judge) on sonnet; `max`
+// spends fable exactly where an agent authors or synthesises.
+check('cheap lowers the authoring roles, not the gate', models(build({ profile: 'cheap' }).policy(IMPL_ROLES)), 'scout=haiku impl=sonnet gate=sonnet check=sonnet run=haiku')
+check('max buys fable where it authors', models(build({ profile: 'max' }).policy(IMPL_ROLES)), 'scout=sonnet impl=fable gate=opus check=fable run=sonnet')
 
 // --- An explicit override is an override: it wins over the profile, in either direction.
-check('models beats profile', models(build({ profile: 'max', models: { impl: 'haiku' } }).policy(IMPL_ROLES)), 'scout=opus impl=haiku gate=opus check=opus')
-check('one role tuned, rest default', models(build({ models: { check: 'sonnet' } }).policy(IMPL_ROLES)), 'scout=sonnet impl=opus gate=sonnet check=sonnet')
+check('models beats profile', models(build({ profile: 'max', models: { impl: 'haiku' } }).policy(IMPL_ROLES)), 'scout=sonnet impl=haiku gate=opus check=fable run=sonnet')
+check('one role tuned, rest default', models(build({ models: { check: 'sonnet' } }).policy(IMPL_ROLES)), 'scout=sonnet impl=opus gate=sonnet check=sonnet run=sonnet')
 
-// --- Effort: absent means "inherit the session's", and must never reach agent() as null.
+// --- Effort: absent means "inherit the session's", and must never reach agent() as null. Effort no
+// longer moves with the profile — a table has no arithmetic — so `decompose`'s `low`, the only
+// effort any cell names, is the same under every column while its MODEL still changes.
 check('effort only when asked for', build({ efforts: { impl: 'xhigh' } }).policy(IMPL_ROLES).impl, { model: 'opus', effort: 'xhigh' })
-check('a declared effort default shifts too', build({ profile: 'max' }).policy({ decompose: { model: 'sonnet', effort: 'low' } }).decompose, { model: 'opus', effort: 'medium' })
-check('and clamps at the bottom', build({ profile: 'cheap' }).policy({ decompose: { model: 'sonnet', effort: 'low' } }).decompose, { model: 'haiku', effort: 'low' })
+check('the one declared effort, at default', build({}).policy(['decompose']).decompose, { model: 'sonnet', effort: 'low' })
+check('and unchanged by max, which moves no effort', build({ profile: 'max' }).policy(['decompose']).decompose, { model: 'sonnet', effort: 'low' })
+check('cheap moves the model, not the effort', build({ profile: 'cheap' }).policy(['decompose']).decompose, { model: 'haiku', effort: 'low' })
+check('an efforts override still wins', build({ efforts: { decompose: 'high' } }).policy(['decompose']).decompose, { model: 'sonnet', effort: 'high' })
 
 // --- Roles are a PIPELINE-wide vocabulary: wf-implement forwards its args to wf-review-loop, so a
 // role this workflow doesn't own is a passthrough, not a mistake. A role nobody owns is a typo.
-check('foreign role is ignored, not fatal', models(build({ models: { review: 'haiku' } }).policy(IMPL_ROLES)), 'scout=sonnet impl=opus gate=sonnet check=opus')
+check('foreign role is ignored, not fatal', models(build({ models: { review: 'haiku' } }).policy(IMPL_ROLES)), 'scout=sonnet impl=opus gate=sonnet check=opus run=sonnet')
 throws('typo in role name throws', { models: { implement: 'haiku' } }, IMPL_ROLES, 'unknown role "implement"')
 throws('typo in profile throws', { profile: 'cheep' }, IMPL_ROLES, 'unknown profile "cheep"')
 throws('unknown model throws', { models: { impl: 'gpt' } }, IMPL_ROLES, 'unknown model "gpt"')
@@ -83,10 +95,49 @@ throws('unknown effort throws', { efforts: { impl: 'extreme' } }, IMPL_ROLES, 'u
 check('silent at defaults', build({}).logs.concat(build({}).policy(IMPL_ROLES) && build({}).logs).length, 0)
 const tuned = build({ profile: 'cheap' })
 tuned.policy(IMPL_ROLES)
-check('logs the resolved policy when tuned', tuned.logs[0], 'policy: scout=haiku impl=sonnet gate=haiku check=sonnet')
+check('logs the resolved policy when tuned', tuned.logs[0], 'policy: scout=haiku impl=sonnet gate=sonnet check=sonnet run=haiku')
 
 // --- The critical-fix escalation is relative, or it stops meaning anything under a cheap profile.
-check('critical escalates one rung', [escalate('haiku'), escalate('sonnet'), escalate('opus')], ['sonnet', 'opus', 'opus'])
+check('critical escalates one rung', [escalate('haiku'), escalate('sonnet'), escalate('opus'), escalate('fable')], ['sonnet', 'opus', 'fable', 'fable'])
+
+// --- The table itself, read out of the shipped source rather than restated. `policy()` throws on a
+// role a profile forgot, but only for the roles a workflow actually asks for; these cases cover the
+// whole grid, so a cell missing for a role only one workflow uses is caught here and not in a run.
+const TABLE = new Function(`${CONSTS}\nreturn { MODELS, EFFORTS, ROLE_NAMES, PROFILES }`)()
+const CELLS = Object.keys(TABLE.PROFILES).flatMap((p) => TABLE.ROLE_NAMES.map((r) => ({ p, r, cell: TABLE.PROFILES[p][r] })))
+check('every profile covers every role', CELLS.filter((c) => c.cell === undefined).map((c) => `${c.p}.${c.r}`), [])
+check('every cell is a real model[/effort]', CELLS.filter((c) => {
+  const [model, effort] = String(c.cell).split('/')
+  return !TABLE.MODELS.includes(model) || (effort !== undefined && !TABLE.EFFORTS.includes(effort))
+}).map((c) => `${c.p}.${c.r}`), [])
+
+// The two judgements the table exists to express, pinned so a later "make cheap cheaper" or "make
+// max uniform" edit has to argue with a red test: a cheap run never puts the FIXER below sonnet (a
+// bad fix costs more than the tokens it saved), and max spends fable only where an agent authors.
+check('cheap never drops the fixer below sonnet',
+  TABLE.MODELS.indexOf(TABLE.PROFILES.cheap.fix) >= TABLE.MODELS.indexOf('sonnet'), true)
+check('max puts the authoring roles on fable',
+  ['impl', 'synth', 'check'].map((r) => TABLE.PROFILES.max[r]), ['fable', 'fable', 'fable'])
+
+// --- The shipped default, per workflow. The role LIST is read off each script; the tiers it must
+// resolve to are RESTATED here, which is the one place in this suite that is right rather than
+// drift-prone: the value being frozen is what these workflows shipped with BEFORE the table existed,
+// so reading it out of the table these cases guard would assert nothing at all.
+const SHIPPED = {
+  'wf-explore-plan.js': 'decompose=sonnet/low scout=sonnet validate=sonnet synth=opus',
+  'wf-implement.js': 'scout=sonnet impl=opus gate=sonnet check=opus run=sonnet',
+  'wf-review-loop.js': 'review=sonnet verify=sonnet fix=sonnet run=sonnet',
+}
+for (const [file, shipped] of Object.entries(SHIPPED)) {
+  const src = wf(file)
+  const listed = src.match(/const ROLE = policy\(\[([^\]]+)\]\)/)
+  if (!listed) throw new Error(`${file}: could not read its role list — has the policy([…]) call moved or grown a second line?`)
+  const roles = listed[1].split(',').map((r) => r.trim().replace(/'/g, ''))
+  const resolve = new Function('args', 'log', `${constsOf(src, file)}\n${extract(src, 'function policy(')}\nreturn policy`)({}, () => {})
+  const resolved = resolve(roles)
+  check(`${file}: no args resolves the tiers it shipped with`,
+    roles.map((r) => `${r}=${resolved[r].model}${resolved[r].effort ? '/' + resolved[r].effort : ''}`).join(' '), shipped)
+}
 
 // --- Self-contained scripts cannot import a shared helper, so the resolver is copied into each.
 // This is the check that the copies have not drifted apart into different cost models.
@@ -94,8 +145,8 @@ const WORKFLOWS = ['wf-implement.js', 'wf-explore-plan.js', 'wf-review-loop.js']
 const RESOLVERS = WORKFLOWS.map((f) => ({ f, body: extract(wf(f), 'function policy(') }))
 check('policy() is identical in all 3 workflows', RESOLVERS.filter((r) => r.body !== RESOLVERS[0].body).map((r) => r.f), [])
 
-// The resolver is only half the contract. `policy()` validates every override against the four
-// constants above, and those are copied into each script too — with nothing comparing them. A role
+// The resolver is only half the contract. `policy()` validates every override against the ladders
+// and resolves every tier out of the table above, and all of those are copied into each script too — with nothing comparing them. A role
 // present in one copy and not another is therefore ACCEPTED by the script that owns it and then
 // throws `unknown role` inside the nested workflow it forwards the policy to: wf-implement passes
 // `profile`/`models`/`efforts` straight into wf-review-loop, which re-validates against its own
@@ -109,6 +160,12 @@ check('policy constants identical in all 3 workflows', constDrift(POLICY_CONSTS)
 check('and it names the copy a role drifted into',
   constDrift(POLICY_CONSTS.map((c) => (c.f === 'wf-review-loop.js'
     ? { f: c.f, body: c.body.replace("'decompose'", "'judge', 'decompose'") } : c))), ['wf-review-loop.js'])
+// And the same proof for the TABLE, which the vocabulary check above cannot reach: two copies whose
+// role names agree can still price a role differently, and the copy that would silently spend more
+// is the one the caller never passed an override to. (A no-op replace here fails this case too.)
+check('and the copy a tier drifted into',
+  constDrift(POLICY_CONSTS.map((c) => (c.f === 'wf-explore-plan.js'
+    ? { f: c.f, body: c.body.replace("run: 'sonnet' }", "run: 'opus' }") } : c))), ['wf-explore-plan.js'])
 
 // Same for the per-phase cost accounting, which is fenced rather than extracted by signature
 // because it is a const plus two functions.
@@ -144,6 +201,6 @@ check('a directive → floors reported active', withBudget.costReport().floors_a
   await m2.metered('backwards', async () => { fake -= 9999 })
   check('a backwards delta clamps to zero', m2.costReport().by_phase.backwards, 0)
 
-  console.log(failed ? `\n${failed} FAILED` : `\nall ${27} cases pass`)
+  console.log(failed ? `\n${failed} FAILED` : `\nall ${cases} cases pass`)
   process.exit(failed ? 1 : 0)
 })()

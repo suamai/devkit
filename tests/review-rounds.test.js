@@ -23,7 +23,7 @@ function sourceValue(expr, what) {
 }
 const ROUND_DEFAULT = Number(sourceValue(/const maxRounds = args\.maxRounds \|\| (\d+)/, 'the maxRounds default'))
 const MODELS = sourceValue(/const MODELS = \[([^\]]+)\]/, 'the model ladder').split(',').map((s) => s.trim().replace(/'/g, ''))
-const FIX_TIER = sourceValue(/\n {2}fix: \{ model: '(\w+)' \}/, "the fix role's default model")
+const FIX_TIER = sourceValue(/\n {2}default: +\{[^\n]*?\bfix: +'(\w+)'/, "the fix role's default model")
 // escalate()'s own rule, over the ladder read above: one rung, clamped at the top.
 const ESCALATED = MODELS[Math.min(MODELS.length - 1, MODELS.indexOf(FIX_TIER) + 1)]
 const ROUNDS_END = sourceValue(/const ROUNDS_END = \[([^\]]+)\]/, 'the ROUNDS_END vocabulary').split(',').map((s) => s.trim().replace(/'/g, ''))

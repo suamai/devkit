@@ -41,8 +41,8 @@ Fan-out is the cheap part. The parts that carry their weight:
   itself: escalation needs a named signal from a closed list, stated in the report;
   review checkpoints accumulate waves instead of paying a full loop per wave, with one cheap
   contract gate in between. Model tier and reasoning effort are arguments, not constants
-  (`profile: "cheap"` shifts every agent down a rung), and every run reports what it actually spent
-  per phase.
+  (`profile: "cheap"` selects the cheap column of a per-role model table), and every run reports what
+  it actually spent per phase.
 - **Nothing carries between cycles, so the repo is the memory** — `.claude/rules/*.md` (a native
   Claude Code convention) is the one channel that specializes a generic pipeline to your code.
   `/dev-setup` bootstraps it from what you already wrote down; after a run that found real problems,

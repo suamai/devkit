@@ -108,7 +108,7 @@ There is no dedicated remediation machinery to reach for; that is deliberate.
    developer says something like "skip the suite" or "don't run it each round." Omitting it is the same
    opt-out said less explicitly — honest rather than silent, because the result then says no check ran
    and why.
-   `maxRounds` default 4. Custom `lenses` when the developer asks for a specific focus (e.g. security-only) — they replace the two general lenses, never the appended `repo-conventions` one. If the workflow name does not resolve (the plugin has not loaded in this session yet), invoke with `scriptPath` pointing at `${CLAUDE_PLUGIN_ROOT}/workflows/wf-review-loop.js`.
+   `maxRounds` default 4. Custom `lenses` when the developer asks for a specific focus (e.g. security-only) — they replace the two general lenses, never the appended `repo-conventions` one. If the workflow name does not resolve (the plugin has not loaded in this session yet), restart Claude Code — the Workflow tool reads a `scriptPath` only from the working directory or a directory added to the session (`/add-dir`), so a path into the plugin install is refused; `/add-dir` on the plugin root is the one alternative.
 
    Round 1 is the wide two-lens sweep; rounds 2+ are one targeted agent that only asks whether the
    fixes held and whether they broke anything. So a higher `maxRounds` is much cheaper than it looks —

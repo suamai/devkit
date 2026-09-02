@@ -110,7 +110,7 @@ opts out.
 check, and a read-only gate that runs a suite is no longer read-only. This review stays side-effect
 free by construction.
 
-If the workflow name does not resolve, use `${CLAUDE_PLUGIN_ROOT}/workflows/wf-review-loop.js` as `scriptPath`.
+If the workflow name does not resolve, restart Claude Code — the Workflow tool reads a `scriptPath` only from the working directory or a directory added to the session (`/add-dir`), so a path into the plugin install is refused; `/add-dir` on the plugin root is the one alternative.
 This review never applies fixes. Save its evidence to `<workspace>/reviews/<head-short-sha>.md` with
 the exact format below. Refuted findings stay for audit but never become fix input.
 

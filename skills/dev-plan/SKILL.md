@@ -148,7 +148,7 @@ phase.
    the old findings go through the same adversarial pass, so anything that went stale gets refuted
    rather than trusted, which is why no staleness check is needed on top.
 
-   Optional: `angles` to override angle decomposition when the developer already told you what to investigate — an array of objects `{name, focus, why, hints?}`, with a plain string accepted as shorthand for that angle's `focus`; a malformed entry throws before any agent is spawned, so a wrong shape costs the call and nothing else; `validate: false` skips the single batched validation pass for cost-sensitive planning; `profile`/`models`/`efforts` set the model tiers (see Cost below). If the workflow name does not resolve (the plugin has not loaded in this session yet), invoke with `scriptPath` pointing at `${CLAUDE_PLUGIN_ROOT}/workflows/wf-explore-plan.js`. Runs in background; you'll be notified. While waiting, do nothing speculative.
+   Optional: `angles` to override angle decomposition when the developer already told you what to investigate — an array of objects `{name, focus, why, hints?}`, with a plain string accepted as shorthand for that angle's `focus`; a malformed entry throws before any agent is spawned, so a wrong shape costs the call and nothing else; `validate: false` skips the single batched validation pass for cost-sensitive planning; `profile`/`models`/`efforts` set the model tiers (see Cost below). If the workflow name does not resolve (the plugin has not loaded in this session yet), restart Claude Code — the Workflow tool reads a `scriptPath` only from the working directory or a directory added to the session (`/add-dir`), so a path into the plugin install is refused; `/add-dir` on the plugin root is the one alternative. Runs in background; you'll be notified. While waiting, do nothing speculative.
 
 4. **Interrupt point — open questions.** The result contains `open_questions` (decisions only the developer can make). If non-empty, push a notification **first**, then surface them via AskUserQuestion (use the provided `options`). Fold answers into the plan: edit `<workspace>/plan.md` yourself — including the machine-readable JSON steps block — or, if an answer invalidates the approach, re-run the workflow with the answers appended to `constraints`.
 
@@ -340,13 +340,15 @@ phase.
 ## Cost
 
 Every workflow takes the same three cost args, and every skill passes them through:
-`profile: "cheap" | "default" | "max"` shifts every agent one rung on the model ladder;
-`models: { <role>: "haiku|sonnet|opus" }` and `efforts: { <role>: "low|…|max" }` override one role
-and beat the profile. Roles are pipeline-wide (`decompose, scout, validate, synth, impl, gate,
-check, review, verify, fix`), so one object covers a workflow and everything it calls. An unknown
-role or value throws before any agent runs — check it with `dryRun: true`, which returns the
-resolved policy. Omitting all three reproduces the shipped tiers exactly. Default it from the
-repo's `Cost profile:` line in CLAUDE.md when one is present.
+`profile: "cheap" | "default" | "max"` selects a column of a per-role model table rather than
+shifting everything one rung: `cheap` leaves the judging roles on sonnet, and `max` spends `fable`
+only where an agent authors or synthesises. `models: { <role>: "haiku|sonnet|opus|fable" }` and
+`efforts: { <role>: "low|…|max" }` override one role and beat the profile. Roles are pipeline-wide
+(`decompose, scout, validate, synth, impl, gate, check, review, verify, fix, run`), so one object
+covers a workflow and everything it calls. An unknown role or value throws before any agent runs —
+check it with `dryRun: true`, which returns the resolved policy. Omitting all three reproduces the
+shipped tiers exactly — that is the table's `default` column, stated rather than derived. Default it
+from the repo's `Cost profile:` line in CLAUDE.md when one is present.
 
 ## Artifact language
 

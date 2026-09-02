@@ -355,13 +355,19 @@ knob: nothing else on this list saves what not escalating saves. Claude defaults
 a signal to go up, so the cheapest correction available to you is disagreeing with that line. The
 rest, roughly in order:
 
-- **Model tier.** `profile: "cheap"` shifts every agent in a run one rung down the
-  `haiku → sonnet → opus` ladder; `"max"` shifts it up. It reaches nested workflows too, so a cheap
-  implement also gets cheap review checkpoints. For one role instead of all of them:
-  `models: { impl: "sonnet" }` (roles: `decompose, scout, validate, synth, impl, gate, check, review,
-  verify, fix`), and `efforts: { … }` for reasoning effort. Say it in your message — "run this
-  cheap", "use sonnet for the implementers" — and Claude passes it through. To pin a default for the
-  whole repo, put a `Cost profile:` line in `CLAUDE.md`; `/dev-setup` offers this.
+- **Model tier.** A profile picks a **column of a per-role table**, not a uniform rung down a
+  ladder. `"cheap"` lowers the roles a later agent checks — `decompose`, `scout`, `run`, and the
+  authoring roles `impl`, `synth`, `check` — and deliberately leaves the judging roles `validate`,
+  `gate`, `review`, `verify` and `fix` on sonnet, because a judge that goes wrong costs more than
+  the tokens it saved. `"max"` puts the authoring roles on `fable` and the judging roles on opus,
+  with `fix` left on opus on purpose, so that the one-rung escalation a critical or second-round fix
+  already buys is what reaches `fable`. It reaches nested workflows too, so a cheap implement also
+  gets cheap review checkpoints. For one role instead of all of them: `models: { impl: "sonnet" }`
+  (roles: `decompose, scout, validate, synth, impl, gate, check, review, verify, fix, run`), and
+  `efforts: { … }` for reasoning effort — effort no longer moves with the profile, since a table has
+  no arithmetic. Say it in your message — "run this cheap", "use sonnet for the implementers" — and
+  Claude passes it through. To pin a default for the whole repo, put a `Cost profile:` line in
+  `CLAUDE.md`; `/dev-setup` offers this. The full table is in `docs/architecture.md`.
 - **Token budget.** Say "+300k" (or any target) **in your message** to set a hard budget the loops
   respect. Unlike the profile this stops work rather than making it cheaper: steps past the floor
   come back as `skipped_for_budget`, and a review that runs out returns `clean: false`.
@@ -452,7 +458,7 @@ never on prose.
 | "Is this repo still wired up correctly?" | `/dev-setup --check` — read-only diagnosis: versions, whether the three workflows resolve, the Workflow permission and the stale-flow hook, the three zero-cost smoke tests, rule parse errors and globs matching no tracked file, stale workspaces, git/remote/`gh`. It writes nothing and offers no edits; plain `/dev-setup` is what fixes anything it finds |
 | `/dev-*` not in autocomplete | Restart Claude Code (skills/workflows register at session start) |
 | Edited a workflow, but the run behaves as before | `name:` resolution serves a snapshot from plugin load. Invoke by `scriptPath` while iterating, or restart |
-| "Workflow not found" | Same restart; meanwhile skills fall back to `scriptPath` automatically |
+| "Workflow not found" | Same restart. `scriptPath` is not a substitute for a plugin path: the tool reads it only from the working directory or an added directory (`/add-dir`) |
 | Implement crashed midway | `lastRunId` is in `.dev/<slug>/state.json` — ask Claude to resume; completed steps replay from cache |
 | Implement *stopped* midway (blocking question, unclean checkpoint, failed step, budget) | Not a crash — that is the design. Resolve what stopped it, then `/dev-implement <slug> --continue` |
 | Implementer wrote code/notes but has no result | Handled for you: the workflow retries the serialization once with a non-editing agent, and `/dev-implement` then reconstructs the report read-only from the notes, the diff and `journal.jsonl`, marked `result_recovered`. The implementation is never re-run — but a recovered report is reconstructed evidence, so read its verification claim as exactly that |

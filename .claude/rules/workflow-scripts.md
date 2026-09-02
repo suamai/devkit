@@ -36,19 +36,24 @@ Full rationale: `docs/architecture.md` → "Authoring a bespoke workflow" and "C
   | Copied | In | Pinned by | Sliced how |
   |---|---|---|---|
   | `policy()` | all 3 | `tests/policy.test.js` | by signature |
-  | `MODELS`, `EFFORTS`, `ROLE_NAMES`, `PROFILE_SHIFT` | all 3 | `tests/policy.test.js` | by line prefix |
+  | `MODELS`, `EFFORTS`, `ROLE_NAMES` | all 3 | `tests/policy.test.js` | by line prefix |
+  | `PROFILES` | all 3 | `tests/policy.test.js` | by signature |
   | per-phase cost (`metered`/`costReport`) | all 3 | `tests/policy.test.js` | fenced |
   | repo-rule matching, and its `GLOB_TOKENS`/`pathScope` primitives | implement + review-loop | `tests/rules.test.js` | fenced / by anchor |
   | `rulesNote` | implement + review-loop | `tests/rules.test.js` | by signature |
   | verify classification | implement + review-loop | `tests/verify-gate.test.js` | by anchor, per-file end |
   | `root`, `GIT`, `RUN_FROM`, `ROOT_NOTE` | implement + review-loop | `tests/isolation.test.js` | by line prefix |
 
-  Two traps the table is meant to spare you. `policy()` is extracted by *signature*, so moving it is
-  free while editing its body or its constants is not — and the constants are a separate row because
-  `wf-implement` forwards `profile`/`models`/`efforts` into the nested `wf-review-loop`, which
-  re-validates against its own copy: a role added to one alone is accepted, then throws a wave later.
-  And the last four rows are absent from `wf-explore-plan.js` entirely, so "every script" is the
-  wrong mental model. `rulesNote` sits OUTSIDE the repo-rule fence in both files — it renders the
+  Two traps the table is meant to spare you. `policy()` and `PROFILES` are extracted by *signature*,
+  so moving either is free while editing its body is not — and the constants are rows of their own
+  because `wf-implement` forwards `profile`/`models`/`efforts` into the nested `wf-review-loop`,
+  which re-validates against its own copy. For `ROLE_NAMES` that drift is loud: a role added to one
+  copy alone is accepted there and then throws `unknown role` a wave later, inside the workflow it
+  forwarded to. For `PROFILES` the same drift is silent: two copies whose `ROLE_NAMES` agree can still
+  price the *same* role differently in their tables, and nothing ever throws — the copy that drifted
+  a tier is simply the one a caller's override never reaches, and it silently spends more or less than
+  the other copy would. And the last four rows are absent from `wf-explore-plan.js` entirely, so
+  "every script" is the wrong mental model. `rulesNote` sits OUTSIDE the repo-rule fence in both files — it renders the
   matched rules, it does not match them — so the fenced comparison says nothing about it and it is
   pinned by its own case.
 - Parts of this file are read as **text** by the suite: a guard slices the region between two anchors
