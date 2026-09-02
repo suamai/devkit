@@ -458,7 +458,7 @@ never on prose.
 | "Is this repo still wired up correctly?" | `/dev-setup --check` — read-only diagnosis: versions, whether the three workflows resolve, the Workflow permission and the stale-flow hook, the three zero-cost smoke tests, rule parse errors and globs matching no tracked file, stale workspaces, git/remote/`gh`. It writes nothing and offers no edits; plain `/dev-setup` is what fixes anything it finds |
 | `/dev-*` not in autocomplete | Restart Claude Code (skills/workflows register at session start) |
 | Edited a workflow, but the run behaves as before | `name:` resolution serves a snapshot from plugin load. Invoke by `scriptPath` while iterating, or restart |
-| "Workflow not found" | Same restart; meanwhile skills fall back to `scriptPath` automatically |
+| "Workflow not found" | Same restart. `scriptPath` is not a substitute for a plugin path: the tool reads it only from the working directory or an added directory (`/add-dir`) |
 | Implement crashed midway | `lastRunId` is in `.dev/<slug>/state.json` — ask Claude to resume; completed steps replay from cache |
 | Implement *stopped* midway (blocking question, unclean checkpoint, failed step, budget) | Not a crash — that is the design. Resolve what stopped it, then `/dev-implement <slug> --continue` |
 | Implementer wrote code/notes but has no result | Handled for you: the workflow retries the serialization once with a non-editing agent, and `/dev-implement` then reconstructs the report read-only from the notes, the diff and `journal.jsonl`, marked `result_recovered`. The implementation is never re-run — but a recovered report is reconstructed evidence, so read its verification claim as exactly that |

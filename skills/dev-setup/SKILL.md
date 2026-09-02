@@ -19,7 +19,8 @@ skipped and nothing in the repo is touched. See **Read-only check (--check)** be
 1. **Plugin loaded, and which version.** Confirm the workflows resolve by name
    (`devkit:wf-explore-plan`, `devkit:wf-implement`, `devkit:wf-review-loop`). If they do not, the
    plugin was installed or updated after this session started — say so and tell the developer to
-   restart Claude Code. Everything below still works meanwhile via `scriptPath`.
+   restart Claude Code. Nothing below can run a workflow until they do, unless the plugin root is
+   added to the session first: the Workflow tool reads a `scriptPath` only from the working directory or a directory added to the session (`/add-dir`), so a path into the plugin install is refused.
 
    Read the installed version from `${CLAUDE_PLUGIN_ROOT}/.claude-plugin/plugin.json` (and the commit
    from `${CLAUDE_PLUGIN_ROOT}/FROZEN_AT` if present — `promote-plugin.sh` writes it). Then look for
@@ -160,8 +161,9 @@ skipped and nothing in the repo is touched. See **Read-only check (--check)** be
    Workflow({ name: "devkit:wf-implement", args: {"dryRun": true} })
    Workflow({ name: "devkit:wf-review-loop", args: {"dryRun": true} })
    ```
-   Fall back to `scriptPath: "${CLAUDE_PLUGIN_ROOT}/workflows/<name>.js"` if the names have not
-   registered yet. A parse failure here is a plugin problem, not a repo problem — show the error.
+   If the names have not registered yet, `/add-dir` the plugin root and use
+   `scriptPath: "${CLAUDE_PLUGIN_ROOT}/workflows/<name>.js"` — the tool refuses a `scriptPath` outside
+   the working directory and added directories, so without that step the only path is a restart. A parse failure here is a plugin problem, not a repo problem — show the error.
    Each also returns its resolved `policy` (model/effort per role), so adding the repo's chosen
    `profile` to these calls checks the setting for free, before it can cost anything.
 
@@ -195,8 +197,8 @@ rules directory, or a frozen-install file that is not there — and it is never 
 2. **The three workflow names resolve.** `devkit:wf-explore-plan`, `devkit:wf-implement` and
    `devkit:wf-review-loop`. If they do not, the plugin was installed or updated after this session
    started: say that, and that Claude Code has to be restarted before the names register. It is not
-   a repo problem and nothing in this repo fixes it. Item 5 still runs meanwhile, through step 6's
-   `scriptPath` fallback.
+   a repo problem and nothing in this repo fixes it. Item 5 runs meanwhile only once the plugin root
+   has been added to the session (step 6).
 
 3. **`${CLAUDE_PLUGIN_ROOT}` expands in a skill body.** Every path above depends on it, and it fails
    as *text* rather than as an error, so prove it: run one command that uses it —
@@ -279,4 +281,5 @@ Checklist results, then:
 
 - To change pipeline behavior, edit the plugin, not the repo — a repo cannot fork a prompt. What a
   repo *can* tune is its `.claude/rules/`, which is why step 5 is worth doing properly.
-- New or renamed workflow files register at session start; `scriptPath` works immediately.
+- New or renamed workflow files register at session start; `scriptPath` works immediately for a
+  file in the working directory or an added directory.

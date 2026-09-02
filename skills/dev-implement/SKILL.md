@@ -212,8 +212,10 @@ You orchestrate the implementation phase of a planned dev task. The heavy liftin
    `criteria`: the same ids step 4 extracted, by the same command (extract them here if step 4 was
    skipped) — the run needs them to compute the acceptance gate and the coverage matrix. Passing none
    is not a failure: it yields `acceptance: "n/a"`, and a plan with no spec behaves exactly as before.
-   `notes`: anything the developer said since the plan was written. `reviewLoopPath`:
-   `${CLAUDE_PLUGIN_ROOT}/workflows/wf-review-loop.js`. Optional: `review: false`,
+   `notes`: anything the developer said since the plan was written. `reviewLoopPath`: **omit it**.
+   Without it the workflow calls `devkit:wf-review-loop` by name, and the name is the only reference
+   that resolves from outside the working tree — the Workflow tool reads a `scriptPath` only from the working directory or a directory added to the session (`/add-dir`), so a path into the plugin install is refused. Pass it only to exercise an uncommitted review loop, as a path
+   into the working tree or into an added directory. Optional: `review: false`,
    `reviewRounds: N` (default 4 — rounds after the first are one targeted agent, so this is cheaper
    than it looks), `scoutMode: "always" | "adaptive" | "never"` (default adaptive: the plan's
    `context_confidence` decides, heuristic as fallback), `maxParallelSteps` (default 5), `gate: false`,
@@ -239,8 +241,8 @@ You orchestrate the implementation phase of a planned dev task. The heavy liftin
    Waves stay sequential (that's `depends_on`), but review is **not** per wave: waves accumulate into
    a review checkpoint, and each wave in between gets one cheap contract gate. To restore per-wave
    review — the developer asks for it, or the work is unusually contract-heavy — pass
-   `checkpointFileThreshold: 1, checkpointMaxWaves: 1`. If the workflow name does not resolve (the plugin has not loaded in this session yet), invoke
-   with `scriptPath` pointing at `${CLAUDE_PLUGIN_ROOT}/workflows/wf-implement.js`. Record the returned run id as
+   `checkpointFileThreshold: 1, checkpointMaxWaves: 1`. If the workflow name does not resolve (the plugin has not loaded in this session yet), restart
+   Claude Code — the Workflow tool reads a `scriptPath` only from the working directory or a directory added to the session (`/add-dir`), so a path into the plugin install is refused; `/add-dir` on the plugin root is the one alternative to the restart. Record the returned run id as
    `lastRunId` in the workspace's `state.json` — it enables resume.
 
 6. **On completion, persist and read the result.** First write `<workspace>/last-run.json`
@@ -682,7 +684,7 @@ Invoked as `/dev-implement <slug> --continue` (or just "continue the implement")
 2. **Re-invoke with the same `steps` plus `completed`:**
    ```
    Workflow({ name: "devkit:wf-implement", args: {
-     workspace, steps, baseline, rules, reviewLoopPath,
+     workspace, steps, baseline, rules,
      completed: <previous result's continuation.completed, verbatim>,
      notes: <previous notes + the developer's answers>
    } })

@@ -14,6 +14,9 @@ export const meta = {
 //         reviewRounds?=4, reviewLoopPath?, scoutMode?='adaptive', maxParallelSteps?=5,
 //         gate?=true, checkpointFileThreshold?=20, checkpointMaxWaves?=3, rules?, criteria?,
 //         profile?, models?, efforts?, dryRun? }
+//   reviewLoopPath: omit to call `devkit:wf-review-loop` by name (the default). A path is only for
+//          exercising an uncommitted review loop, and the tool reads it only from the working
+//          directory or a directory added to the session — a plugin-install path is refused.
 //   dryRun: with `steps`, returns the computed schedule (waves, parallel groups, scouts, matched
 //          rules, projected checkpoints, plan warnings) instead of running anything — a zero-cost
 //          plan lint. Without `steps`, the old parse-only smoke test.

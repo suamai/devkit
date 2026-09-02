@@ -211,7 +211,9 @@ or a repo, shifts them.
   require an extra confirmation. Review mode never fixes code implicitly.
 - All workflows accept `{ dryRun: true }` (zero-cost smoke test) and normalize `args` from JSON
   string. Named resolution requires a session restart after creating a workflow file; `scriptPath`
-  works immediately.
+  works immediately for a file in the working directory or a directory added to the session — the
+  tool refuses a path into the plugin install, which is why the skills invoke by name and never
+  fall back to a plugin path.
 
 ## The evidence chain — from a criterion id to one delivery verdict
 
