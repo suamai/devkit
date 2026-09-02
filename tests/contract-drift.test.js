@@ -353,5 +353,29 @@ check('and it goes red when one copy drifts',
 // And red when a copy disappears entirely, rather than two absences reading as agreement.
 check('and red when a copy is gone', criteriaAgree([criteriaTexts[0], 'no command here']), false)
 
+// The `## Cost` section is stated in the same two skills for the same reason the criteria-extraction
+// command is: /dev-plan and /dev-implement are each their own entry point, so each restates the cost
+// args rather than assuming the other already explained them. The two copies are meant to be
+// byte-identical (dev-implement's section carries one extra paragraph after it, about forwarding into
+// the nested review loop, which is intentionally NOT part of this comparison) — a later edit to one
+// that forgets the other silently un-syncs the two skills' cost documentation with nothing red.
+const COST_SKILLS = ['skills/dev-plan/SKILL.md', 'skills/dev-implement/SKILL.md']
+const costParagraph = (text) => {
+  const m = text.match(/## Cost\n\n([\s\S]*?)\n\n/)
+  return m ? m[1] : null
+}
+const costAgree = (texts) => {
+  const found = texts.map(costParagraph)
+  return found.every(Boolean) && new Set(found).size === 1
+}
+const costTexts = COST_SKILLS.map(read)
+check('both skills state a ## Cost section', costTexts.map(costParagraph).filter(Boolean).length, COST_SKILLS.length)
+check('and the two copies are byte-identical', costAgree(costTexts), true)
+// Mutation proof, in memory: one copy's profile description drifts and the pair must go red.
+check('and it goes red when one copy drifts',
+  costAgree([costTexts[0], costTexts[1].replace('leaves the judging roles on sonnet', 'leaves nothing on sonnet')]), false)
+// And red when a copy is gone entirely, rather than two absences reading as agreement.
+check('and red when a copy is gone', costAgree([costTexts[0], 'no cost section here']), false)
+
 console.log(failed ? `\n${failed} FAILED` : `\nall ${cases} cases pass`)
 process.exit(failed ? 1 : 0)

@@ -1,6 +1,6 @@
 {
   "name": "devkit",
-  "version": "0.11.0",
+  "version": "0.12.0",
   "description": "Multi-agent development pipeline for Claude Code. /dev-spec builds a grounded task spec; /dev-plan triages (defaulting to the cheap tiers) and turns a task into a validated step plan, or explains existing code into reusable findings; /dev-implement runs the steps in dependency waves with contract gates and cost-driven review checkpoints; /dev-review loops reviewers until clean and can apply a persisted PR review's findings; /dev-debug reproduces, refutes hypotheses and proves the repro dead; /dev-pr drafts and gates publication; /dev-status and /dev-setup manage flows and repo configuration. Context is push-only and every file has one writer; verification means running a check, not reading code.",
   "author": {
     "name": "arstrini",

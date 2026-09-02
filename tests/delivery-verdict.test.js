@@ -394,7 +394,7 @@ async function main() {
   // text instead — fail closed if the expression moves, and proven to bite on a copy with that
   // disjunct removed, since a check that silently stops testing is worse than none.
   function reviewGateReadsCheckpoints(text) {
-    const at = text.indexOf('  review: ')
+    const at = text.indexOf('\n  review: ')
     const end = at === -1 ? -1 : text.indexOf("? 'blocked'", at)
     if (at === -1 || end === -1) return false
     return /blockedCheckpoints/.test(text.slice(at, end))

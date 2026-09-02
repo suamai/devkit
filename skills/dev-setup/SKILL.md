@@ -54,7 +54,7 @@ skipped and nothing in the repo is touched. See **Read-only check (--check)** be
    Configured against devkit 0.3.0.
    ```
    Ask which cost profile this repo wants (`cheap` | `default` | `max` — the manual's Cost control
-   explains the ladder); a side project and a production repo do not deserve the same budget.
+   explains the table); a side project and a production repo do not deserve the same budget.
    CLAUDE.md is already in context in every session, so that line *is* the mechanism — the skills
    read it and pass it as `profile`. No config file, no precedence rules, and unlike anything under
    `.dev/` it is committed, so it applies to whoever clones the repo.

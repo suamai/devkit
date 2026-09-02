@@ -51,34 +51,48 @@ export const meta = {
 if (typeof args === 'string') { try { args = JSON.parse(args) } catch (e) { throw new Error('args arrived as a non-JSON string') } }
 
 // ---- Model/effort policy (roles, not phases — a policy passes intact into nested workflows).
-// Defaults are the tiers this workflow shipped with; `profile` shifts every role one rung on the
-// model ladder, explicit `models`/`efforts` win over it, and an unknown role throws rather than
-// being silently ignored. Effort defaults to inheriting the session's. See docs/architecture.md.
-const MODELS = ['haiku', 'sonnet', 'opus']
+// PROFILES is the whole cost model: one model[/effort] per pipeline role per profile, so a profile
+// is a table lookup and not arithmetic on the ladder. `default` is exactly the tiers these workflows
+// shipped with, so passing nothing changes nothing. `cheap` and `max` are per-role judgements rather
+// than a uniform rung: cheap leaves the judging roles on sonnet, because a judge that goes wrong
+// costs more than the tokens it saved, and max spends `fable` only where an agent authors or
+// synthesises. Explicit `models`/`efforts` beat the profile, and an unknown profile, role, model or
+// effort throws before any agent spawns. Effort inherits the session's unless the table names one —
+// `decompose` is the only role that does. See docs/architecture.md.
+const MODELS = ['haiku', 'sonnet', 'opus', 'fable']
 const EFFORTS = ['low', 'medium', 'high', 'xhigh', 'max']
-const ROLE_NAMES = ['decompose', 'scout', 'validate', 'synth', 'impl', 'gate', 'check', 'review', 'verify', 'fix']
-const PROFILE_SHIFT = { cheap: -1, default: 0, max: 1 }
-function policy(defaults) {
+const ROLE_NAMES = ['decompose', 'scout', 'validate', 'synth', 'impl', 'gate', 'check', 'review', 'verify', 'fix', 'run']
+// Values are padded AFTER the colon on purpose. Padding before a role NAME instead would make this
+// table the first indented `review:` in the file and steal the text anchor that
+// tests/delivery-verdict.test.js slices its gate expression on — a red case in a test about code
+// nobody touched (see .claude/rules/workflow-scripts.md). Keep the padding on the value side.
+const PROFILES = {
+  cheap:   { decompose:  'haiku/low', scout:  'haiku', validate: 'sonnet', synth: 'sonnet', impl: 'sonnet', gate: 'sonnet', check: 'sonnet', review: 'sonnet', verify: 'sonnet', fix: 'sonnet', run:  'haiku' },
+  default: { decompose: 'sonnet/low', scout: 'sonnet', validate: 'sonnet', synth:   'opus', impl:   'opus', gate: 'sonnet', check:   'opus', review: 'sonnet', verify: 'sonnet', fix: 'sonnet', run: 'sonnet' },
+  max:     { decompose: 'sonnet/low', scout: 'sonnet', validate:   'opus', synth:  'fable', impl:  'fable', gate:   'opus', check:  'fable', review:   'opus', verify:   'opus', fix:   'opus', run: 'sonnet' },
+}
+function policy(roles) {
   const a = args || {}
-  const shift = a.profile == null ? 0 : PROFILE_SHIFT[a.profile]
-  if (shift === undefined) throw new Error(`unknown profile "${a.profile}" — use ${Object.keys(PROFILE_SHIFT).join(' | ')}`)
+  const profile = a.profile == null ? 'default' : a.profile
+  if (!Object.keys(PROFILES).includes(profile)) throw new Error(`unknown profile "${a.profile}" — use ${Object.keys(PROFILES).join(' | ')}`)
+  const table = PROFILES[profile]
   const models = a.models || {}
   const efforts = a.efforts || {}
   for (const k of [...Object.keys(models), ...Object.keys(efforts)]) {
     if (!ROLE_NAMES.includes(k)) throw new Error(`unknown role "${k}" — pipeline roles are ${ROLE_NAMES.join(', ')}`)
   }
   const pick = (ladder, base, override, what) => {
-    if (override != null) {
-      if (!ladder.includes(override)) throw new Error(`unknown ${what} "${override}" — use ${ladder.join(' | ')}`)
-      return override
-    }
-    if (base == null) return null
-    return ladder[Math.min(ladder.length - 1, Math.max(0, ladder.indexOf(base) + shift))]
+    const value = override == null ? base : override
+    if (value == null) return null
+    if (!ladder.includes(value)) throw new Error(`unknown ${what} "${value}" — use ${ladder.join(' | ')}`)
+    return value
   }
   const out = {}
-  for (const name of Object.keys(defaults)) {
-    const model = pick(MODELS, defaults[name].model, models[name], 'model')
-    const effort = pick(EFFORTS, defaults[name].effort || null, efforts[name], 'effort')
+  for (const name of roles) {
+    if (!table[name]) throw new Error(`role "${name}" is not in the "${profile}" profile — PROFILES must cover every role in ROLE_NAMES`)
+    const [baseModel, baseEffort] = table[name].split('/')
+    const model = pick(MODELS, baseModel, models[name], 'model')
+    const effort = pick(EFFORTS, baseEffort || null, efforts[name], 'effort')
     out[name] = effort ? { model, effort } : { model } // never hand agent() an effort of null
   }
   if (a.profile != null || Object.keys(models).length || Object.keys(efforts).length) {
@@ -86,13 +100,9 @@ function policy(defaults) {
   }
   return out
 }
-const ROLE = policy({
-  scout: { model: 'sonnet' },
-  impl: { model: 'opus' }, // runs once per step — the pipeline's largest single cost driver
-  gate: { model: 'sonnet' },
-  check: { model: 'opus' },
-  verify: { model: 'sonnet' }, // the one re-run an evidenced infrastructure failure buys — it runs a command, it does not write code
-})
+// `impl` runs once per step — the pipeline's largest single cost driver. `run` is the non-editing
+// agent that executes a command and reports the result; `check` is the cross-step consistency check.
+const ROLE = policy(['scout', 'impl', 'gate', 'check', 'run'])
 
 // >>> shared: per-phase cost — byte-identical across workflows (tests/policy.test.js)
 // budget.spent() is the TURN's cumulative output tokens, shared with the main loop and with every
@@ -652,7 +662,7 @@ async function runStep(s, batch, depth, ctx) {
     } else {
       log(`step ${s.id}'s implementer returned no structured result — one cheap non-editing attempt to re-serialize it from the tree`)
       const rescued = await agent(resultRetryPrompt(s, `${workspace}/notes/${s.id}.md`), {
-        label: `result:${s.id}`, phase: 'Implement', ...ROLE.verify, schema: IMPL_SCHEMA,
+        label: `result:${s.id}`, phase: 'Implement', ...ROLE.run, schema: IMPL_SCHEMA,
       })
       resultRetryAttempted = true
       if (rescued) {
@@ -697,7 +707,7 @@ async function runStep(s, batch, depth, ctx) {
     } else {
       log(`step ${s.id} reported an infrastructure failure — one cheap re-run: ${firstVerify.output_summary || firstVerify.not_ran_reason || 'no summary given'}`)
       const retry = await runEnvRetry(() => agent(verifyRetryPrompt(s, firstVerify), {
-        label: `verify:${s.id}`, phase: 'Implement', ...ROLE.verify, schema: IMPL_SCHEMA.properties.verify_run,
+        label: `verify:${s.id}`, phase: 'Implement', ...ROLE.run, schema: IMPL_SCHEMA.properties.verify_run,
       }))
       attempts = 2
       if (retry) impl = { ...impl, verify_run: retry }

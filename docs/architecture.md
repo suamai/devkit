@@ -111,7 +111,7 @@ that a rule now has to survive review by someone who can say no.
           Scout (sonnet)   → adaptive only for ambiguous/oversized steps; may split recursively
           Implement (opus) → RUNS each step's verify command, writes notes/<id>.md; the outcome is
                              typed: `status: passed | failed | not-run | infra-error`
-          Verify (sonnet)  → ONE re-run, and only for an evidenced infra-error — the check could not
+          Run (sonnet)     → ONE re-run, and only for an evidenced infra-error — the check could not
                              run for reasons unrelated to the code. Not a defect: the step does not
                              fail and the dependent waves still run
           BARRIER          → all implementations finish before review/fixes mutate files
@@ -149,7 +149,7 @@ that a rule now has to survive review by someone who can say no.
             fixer, so the loop cannot exit leaving fixes at HEAD that nobody reviewed. N rounds buy
             N-1 fix rounds
           → Fix confirmed (fix tier; critical OR round >= 2 escalates one rung)
-          → Check (sonnet): verifyCommand → classified fix_verify, gating clean the way a step's
+          → Run (sonnet): verifyCommand → classified fix_verify, gating clean the way a step's
             verify_run gates a step; a failed check buys one repair + one re-check, and whatever the
             repair touched joins the re-review's scope
           → explicit post-fix re-review
@@ -347,12 +347,29 @@ Model tier and reasoning effort are arguments, not constants. Every workflow res
 startup through the same `policy()` block and spreads the result into each `agent()` call:
 
 ```
-profile: "cheap" | "default" | "max"   shift every role one rung on [haiku, sonnet, opus]
-models:  { impl: "sonnet", … }         override one role; beats the profile
+profile: "cheap" | "default" | "max"   select a column of the per-role table below
+models:  { impl: "sonnet", … }         override one role, over [haiku, sonnet, opus, fable]
 efforts: { decompose: "low", … }       same, over [low, medium, high, xhigh, max]
 ```
 
-Five decisions are worth knowing about, because each one is a place this could have gone wrong:
+A profile is a **table lookup, not arithmetic on a ladder** — one model, plus an effort where a cell
+names one, per pipeline role per profile. An explicit `models`/`efforts` entry beats the profile:
+
+| role | `cheap` | `default` | `max` |
+|---|---|---|---|
+| `decompose` | haiku/low | sonnet/low | sonnet/low |
+| `scout` | haiku | sonnet | sonnet |
+| `validate` | sonnet | sonnet | opus |
+| `synth` | sonnet | opus | fable |
+| `impl` | sonnet | opus | fable |
+| `gate` | sonnet | sonnet | opus |
+| `check` | sonnet | opus | fable |
+| `review` | sonnet | sonnet | opus |
+| `verify` | sonnet | sonnet | opus |
+| `fix` | sonnet | sonnet | opus |
+| `run` | haiku | sonnet | sonnet |
+
+Six decisions are worth knowing about, because each one is a place this could have gone wrong:
 
 - **Roles, not phase names.** `impl`, `review`, `gate`, `synth`… are a vocabulary shared across the
   whole pipeline, so one object survives `workflow()` nesting: `wf-implement` forwards its cost args
@@ -360,25 +377,44 @@ Five decisions are worth knowing about, because each one is a place this could h
   a cheap run. The cost of a shared vocabulary is that a role a given workflow doesn't own has to be
   *ignored* rather than rejected — so unknown names are checked against the pipeline-wide list, and
   a typo (`implement` for `impl`) throws before any agent spawns instead of silently paying full price.
-- **Defaults are exactly what shipped.** Omitting all three reproduces the previous hardcoded split.
-  The one deliberate exception is `decompose`, which now defaults to `effort: 'low'`: it turns a task
+- **`run` is a role because `check` and `verify` each named two agents.** `check` meant
+  wf-implement's cross-step consistency agent *and* wf-review-loop's post-fix command runner;
+  `verify` meant wf-review-loop's finding verification *and* wf-implement's result re-serialization
+  and infra-error re-run. Because wf-implement forwards its policy object into wf-review-loop
+  verbatim — the previous bullet's whole point — `models: { check: "opus" }` retuned an unrelated
+  agent one workflow down, which is a shared vocabulary quietly failing at the one thing it exists
+  for. `run` now means exactly "executes a command and reports the result", `check` only the
+  cross-step consistency check and `verify` only finding verification. All three sites default to
+  sonnet, so nothing moved for a caller who was not overriding those roles.
+- **Defaults are exactly what shipped.** Omitting all three reproduces the previous hardcoded split:
+  the table's `default` column *is* that split, written down instead of derived from a base. The one
+  deliberate exception is `decompose`, which defaults to `effort: 'low'`: it turns a task
   description into 3-5 angle names without reading code, and inheriting a session running at high
   effort meant paying high effort for near-templating. Everything else inherits the session's effort,
-  as before.
-- **The contract gate stayed on sonnet.** It is the obvious haiku candidate — it is even labelled
+  as before — and since a table has no arithmetic, effort no longer moves with the profile at all;
+  `decompose` is the only role whose cell names one.
+- **The contract gate stayed on sonnet — under `cheap` too**, which is the clearest single reason
+  the shift became a table. It is the obvious haiku candidate — it is even labelled
   "one cheap agent per wave" — but it reads a diff and judges whether a consumed surface is coherent,
   and its failure mode is asymmetric: a gate that wrongly reports *breaks* costs one review, while a
-  gate that wrongly reports *clean* is worse than no gate, because the pipeline then trusts it. Cheap
-  is available via `profile`/`models`; it is not the default.
+  gate that wrongly reports *clean* is worse than no gate, because the pipeline then trusts it. A
+  uniform rung down asserts every role's wrong answer is equally recoverable, and the gate's is not;
+  so `cheap` keeps every judging role — `validate`, `gate`, `review`, `verify`, `fix` — on sonnet and
+  takes its saving from the roles a later agent checks: `decompose`, `scout`, `run`, and the
+  authoring roles `impl`, `synth` and `check`. Haiku on the gate is still available via
+  `models: { gate: "haiku" }`; it is neither the default nor what `cheap` does.
 - **Escalation is relative.** A critical review finding buys the fixer one rung above the run's fix
   tier, not a hardcoded opus — otherwise "critical gets a better model" quietly means nothing under
   a cheap profile, which is exactly when it matters most.
 - **A second fix round buys the same one rung**, on that same relative base: `critical || round >= 2`,
   one `escalate()` for both. A defect that already survived one fix is evidence the work is hard
   whatever its severity, and it is evidence the run paid for rather than a severity label a reviewer
-  typed. One rung and not two, because the ladder has three: a second `escalate()` stacked on the
-  first is a no-op at the top and, under a cheap profile, spends the whole ladder on the first repeat
-  — which is exactly the "hardcoded opus" this bullet's predecessor rejects, arrived at sideways.
+  typed. One rung and not two, because the two signals say the *same* thing — this work is harder
+  than the fix tier assumed — and one rung is the size of that answer. Stacking a second would put a
+  **default** run's repeat fix on the most expensive model in the pipeline on the evidence that one
+  finding came back once, which is the "hardcoded opus" this bullet's predecessor rejects, arrived at
+  sideways. `max` starts `fix` at opus on purpose, so that the single rung is what buys `fable`
+  there.
 
 `policy()` is copied verbatim into every workflow script: they are self-contained by construction and
 cannot import a shared helper. `tests/policy.test.js` asserts the copies are byte-identical, so the
@@ -502,8 +538,8 @@ Onboarding notes worth stating once:
   disk. (Observed directly: a `dryRun` by name returned the pre-edit result while the same args by
   `scriptPath` returned the new one.)
 - The pipeline spawns many sonnet/opus agents; token cost scales with the triage tier (see that
-  table). A "+300k"-style budget directive caps a run hard, and `profile: "cheap"` shifts every
-  agent down a model tier.
+  table). A "+300k"-style budget directive caps a run hard, and `profile: "cheap"` picks the cheap
+  column of the per-role model table (see "Cost policy — roles, not phases").
 - Treat the plugin's prompts as code: change them via PR against the plugin repo, informed by the
   calibration checklist below. A change ships to every project at once — that is the point, and
   also the risk.

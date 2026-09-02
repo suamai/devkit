@@ -9,6 +9,47 @@ different artifact, a new gate — and never on prose that restates behavior alr
 `.claude-plugin/plugin.json` and `.claude-plugin/marketplace.json` state it (the latter twice);
 `tests/contract-drift.test.js` fails if they disagree, or if the shipped version has no entry here.
 
+## 0.12.0 — 2026-09-01
+
+### Changed
+- **A cost profile is now a per-role table, not a one-rung shift down the ladder.** `PROFILES` states
+  one model — and, where it matters, one effort — for every pipeline role in every profile, so
+  choosing a profile selects a *column* instead of doing arithmetic on the model ladder. The
+  `default` column is byte-for-byte the tiers 0.11.0 shipped (`decompose` sonnet/low, `scout` sonnet,
+  `validate` sonnet, `synth` opus, `impl` opus, `gate` sonnet, `check` opus, `review` sonnet,
+  `verify` sonnet, `fix` sonnet, `run` sonnet), so a run that passes no cost argument resolves to
+  exactly what it resolved to before. What actually moves is `cheap`: it now lowers only the roles
+  where a cheap answer is recoverable — `decompose`, `scout` and `run` to haiku, `synth`, `impl`
+  and `check` to sonnet — and no longer takes `validate`, `gate`, `review`, `verify` or `fix` below
+  sonnet. It used to put **haiku on the contract gate**, which contradicts the asymmetry this
+  pipeline argues from everywhere else: a judge that goes wrong costs more than the tokens it saved,
+  and `cheap` is not supposed to mean "spend less on deciding whether the cheap work was right".
+  Effort stops moving with the profile too — a table has no arithmetic to move it. `decompose`'s
+  `low` is the only effort any cell names; every other role inherits the session's effort, and
+  `efforts: { … }` is still how you set one.
+- **The model ladder gains `fable`, and `max` spends it only where an agent authors or synthesises.**
+  `max` puts `impl`, `synth` and `check` on fable and the judging roles — `validate`, `gate`,
+  `review`, `verify` — on opus. `fix` deliberately stays on opus under `max`: the fixer's
+  `critical || round >= 2` escalation buys one rung above the run's fix tier, and starting it at opus
+  is precisely what makes that rung fable when a defect proves harder than the tier assumed. The
+  escalation stays *relative* to whatever the profile resolved, never a hardcoded model, so the lever
+  survives under `cheap` as well.
+
+### Fixed
+- **`check` and `verify` each named two different agents, so one override retuned an unrelated one.**
+  A new pipeline-wide role, `run` — the non-editing agent that executes a command and reports the
+  result — now carries the three sites that were borrowing a judging role's tier: `wf-implement`'s
+  re-serialization of a step result it never got back and its one re-run of an infra-errored check
+  (both were `verify`), and `wf-review-loop`'s post-fix check agent (which was `check`). `check` now
+  means only the cross-step consistency check, and `verify` only the verification of findings. This
+  was not cosmetic: `wf-implement` forwards its whole policy object into the nested `wf-review-loop`
+  unchanged, because role names are pipeline-wide, so `models: { check: … }` aimed at the consistency
+  check also re-tuned a command runner one workflow down, and `models: { verify: … }` reached both
+  `wf-implement`'s own two rescue agents *and*, via that same forwarding, `wf-review-loop`'s real
+  finding-verification agents one workflow down — a caller meaning only one pair retuned the other
+  too. All three sites keep sonnet as their default tier, so nothing moves for a caller who was not
+  overriding those roles — a caller who *was* now names `run`.
+
 ## 0.11.0 — 2026-08-21
 
 ### Fixed

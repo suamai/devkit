@@ -709,13 +709,15 @@ Invoked as `/dev-implement <slug> --continue` (or just "continue the implement")
 ## Cost
 
 Every workflow takes the same three cost args, and every skill passes them through:
-`profile: "cheap" | "default" | "max"` shifts every agent one rung on the model ladder;
-`models: { <role>: "haiku|sonnet|opus" }` and `efforts: { <role>: "low|…|max" }` override one role
-and beat the profile. Roles are pipeline-wide (`decompose, scout, validate, synth, impl, gate,
-check, review, verify, fix`), so one object covers a workflow and everything it calls. An unknown
-role or value throws before any agent runs — check it with `dryRun: true`, which returns the
-resolved policy. Omitting all three reproduces the shipped tiers exactly. Default it from the
-repo's `Cost profile:` line in CLAUDE.md when one is present.
+`profile: "cheap" | "default" | "max"` selects a column of a per-role model table rather than
+shifting everything one rung: `cheap` leaves the judging roles on sonnet, and `max` spends `fable`
+only where an agent authors or synthesises. `models: { <role>: "haiku|sonnet|opus|fable" }` and
+`efforts: { <role>: "low|…|max" }` override one role and beat the profile. Roles are pipeline-wide
+(`decompose, scout, validate, synth, impl, gate, check, review, verify, fix, run`), so one object
+covers a workflow and everything it calls. An unknown role or value throws before any agent runs —
+check it with `dryRun: true`, which returns the resolved policy. Omitting all three reproduces the
+shipped tiers exactly — that is the table's `default` column, stated rather than derived. Default it
+from the repo's `Cost profile:` line in CLAUDE.md when one is present.
 
 This skill forwards them into the nested `wf-review-loop` as well, so one dial covers
 implementation *and* its review checkpoints.
